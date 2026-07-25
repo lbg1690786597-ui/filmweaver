@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, APP_VERSION, BreakdownOut, JobOut } from "./api";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { api, APP_VERSION, AppLatest, BreakdownOut, JobOut } from "./api";
 import { LibClip, TimelineItem, fmtTime } from "./types";
 import LibraryPanel from "./components/LibraryPanel";
 import Timeline from "./components/Timeline";
@@ -22,6 +23,7 @@ export default function App() {
   // ---- 更新 / 连接 ----
   const [toast, setToast] = useState("");
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
+  const [update, setUpdate] = useState<AppLatest | null>(null); // 发现的新版本
   useEffect(() => {
     api.health().then(() => setBackendOk(true)).catch(() => setBackendOk(false));
   }, []);
@@ -30,10 +32,16 @@ export default function App() {
     try {
       const latest = await api.appLatest();
       if (latest.version !== APP_VERSION) {
-        setToast(`发现新版本 v${latest.version}：${latest.notes}`);
-        window.open(latest.download_url, "_blank");
+        setUpdate(latest);
+        setToast("");
       } else setToast(`已是最新版本 v${APP_VERSION}`);
     } catch (e) { setToast(`检查失败: ${e}`); }
+  };
+  /** 用系统浏览器打开下载页（Tauri opener；非 Tauri 环境回退 window.open） */
+  const goUpdate = async () => {
+    if (!update) return;
+    try { await openUrl(update.download_url); }
+    catch { window.open(update.download_url, "_blank"); }
   };
 
   // ---- 素材库 / 资产 / 剧本 ----
@@ -156,6 +164,15 @@ export default function App() {
         </div>
       </header>
       {toast && <div className="banner" onClick={() => setToast("")}>{toast}</div>}
+      {update && (
+        <div className="banner update-banner">
+          <span>🎉 发现新版本 v{update.version}（当前 v{APP_VERSION}）：{update.notes}</span>
+          <span className="update-actions">
+            <button className="btn primary" onClick={goUpdate}>⬇ 立即更新</button>
+            <button className="btn ghost" onClick={() => setUpdate(null)}>稍后再说</button>
+          </span>
+        </div>
+      )}
       {composing && composeJob && (
         <div className="export-bar"><div style={{ width: `${composeJob.progress}%` }} /></div>
       )}
