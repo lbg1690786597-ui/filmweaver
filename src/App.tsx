@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, APP_VERSION, AppLatest, BreakdownOut, JobOut } from "./api";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { api, APP_VERSION, BreakdownOut, JobOut } from "./api";
 import { LibClip, TimelineItem, fmtTime } from "./types";
 import LibraryPanel from "./components/LibraryPanel";
 import Timeline from "./components/Timeline";
@@ -9,7 +10,8 @@ import AiDrawer, { AiTab } from "./components/AiDrawer";
 let seq = 0;
 const uid = () => `t${Date.now()}_${seq++}`;
 
-/** 剪映式全屏工作台：左素材库 + 右预览器 + 底时间轴 */
+type UpdateState = "idle" | "checking" | "downloading" | "ready" | "none";
+
 export default function App() {
   // ---- 主题 ----
   const [theme, setTheme] = useState<"dark" | "light">(
@@ -20,29 +22,46 @@ export default function App() {
     localStorage.setItem("fw_theme", theme);
   }, [theme]);
 
-  // ---- 更新 / 连接 ----
+  // ---- 更新（应用内静默下载）----
+  const [updateState, setUpdateState] = useState<UpdateState>("idle");
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [updateNotes, setUpdateNotes] = useState("");
   const [toast, setToast] = useState("");
+
+  const checkUpdate = async () => {
+    setUpdateState("checking");
+    try {
+      const update = await check();
+      if (!update?.available) {
+        setUpdateState("none");
+        setToast(`已是最新版本 v${APP_VERSION}`);
+        setTimeout(() => setToast(""), 3000);
+        return;
+      }
+      setUpdateNotes(update.body ?? "");
+      setUpdateState("downloading");
+      let downloaded = 0;
+      let total = 0;
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") total = event.data.contentLength ?? 0;
+        if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          setUpdateProgress(total > 0 ? Math.round((downloaded / total) * 100) : 0);
+        }
+        if (event.event === "Finished") setUpdateState("ready");
+      });
+    } catch (e) {
+      setUpdateState("idle");
+      setToast(`检查更新失败: ${e}`);
+      setTimeout(() => setToast(""), 4000);
+    }
+  };
+
+  // ---- 后端连接 ----
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
-  const [update, setUpdate] = useState<AppLatest | null>(null); // 发现的新版本
   useEffect(() => {
     api.health().then(() => setBackendOk(true)).catch(() => setBackendOk(false));
   }, []);
-  const checkUpdate = async () => {
-    setToast("检查更新中…");
-    try {
-      const latest = await api.appLatest();
-      if (latest.version !== APP_VERSION) {
-        setUpdate(latest);
-        setToast("");
-      } else setToast(`已是最新版本 v${APP_VERSION}`);
-    } catch (e) { setToast(`检查失败: ${e}`); }
-  };
-  /** 用系统浏览器打开下载页（Tauri opener；非 Tauri 环境回退 window.open） */
-  const goUpdate = async () => {
-    if (!update) return;
-    try { await openUrl(update.download_url); }
-    catch { window.open(update.download_url, "_blank"); }
-  };
 
   // ---- 素材库 / 资产 / 剧本 ----
   const [libClips, setLibClips] = useState<LibClip[]>([]);
@@ -75,8 +94,6 @@ export default function App() {
     setItems((prev) => prev.filter((t) => t.id !== id));
     if (selectedId === id) setSelectedId(null);
   };
-
-  // Delete 键删除选中片段
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
@@ -97,17 +114,14 @@ export default function App() {
     const it = items.find((t) => t.id === id);
     if (it) { setPreviewUrl(api.mediaUrl(it.clip.url)); setPreviewLabel(it.clip.name); }
   };
-  const previewClip = (c: LibClip) => {
-    setPreviewUrl(api.mediaUrl(c.url)); setPreviewLabel(c.name);
-  };
+  const previewClip = (c: LibClip) => { setPreviewUrl(api.mediaUrl(c.url)); setPreviewLabel(c.name); };
 
-  // ---- 导出（自动拼接）----
+  // ---- 导出 ----
   const [aspect, setAspect] = useState<"9:16" | "16:9">("9:16");
   const [composeJob, setComposeJob] = useState<JobOut | null>(null);
   const [composing, setComposing] = useState(false);
   const composeTimer = useRef<number | null>(null);
   const [filmUrl, setFilmUrl] = useState<string | null>(null);
-
   const doExport = async () => {
     const videos = items.filter((t) => t.clip.kind === "video");
     if (!videos.length) { setToast("时间轴上没有视频"); return; }
@@ -124,22 +138,18 @@ export default function App() {
           setComposing(false);
           if (s.status === "done" && s.result) {
             const url = api.mediaUrl(JSON.parse(s.result).url);
-            setFilmUrl(url);
-            setPreviewUrl(url);
-            setPreviewLabel("🎬 成片预览");
-            setToast("拼接完成！预览窗已切换到成片");
+            setFilmUrl(url); setPreviewUrl(url); setPreviewLabel("🎬 成片预览");
+            setToast("拼接完成！");
           } else setToast(`拼接失败: ${s.error}`);
         }
       }, 3000);
     } catch (e) { setToast(String(e)); setComposing(false); }
   };
 
-  const totalSec = items.filter((t) => t.clip.kind === "video")
-    .reduce((s, t) => s + (t.clip.duration || 5), 0);
+  const totalSec = items.filter((t) => t.clip.kind === "video").reduce((s, t) => s + (t.clip.duration || 5), 0);
 
   return (
     <div className="studio">
-      {/* 顶栏 */}
       <header className="topbar">
         <div className="brand">🎬 FilmWeaver 织影 <span className="ver">v{APP_VERSION}</span></div>
         <div className="topbar-mid">
@@ -160,24 +170,38 @@ export default function App() {
           <button className="btn ghost" title="切换主题" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
-          <button className="btn ghost" title="检查更新" onClick={checkUpdate}>⟳</button>
+          {/* 检查更新按钮 */}
+          {updateState === "idle" || updateState === "none" ? (
+            <button className="btn ghost" title="检查更新" onClick={checkUpdate}>⟳</button>
+          ) : updateState === "checking" ? (
+            <span className="muted">检查中…</span>
+          ) : updateState === "downloading" ? (
+            <span className="muted">下载 {updateProgress}%</span>
+          ) : (
+            <button className="btn primary" onClick={() => relaunch()}>🔄 重启安装</button>
+          )}
         </div>
       </header>
-      {toast && <div className="banner" onClick={() => setToast("")}>{toast}</div>}
-      {update && (
+
+      {/* 更新进度条 */}
+      {updateState === "downloading" && (
+        <div className="export-bar"><div style={{ width: `${updateProgress}%`, background: "var(--ok)" }} /></div>
+      )}
+      {/* 更新就绪提示 */}
+      {updateState === "ready" && (
         <div className="banner update-banner">
-          <span>🎉 发现新版本 v{update.version}（当前 v{APP_VERSION}）：{update.notes}</span>
+          <span>✅ 新版本已下载完成{updateNotes ? `：${updateNotes}` : ""}，点「重启安装」立即生效</span>
           <span className="update-actions">
-            <button className="btn primary" onClick={goUpdate}>⬇ 立即更新</button>
-            <button className="btn ghost" onClick={() => setUpdate(null)}>稍后再说</button>
+            <button className="btn primary" onClick={() => relaunch()}>🔄 重启安装</button>
+            <button className="btn ghost" onClick={() => setUpdateState("idle")}>稍后</button>
           </span>
         </div>
       )}
+      {toast && <div className="banner" onClick={() => setToast("")}>{toast}</div>}
       {composing && composeJob && (
         <div className="export-bar"><div style={{ width: `${composeJob.progress}%` }} /></div>
       )}
 
-      {/* 中区：素材库 + 预览器 */}
       <div className="mid">
         <LibraryPanel
           clips={libClips}
@@ -204,26 +228,12 @@ export default function App() {
         </main>
       </div>
 
-      {/* 底区：时间轴 */}
-      <Timeline
-        items={items}
-        selectedId={selectedId}
-        onSelect={selectItem}
-        onReorder={reorder}
-        onRemove={removeItem}
-      />
+      <Timeline items={items} selectedId={selectedId} onSelect={selectItem} onReorder={reorder} onRemove={removeItem} />
 
-      {/* AI 抽屉 */}
       <AiDrawer
-        open={aiOpen}
-        tab={aiTab}
-        onClose={() => setAiOpen(false)}
-        onTab={setAiTab}
-        script={script}
-        onScript={setScript}
-        breakdown={breakdown}
-        onBreakdown={setBreakdown}
-        onAssets={setAssets}
+        open={aiOpen} tab={aiTab} onClose={() => setAiOpen(false)} onTab={setAiTab}
+        script={script} onScript={setScript} breakdown={breakdown}
+        onBreakdown={setBreakdown} onAssets={setAssets}
       />
     </div>
   );
