@@ -1,7 +1,7 @@
 /** FilmWeaver 后端 API 客户端（对接 backend /v2）。 */
 
 export const BASE = import.meta.env.VITE_FW_API_BASE || "http://118.196.33.51/fw";
-export const APP_VERSION = "0.3.1";
+export const APP_VERSION = "0.4.0";
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const resp = await fetch(`${BASE}${path}`, {
