@@ -234,6 +234,14 @@ export default function App() {
         open={aiOpen} tab={aiTab} onClose={() => setAiOpen(false)} onTab={setAiTab}
         script={script} onScript={setScript} breakdown={breakdown}
         onBreakdown={setBreakdown} onAssets={setAssets}
+        onShotVideo={(name, url) => {
+          // AI 生成的镜头视频直接进素材库，可拖入时间轴
+          setLibClips((prev) => [...prev, {
+            id: `gen_${Date.now()}`, name, url, size: 0, kind: "video", duration: 0,
+          }]);
+          setToast(`${name} 已生成，已加入素材库`);
+          setTimeout(() => setToast(""), 4000);
+        }}
       />
     </div>
   );
