@@ -13,13 +13,17 @@ interface Props {
   breakdown: BreakdownOut | null;
   onBreakdown: (b: BreakdownOut) => void;
   onAssets: (assets: { name: string; url: string }[]) => void;
+  /** 单镜生成的视频回流到素材库 */
+  onShotVideo: (name: string, url: string) => void;
 }
 
-/** 右侧滑出的 AI 工作台抽屉：剧本优化 / 镜头拆解 / 资产生成 */
+/** 右侧滑出的 AI 工作台抽屉：剧本优化 / 镜头拆解+生成 / 资产生成 */
 export default function AiDrawer(p: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [assetJob, setAssetJob] = useState<JobOut | null>(null);
+  const [genShot, setGenShot] = useState<number | null>(null);  // 正在生成的镜头号
+  const [shotDone, setShotDone] = useState<Record<number, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const timer = useRef<number | null>(null);
 
@@ -39,6 +43,16 @@ export default function AiDrawer(p: Props) {
     try { p.onBreakdown(await api.breakdownScript(p.script.optimized || p.script.raw)); }
     catch (e) { setErr(String(e)); }
     finally { setBusy(false); }
+  };
+
+  const doShotVideo = async (order: number, scriptRef: string) => {
+    setGenShot(order); setErr("");
+    try {
+      const r = await api.generateShotVideo(scriptRef);
+      setShotDone((prev) => ({ ...prev, [order]: r.video_url }));
+      p.onShotVideo(`镜头#${order}`, r.video_url);
+    } catch (e) { setErr(String(e)); }
+    finally { setGenShot(null); }
   };
 
   const doAssets = async () => {
@@ -114,7 +128,16 @@ export default function AiDrawer(p: Props) {
                       <div key={s.order} className="shot">
                         <span className="shot-no">#{s.order}</span>
                         <span className="shot-link">{s.link_to_prev === "continuous" ? "承接" : "转场"}</span>
-                        <span>{s.script_ref}</span>
+                        <span style={{ flex: 1 }}>{s.script_ref}</span>
+                        {shotDone[s.order] ? (
+                          <span className="shot-ok" title={shotDone[s.order]}>✅ 已生成</span>
+                        ) : (
+                          <button className="btn tiny" disabled={genShot !== null}
+                            title="生成该镜头视频（约1-3分钟）"
+                            onClick={() => doShotVideo(s.order, s.script_ref)}>
+                            {genShot === s.order ? "生成中…" : "🎬 生成"}
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
