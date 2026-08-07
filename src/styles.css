@@ -211,6 +211,8 @@ select {
   font-size: 10px; color: var(--muted); border: 1px solid var(--border);
   border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
 }
+.shot-ok { font-size: 11px; color: var(--ok, #4ade80); flex-shrink: 0; }
+.btn.tiny { font-size: 11px; padding: 2px 8px; flex-shrink: 0; }
 /* 更新提示条 */
 .update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text); }
 .update-actions { display: flex; gap: 8px; flex-shrink: 0; }
