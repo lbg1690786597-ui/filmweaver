@@ -8,6 +8,27 @@
     "core:default",
     "opener:default",
     "updater:default",
-    "process:default"
+    "process:default",
+    "dialog:default",
+    "fs:default",
+    {
+      "identifier": "fs:allow-app-read-recursive",
+      "allow": [{ "path": "$APPDATA/**" }]
+    },
+    {
+      "identifier": "fs:allow-app-write-recursive",
+      "allow": [{ "path": "$APPDATA/**" }]
+    },
+    "shell:allow-execute",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/ffmpeg",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }
