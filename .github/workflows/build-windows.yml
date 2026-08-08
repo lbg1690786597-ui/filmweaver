@@ -33,6 +33,17 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
+      # R2: 下载 ffmpeg 作为 sidecar（bundle.externalBin 需要带 target triple 后缀的文件名）
+      - name: 下载 ffmpeg sidecar
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp
+          $exe = Get-ChildItem -Recurse ffmpeg-tmp -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe"
+          Remove-Item -Recurse -Force ffmpeg-tmp, ffmpeg.zip
+
       # tauri-action：编译 + 用私钥给更新包签名 + 发 Release（含安装包与 latest.json，供应用内自动更新）
       - name: 编译并发布（含自动更新产物）
         uses: tauri-apps/tauri-action@v0
