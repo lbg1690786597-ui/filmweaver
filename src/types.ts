@@ -12,11 +12,8 @@ export interface LibClip {
   duration: number;  // 秒；图片/未知为 0
 }
 
-/** 时间轴上的片段（引用素材，可重复引用同一素材） */
-export interface TimelineItem {
-  id: string;        // 时间轴内唯一
-  clip: LibClip;
-}
+/** 素材入轨说明（P0-3）：素材库不再有独立剪辑轨，
+ *  视频素材通过 addSpecialShot 作为 is_special 镜头插入镜头轨（唯一真源）。 */
 
 export function clipKind(name: string): ClipKind {
   const ext = name.split(".").pop()?.toLowerCase() || "";
