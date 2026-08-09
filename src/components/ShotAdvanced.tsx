@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ShotInfo, VideoProviderInfo } from "../api";
+import AutoTextarea from "./AutoTextarea";
 
 interface Props {
   shot: ShotInfo;
@@ -134,7 +135,7 @@ export default function ShotAdvanced(p: Props) {
         </div>
 
         <label>提示词覆盖（留空=用镜头剧本片段）
-          <textarea className="drawer-ta" style={{ minHeight: 60 }}
+          <AutoTextarea className="drawer-ta" minHeight={60}
             value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         </label>
 
