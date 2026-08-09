@@ -163,7 +163,7 @@ export default function FineCut(p: Props) {
               <span style={{ flex: 1 }} />
               <button className="btn tiny" onClick={genSrtDraft}>按镜头生成初稿</button>
             </div>
-            <textarea className="drawer-ta" style={{ flex: 1, fontFamily: "monospace", fontSize: 12 }}
+            <textarea className="drawer-ta fill" style={{ fontFamily: "monospace", fontSize: 12 }}
               placeholder={"1\n00:00:00,000 --> 00:00:03,000\n第一句字幕…\n\n留空=不烧字幕"}
               value={srt} onChange={(e) => setSrt(e.target.value)} />
           </div>
