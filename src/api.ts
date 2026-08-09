@@ -92,9 +92,25 @@ export interface ShotInfo {
   characters: string[];
   location: string | null;
   video_url: string | null;
+  /** P1-1 缩略图：轨道用首帧 JPG 渲染（不再每槽挂 <video>，837 镜也不卡） */
+  thumb_url: string | null;
   status: "pending" | "prompting" | "generating" | "review" | "adopted" | "failed";
   adopted_version: number | null;
   is_special: boolean;
+  /** 拆解阶段预生成的提示词（"拆解镜头并生成提示词"第二阶段产物） */
+  gen_prompt: string | null;
+  /** 所属集剧本已修改 → 本镜拆解/提示词已过期 */
+  stale: boolean;
+  /** AI 拆镜判定的镜头时长（秒，1-15 钳制；高级面板/时间轴拖拽可覆盖） */
+  duration_sec: number | null;
+  /** 时间轴归一（P0-3）：停用=保留镜头但不参与导出/生成 */
+  disabled: boolean;
+  /** 外部素材镜头（is_special）的展示名：片头/片尾/转场/实拍等 */
+  special_name: string | null;
+  /** P1-2 注入覆写（L3）：资产轨拖出来的增删；null=完全跟随 AI 判定 */
+  ref_overrides: { add?: string[]; remove?: string[]; add_loc?: string[]; remove_loc?: string[] } | null;
+  /** P1-2：已出片但注入集合被人工改动 → 轨道显示 ↻「参考图已变，可重新生成」 */
+  refs_stale: boolean;
   /** 镜头级策略覆盖（三层策略最高优先级）；null=继承项目 */
   profile_override: Record<string, unknown> | null;
 }
@@ -108,7 +124,7 @@ export interface ProjectDetail {
   raw_script: string | null;
   optimized_script: string | null;
   shots: ShotInfo[];
-  assets: { kind: string; name: string; image_url: string | null }[];
+  assets: AssetInfo[];
 }
 
 /** R1: 人物资产阶段（集×镜头双层轴） */
@@ -123,6 +139,57 @@ export interface StageInfo {
   image_url: string | null;
   description: string | null;
   status: "draft" | "confirmed";
+  /** 本阶段区间内该角色**最终注入**的镜头 order（P1-2 起 = (拆解真值 ∪ 人工add) − 人工remove，
+   *  与后端参考图注入依据完全同源）。资产轨按此渲染，避免"未出场却显示覆盖"。 */
+  present_orders: number[];
+  /** P1-2 人工覆写标记：被人工「加入」注入的 order（present_orders 子集，轨道画斜纹） */
+  manual_add_orders: number[];
+  /** P1-2 人工覆写标记：被人工「排除」的 order（真值有但手动去掉，形成的空洞是手调的） */
+  manual_remove_orders: number[];
+  /** 虚拟段（无 AssetStage 行）：拖拽注入的无阶段角色/阶段区间外的注入，服务端合成保证
+   *  「轨道显示 = 实际注入」。不可 patch/merge/生成定妆（前端按纯资产上下文降级处理） */
+  virtual?: boolean;
+}
+
+/** P1-3 场景轨条目：每场景一行（L1=Shot.location，图源=Asset(kind=location)，L3=add_loc/remove_loc） */
+export interface LocationInfo {
+  name: string;
+  image_url: string | null;
+  /** 最终注入该场景参考图的镜头 order（与后端生成注入同源） */
+  present_orders: number[];
+  manual_add_orders: number[];
+  manual_remove_orders: number[];
+}
+
+/** 资产条目（detail.assets；id 供 patch/delete/拖拽重分类） */
+export interface AssetInfo {
+  id: string;
+  kind: string;    // character | location | custom
+  name: string;
+  image_url: string | null;
+}
+
+/** 资产拖拽 payload（资产页卡片 → 时间轴轨道，经 dataTransfer 传递） */
+export interface AssetDragData {
+  assetId: string | null;   // Asset 行 id（阶段图拖拽时为 null）
+  kind: string;             // character | location | custom
+  name: string;
+  imageUrl: string | null;
+  stageId?: string;         // 拖的是某个造型阶段时带上（换图目标）
+}
+
+/** P2-4 音频轨段：TTS 旁白 / 配乐，锚定镜头 order + 镜内偏移 */
+export interface AudioClipInfo {
+  id: string;
+  kind: "tts" | "music";
+  text: string | null;
+  url: string | null;
+  duration: number;
+  start_shot_order: number;
+  start_offset_sec: number;
+  voice_ref_url: string | null;
+  status: "pending" | "generating" | "done" | "failed";
+  error: string | null;
 }
 
 export interface AppLatest {
@@ -188,9 +255,11 @@ export const api = {
 
   listProjects: () => get<{ projects: ProjectInfo[] }>("/v2/projects"),
 
-  createProject: (title: string, baseAspect: string, productionMode: string) =>
+  createProject: (title: string, baseAspect: string, productionMode: string,
+                  customSettings?: Record<string, string>) =>
     post<ProjectInfo>("/v2/projects", {
       title, base_aspect: baseAspect, production_mode: productionMode,
+      custom_settings: customSettings ?? null,
     }),
 
   projectDetail: (id: string) => get<ProjectDetail>(`/v2/projects/${id}/detail`),
@@ -199,6 +268,43 @@ export const api = {
   importScript: (text: string, projectId?: string, confirm = false) =>
     post<{ episodes: EpisodeInfo[]; saved: boolean }>("/v2/script/import", {
       text, project_id: projectId ?? null, confirm,
+    }),
+
+  /** 剧本文件导入（txt/md/docx/pdf）：解析分集；confirm=true 落库；返回含解析出的 text */
+  importScriptFile: async (file: File, projectId?: string, confirm = false) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (projectId) fd.append("project_id", projectId);
+    fd.append("confirm", String(confirm));
+    const resp = await fetch(`${BASE}/v2/script/import-file`, {
+      method: "POST", headers: authHeaders(), body: fd,
+    });
+    if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    return resp.json() as Promise<{ episodes: EpisodeInfo[]; saved: boolean; text: string }>;
+  },
+
+  /** 按集取剧本正文（剧本页每集一个文本框） */
+  episodesContent: (projectId: string) =>
+    get<{ episodes: { order: number; title: string; content: string }[] }>(
+      `/v2/projects/${projectId}/episodes/content`),
+
+  /** 保存某集正文；该集已有镜头被标记 stale（过期） */
+  updateEpisodeContent: (projectId: string, order: number, content: string) =>
+    fetch(`${BASE}/v2/projects/${projectId}/episodes/${order}/content`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ content }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{ ok: boolean; stale_shots: number }>;
+    }),
+
+  /** 拆解 job：episodes=null 一键全部（默认跳过已拆）；指定集数组=只拆那些集（重拆语义）。
+   *  长集分块串多次 LLM 可达数分钟，必须走 job 而非同步接口（否则 nginx 504）。 */
+  submitBreakdownAll: (projectId: string, force = false, episodes?: number[]) =>
+    post<JobOut>("/v2/jobs", {
+      kind: "breakdown_all",
+      payload: { project_id: projectId, force, episodes: episodes ?? null },
     }),
 
   /** 按集拆解（落库带 episode） */
@@ -216,7 +322,8 @@ export const api = {
     get<{ versions: { version_no: number; video_url: string | null; model_id: string | null; prompt: string | null; meta: Record<string, unknown> | null; created_at: string | null }[] }>(`/v2/shots/${shotId}/versions`),
 
   // ---- R1: 人物资产阶段（契约 C5）----
-  listStages: (projectId: string) => get<{ stages: StageInfo[] }>(`/v2/projects/${projectId}/stages`),
+  listStages: (projectId: string) =>
+    get<{ stages: StageInfo[]; locations: LocationInfo[] }>(`/v2/projects/${projectId}/stages`),
 
   /** AI 识别换装点生成阶段草稿；priors: {角色名: none|growth|multi} */
   stagesDraft: (projectId: string, priors?: Record<string, string>) =>
@@ -240,11 +347,62 @@ export const api = {
   stageCandidates: (stageId: string, n = 4) =>
     post<{ urls: string[]; prompt: string }>(`/v2/stages/${stageId}/candidates`, { n }),
 
+  /** P1-2 资产轨拖拽落库：批量增删某角色/场景的注入覆写（一次事务）。
+   *  向外拖=add（该镜生成时注入此参考图），向内拖=remove，reset=重置为 AI 判定。
+   *  已出片且注入集合实际变化的镜头会被标记 refs_stale（提示可重新生成，不自动重跑）。
+   *  P1-3：isLocation=true 时 character 填场景名（覆写走 add_loc/remove_loc）。 */
+  refOverrides: (projectId: string, character: string, opts: {
+    addShotIds?: string[]; removeShotIds?: string[]; resetShotIds?: string[];
+    isLocation?: boolean;
+  }) =>
+    post<{ ok: boolean; affected: { shot_id: string; order: number; changed: boolean; refs_stale: boolean }[]; stale: number[] }>(
+      "/v2/shots/ref-overrides", {
+        project_id: projectId, character,
+        shot_ids_add: opts.addShotIds ?? [],
+        shot_ids_remove: opts.removeShotIds ?? [],
+        reset_shot_ids: opts.resetShotIds ?? [],
+        is_location: opts.isLocation ?? false,
+      }),
+
   /** 保存镜头级覆盖（三层策略：profile_override JSON） */
   patchShotOverride: (shotId: string, override: Record<string, unknown> | null, isSpecial?: boolean) =>
     post<{ ok: boolean }>(`/v2/shots/${shotId}/override`, {
       profile_override: override, is_special: isSpecial ?? null,
     }),
+
+  /** P0-3 时间轴归一：把外部素材（片头/片尾/转场/实拍）作为特殊镜头插入镜头轨。
+   *  afterOrder 缺省=追加到末尾；插入后全项目 order 重排为 1..N。 */
+  addSpecialShot: (projectId: string, name: string, videoUrl: string,
+                   afterOrder?: number, durationSec?: number) =>
+    post<{ ok: boolean; shot_id: string; order: number }>("/v2/shots/special", {
+      project_id: projectId, name, video_url: videoUrl,
+      after_order: afterOrder ?? null, duration_sec: durationSec ?? null,
+    }),
+
+  /** P0-3 轻剪辑：改时长（服务端钳整数秒 1-15）/ 改顺序 / 停用。 */
+  patchShotTimeline: (shotId: string, patch: {
+    durationSec?: number; toOrder?: number; disabled?: boolean;
+  }) =>
+    fetch(`${BASE}/v2/shots/${shotId}/timeline`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        duration_sec: patch.durationSec ?? null,
+        to_order: patch.toOrder ?? null,
+        disabled: patch.disabled ?? null,
+      }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{ ok: boolean; order: number; duration_sec: number | null; disabled: boolean }>;
+    }),
+
+  /** 删除镜头（仅外部素材镜头；AI 镜头请用停用） */
+  deleteShot: (shotId: string) =>
+    fetch(`${BASE}/v2/shots/${shotId}`, { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+        return r.json() as Promise<{ ok: boolean }>;
+      }),
 
   /** 按镜头 id 批量生成（R0 状态机链：prompting→generating→review） */
   submitShotsByIds: (projectId: string, shotIds?: string[], modelId?: string) =>
@@ -255,6 +413,9 @@ export const api = {
 
   /** 已注册视频模型及能力档位 */
   videoProviders: () => get<{ providers: VideoProviderInfo[] }>("/v2/providers/video"),
+
+  /** 用户可选图像模型（渠道链后端内部维护：zx1/api4me/RunningHub 自动降级） */
+  imageProviders: () => get<{ models: { id: string; label: string }[] }>("/v2/providers/image"),
 
   optimizeScript: (raw: string, modelId?: string, projectId?: string) =>
     post<{ optimized: string }>("/v2/script/optimize", {
@@ -267,8 +428,9 @@ export const api = {
   generateAsset: (prompt: string, modelId?: string) =>
     post<{ urls: string[] }>("/v2/assets/generate", { prompt, model_id: modelId ?? null }),
 
-  submitAssetBatch: (items: { name: string; prompt: string }[], modelId?: string) =>
-    post<JobOut>("/v2/jobs", { kind: "asset_batch", payload: { items, model_id: modelId ?? null } }),
+  /** 批量资产生图（project_id 传入则逐张实时写回 Asset.image_url） */
+  submitAssetBatch: (items: { name: string; prompt: string; stage_id?: string }[], projectId?: string, modelId?: string) =>
+    post<JobOut>("/v2/jobs", { kind: "asset_batch", payload: { items, model_id: modelId ?? null, project_id: projectId ?? null } }),
 
   /** 单镜生成视频（同步出片）。
    *  veo 约 1-3 分钟；minimax-h3-ref2v 走 RunningHub 异步工作流，1MP/8s 约 10 分钟。
@@ -293,14 +455,28 @@ export const api = {
       },
     ),
 
-  /** 上传本地素材（视频/音频/图片/字幕），返回可用于时间轴的 url */
-  uploadMedia: async (file: File): Promise<UploadOut> => {
+  /** 上传本地素材（视频/音频/图片/字幕），返回可用于时间轴的 url。
+   *  P1-3：带 projectId 则元数据落库（media_clips），刷新/换设备素材池不丢；
+   *  duration 前端探测后带上（服务端不再 ffprobe）。 */
+  uploadMedia: async (file: File, projectId?: string, duration?: number): Promise<UploadOut> => {
     const fd = new FormData();
     fd.append("file", file);
+    if (projectId) fd.append("project_id", projectId);
+    if (duration && duration > 0) fd.append("duration", String(duration));
     const resp = await fetch(`${BASE}/v2/media/upload`, { method: "POST", headers: authHeaders(), body: fd });
     if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
     return resp.json();
   },
+
+  /** P1-3 项目素材池：已上传素材元数据（含 kind/duration） */
+  listClips: (projectId: string) =>
+    get<{ clips: { id: string; name: string; url: string; size: number; kind: string; duration: number }[] }>(
+      `/v2/projects/${projectId}/clips`),
+
+  /** P1-3 从素材池删除（连文件本体一起删） */
+  deleteClip: (clipId: string) =>
+    fetch(`${BASE}/v2/clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
 
   /** 提交时间轴自动拼接（服务器 ffmpeg 归一化+concat+可选烧字幕） */
   submitCompose: (clips: string[], opts?: { width?: number; height?: number; fps?: number; burn_srt?: string }) =>
@@ -342,6 +518,153 @@ export const api = {
 
   jobStatus: (id: string) => get<JobOut>(`/v2/jobs/${id}`),
 
+  /** P2-3（修 F4）：按项目列进行中 job——打开项目从服务端接回任务，换设备/清缓存不失联 */
+  listProjectJobs: (projectId: string) =>
+    get<{ jobs: { id: string; kind: string; status: string; progress: number }[] }>(
+      `/v2/projects/${projectId}/jobs`),
+
+  // ---- P2-4 音频轨（TTS 旁白 / 配乐）----
+  listAudioClips: (projectId: string) =>
+    get<{ clips: AudioClipInfo[]; tts_available: boolean }>(`/v2/projects/${projectId}/audio-clips`),
+
+  createAudioClip: (body: {
+    projectId: string; kind: "tts" | "music"; text?: string; url?: string;
+    duration?: number; startShotOrder?: number; startOffsetSec?: number; voiceRefUrl?: string;
+  }) =>
+    post<AudioClipInfo>("/v2/audio-clips", {
+      project_id: body.projectId, kind: body.kind,
+      text: body.text ?? null, url: body.url ?? null, duration: body.duration ?? null,
+      start_shot_order: body.startShotOrder ?? 1,
+      start_offset_sec: body.startOffsetSec ?? 0,
+      voice_ref_url: body.voiceRefUrl ?? null,
+    }),
+
+  patchAudioClip: (clipId: string, patch: {
+    startShotOrder?: number; startOffsetSec?: number; text?: string;
+  }) =>
+    fetch(`${BASE}/v2/audio-clips/${clipId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        start_shot_order: patch.startShotOrder ?? null,
+        start_offset_sec: patch.startOffsetSec ?? null,
+        text: patch.text ?? null,
+      }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<AudioClipInfo>;
+    }),
+
+  deleteAudioClip: (clipId: string) =>
+    fetch(`${BASE}/v2/audio-clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
+
+  /** TTS 批量合成 job（缺省合成全部 pending/failed 段；参考音色同批只上传一次） */
+  submitTtsBatch: (projectId: string, clipIds?: string[]) =>
+    post<JobOut>("/v2/jobs", {
+      kind: "tts_batch",
+      payload: { project_id: projectId, clip_ids: clipIds ?? null },
+    }),
+
+  /** 合并同角色多个造型阶段（区间并集，保留 keepId 的图/名/描述；差别不大的设定合一） */
+  mergeStages: (stageIds: string[], keepId?: string) =>
+    post<{ ok: boolean; kept: StageInfo; merged_names: string[] }>(
+      "/v2/stages/merge", { stage_ids: stageIds, keep_id: keepId ?? null }),
+
+  // ---- 资产 CRUD（自定义资产 + 拖拽重分类/换图）----
+  /** 同步生图（资产详情弹窗/自定义资产用；n 张，约 10-60s） */
+  assetsGenerate: (prompt: string, opts?: { modelId?: string; size?: string; n?: number }) =>
+    post<{ urls: string[]; model_id: string }>("/v2/assets/generate", {
+      prompt, model_id: opts?.modelId ?? null,
+      size: opts?.size ?? "1024x1024", n: opts?.n ?? 1,
+    }),
+
+  /** 新建资产（自定义分组：上传图或 AI 生图后落库） */
+  createAsset: (body: { projectId: string; kind?: string; name: string; imageUrl?: string; prompt?: string }) =>
+    post<AssetInfo>("/v2/assets", {
+      project_id: body.projectId, kind: body.kind ?? "custom",
+      name: body.name, image_url: body.imageUrl ?? null, prompt: body.prompt ?? null,
+    }),
+
+  /** 改资产（kind=拖拽重分类 custom→character/location；imageUrl=换图） */
+  patchAsset: (assetId: string, patch: { kind?: string; name?: string; imageUrl?: string }) =>
+    fetch(`${BASE}/v2/assets/${assetId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        kind: patch.kind ?? null, name: patch.name ?? null,
+        image_url: patch.imageUrl ?? null,
+      }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<AssetInfo>;
+    }),
+
+  deleteAsset: (assetId: string) =>
+    fetch(`${BASE}/v2/assets/${assetId}`, { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
+
+  /** 按 (kind,name) 换图（拖资产卡到场景轨段=替换参考图；无行则建） */
+  upsertAssetImage: (projectId: string, kind: string, name: string, imageUrl: string) =>
+    post<AssetInfo>("/v2/assets/upsert-image", {
+      project_id: projectId, kind, name, image_url: imageUrl,
+    }),
+
   /** 把 /fw/media/... 相对地址补全为可下载完整地址（host 取自 BASE，不硬编码） */
   mediaUrl: (u: string) => (u.startsWith("http") ? u : `${new URL(BASE).origin}${u}`),
+
+  /** P2-5 SSE（修 G3/F2）：订阅项目事件流（job/shot/audio 状态变更实时推送）。
+   *
+   * 用 fetch 流式读取而非 EventSource——后者带不了 Authorization 头，登录
+   * 体系下会 401；fetch 方案桌面 WebView 与浏览器通道都通。断线指数退避重连
+   * （3s 起、封顶 30s），onUp/onDown 通知连接状态（前端据此把轮询降为兜底）。
+   * 返回关闭函数（切项目/卸载时调用）。 */
+  openEvents: (
+    projectId: string,
+    onEvent: (ev: string, data: Record<string, unknown>) => void,
+    opts?: { onUp?: () => void; onDown?: () => void },
+  ): (() => void) => {
+    const ctrl = new AbortController();
+    let stopped = false;
+    void (async () => {
+      let backoff = 3000;
+      while (!stopped) {
+        try {
+          const resp = await fetch(`${BASE}/v2/projects/${projectId}/events`, {
+            headers: authHeaders(), signal: ctrl.signal,
+          });
+          if (!resp.ok || !resp.body) throw new Error(`${resp.status}`);
+          backoff = 3000;
+          opts?.onUp?.();
+          const reader = resp.body.getReader();
+          const dec = new TextDecoder();
+          let buf = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            let idx: number;
+            while ((idx = buf.indexOf("\n\n")) >= 0) {
+              const chunk = buf.slice(0, idx);
+              buf = buf.slice(idx + 2);
+              let ev = "message";
+              let data = "";
+              for (const line of chunk.split("\n")) {
+                if (line.startsWith("event: ")) ev = line.slice(7).trim();
+                else if (line.startsWith("data: ")) data += line.slice(6);
+              }
+              if (data) {
+                try { onEvent(ev, JSON.parse(data)); } catch { /* 坏行忽略 */ }
+              }
+            }
+          }
+        } catch { /* 断线/旧后端 404 → 退避重连 */ }
+        opts?.onDown?.();
+        if (stopped) break;
+        await new Promise((r) => setTimeout(r, backoff));
+        backoff = Math.min(backoff * 2, 30000);
+      }
+    })();
+    return () => { stopped = true; ctrl.abort(); };
+  },
 };
