@@ -1,210 +1,102 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { check } from "@tauri-apps/plugin-updater";
+import { useEffect, useState } from "react";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { api, APP_VERSION, JobOut, ProjectDetail, ShotInfo, StageInfo } from "./api";
-import { LibClip, TimelineItem, fmtTime } from "./types";
+import { api, APP_VERSION, ShotInfo } from "./api";
+import { LibClip, fmtTime } from "./types";
 import LibraryPanel from "./components/LibraryPanel";
-import Timeline from "./components/Timeline";
 import ProjectList from "./components/ProjectList";
-import ProductionBoard from "./components/ProductionBoard";
-import CharacterTrack from "./components/CharacterTrack";
+import TimelineDock from "./components/TimelineDock";
 import ShotAdvanced from "./components/ShotAdvanced";
 import FineCut from "./components/FineCut";
 import LoginPage from "./components/LoginPage";
-import AiDrawer, { AiTab } from "./components/AiDrawer";
+import { useResizable } from "./lib/useResizable";
+import { useToast } from "./hooks/useToast";
+import { useTheme } from "./hooks/useTheme";
+import { useUpdater } from "./hooks/useUpdater";
+import { useAuth } from "./hooks/useAuth";
+import { useProject } from "./hooks/useProject";
+import { usePlayer } from "./hooks/usePlayer";
+import { useUndo } from "./hooks/useUndo";
+import { useAudioTrack } from "./hooks/useAudioTrack";
+import { useProdJobs } from "./hooks/useProdJobs";
+import { useStages } from "./hooks/useStages";
+import { useLibClips } from "./hooks/useLibClips";
+import { useCompose } from "./hooks/useCompose";
 
-let seq = 0;
-const uid = () => `t${Date.now()}_${seq++}`;
-
-type UpdateState = "idle" | "checking" | "downloading" | "ready" | "none";
-
+/** G4 状态分层重构：App 从 824 行状态中枢瘦身为组合根（composition root）。
+ *
+ * 状态按领域分层进 src/hooks/（会话/项目/任务/播放器/编辑/资产/素材/导出/UI），
+ * App 只负责：① 组装各层 hook ② 跨层协调动作（切项目清场、版本切换联动预览等）
+ * ③ 顶层布局 JSX。各层职责与清场入口（clearXxx）在各 hook 头注释里。 */
 export default function App() {
-  // ---- 主题 ----
-  const [theme, setTheme] = useState<"dark" | "light">(
-    () => (localStorage.getItem("fw_theme") as "dark" | "light") || "dark",
-  );
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("fw_theme", theme);
-  }, [theme]);
+  // ---- UI 层：toast / 主题 / 应用内更新 ----
+  const { toast, say, clearToast } = useToast();
+  const { theme, toggleTheme } = useTheme();
+  const { updateState, setUpdateState, updateProgress, updateNotes, checkUpdate } = useUpdater(say);
 
-  // ---- 更新（应用内静默下载）----
-  const [updateState, setUpdateState] = useState<UpdateState>("idle");
-  const [updateProgress, setUpdateProgress] = useState(0);
-  const [updateNotes, setUpdateNotes] = useState("");
-  const [toast, setToast] = useState("");
-  const say = (msg: string, ms = 4000) => { setToast(msg); setTimeout(() => setToast(""), ms); };
+  // ---- 会话层：后端探测 + 登录门控 ----
+  const { backendOk, loginRequired, user, doLogout, onLoggedIn } = useAuth();
 
-  const checkUpdate = async () => {
-    setUpdateState("checking");
-    try {
-      const update = await check();
-      if (!update?.available) {
-        setUpdateState("none");
-        say(`已是最新版本 v${APP_VERSION}`, 3000);
-        return;
-      }
-      setUpdateNotes(update.body ?? "");
-      setUpdateState("downloading");
-      let downloaded = 0;
-      let total = 0;
-      await update.downloadAndInstall((event) => {
-        if (event.event === "Started") total = event.data.contentLength ?? 0;
-        if (event.event === "Progress") {
-          downloaded += event.data.chunkLength;
-          setUpdateProgress(total > 0 ? Math.round((downloaded / total) * 100) : 0);
-        }
-        if (event.event === "Finished") setUpdateState("ready");
-      });
-    } catch (e) {
-      setUpdateState("idle");
-      say(`检查更新失败: ${e}`);
-    }
-  };
 
-  // ---- 后端连接 + 登录门控 ----
-  const [backendOk, setBackendOk] = useState<boolean | null>(null);
-  const [loginRequired, setLoginRequired] = useState<boolean | null>(null); // null=探测中
-  const [user, setUser] = useState<{ username: string; display_name: string | null; role: string } | null>(null);
-  useEffect(() => {
-    api.health().then(async (h) => {
-      setBackendOk(true);
-      if (!h.login) { setLoginRequired(false); return; }  // 后端未启用登录
-      // 启用登录：验证本地会话是否仍有效
-      const saved = localStorage.getItem("fw_session");
-      if (saved) {
-        try {
-          const me = await api.authMe(saved);
-          setUser(me.user);
-          setLoginRequired(false);
-          return;
-        } catch { localStorage.removeItem("fw_session"); }
-      }
-      setLoginRequired(true);
-    }).catch(() => { setBackendOk(false); setLoginRequired(false); });
-  }, []);
+  // ---- 项目层（T-R0-07 状态云端化）----
+  const { projectId, setProjectId, detail, refreshDetail, refreshSoon, clearDetail } = useProject();
 
-  const doLogout = async () => {
-    const t = localStorage.getItem("fw_session");
-    if (t) { await api.logout(t).catch(() => {}); localStorage.removeItem("fw_session"); }
-    setUser(null);
-    setLoginRequired(true);
-  };
+  // ---- 播放器层（P2-1 播放头 + 连播 + 选中镜头）----
+  const {
+    videoRef, previewUrl, previewLabel, previewShot, playhead, setPlayhead,
+    pendingSeek, autoNext, setAutoNext, selectedShot, setSelectedShot,
+    onSelectShot, seekTo, onPreviewEnded, previewMedia, previewShotVersion,
+    clearPlayer,
+  } = usePlayer();
 
-  // ---- 项目（T-R0-07：状态云端化）----
-  const [projectId, setProjectId] = useState<string | null>(
-    () => localStorage.getItem("fw_project") || null,
-  );
-  const [detail, setDetail] = useState<ProjectDetail | null>(null);
+  // ---- 编辑层（P2-2 撤销栈）----
+  const { pushUndo, clearUndo } = useUndo(say);
 
-  const refreshDetail = useCallback(async (pid?: string) => {
-    const id = pid ?? projectId;
-    if (!id) return;
-    try {
-      setDetail(await api.projectDetail(id));
-    } catch {
-      setProjectId(null);
-      localStorage.removeItem("fw_project");
-    }
-  }, [projectId]);
+  // ---- 音频层（P2-4 音频轨）----
+  const { audioClips, ttsAvailable, ttsJobId, refreshAudio, doSynthTts, clearAudio } =
+    useAudioTrack(projectId, say);
+
+  // ---- 任务层（生产 job 轮询 + P2-3 接回 + P2-5 SSE）----
+  const { jobList, generating, prodJob, trackJob, clearJobs } = useProdJobs({
+    projectId, say, refreshDetail, refreshSoon, refreshAudio,
+  });
 
   const openProject = (id: string) => {
+    resetWorkspace();          // 修复：切项目必须清空上一项目的预览/剪辑/选中态
     setProjectId(id);
     localStorage.setItem("fw_project", id);
     refreshDetail(id);
   };
   const closeProject = () => {
+    resetWorkspace();
     setProjectId(null);
-    setDetail(null);
     localStorage.removeItem("fw_project");
   };
-  useEffect(() => { if (projectId) refreshDetail(projectId); }, []); // 启动恢复现场
 
-  // ---- 生产 job 轮询（批量生成/一键成片共用；job id 落 localStorage 以便重开接回）----
-  const [prodJob, setProdJob] = useState<JobOut | null>(null);
-  const prodTimer = useRef<number | null>(null);
 
-  const watchJob = useCallback((jobId: string, kind: string) => {
-    localStorage.setItem("fw_job", JSON.stringify({ id: jobId, kind, project: projectId }));
-    if (prodTimer.current) clearInterval(prodTimer.current);
-    prodTimer.current = window.setInterval(async () => {
-      try {
-        const s = await api.jobStatus(jobId);
-        setProdJob(s);
-        refreshDetail();  // 看板状态色实时刷新
-        if (s.status === "done" || s.status === "failed") {
-          if (prodTimer.current) clearInterval(prodTimer.current);
-          localStorage.removeItem("fw_job");
-          say(s.status === "done" ? "✅ 生产完成" : `❌ 生产失败: ${(s.error || "").slice(0, 120)}`);
-          setProdJob(null);
-          refreshDetail();
-        }
-      } catch { /* 网络抖动忽略，下轮再试 */ }
-    }, 3000);
-  }, [projectId, refreshDetail]);
-
-  // 启动时接回进行中的任务（T-R0-09 进度可离开）
-  useEffect(() => {
-    const saved = localStorage.getItem("fw_job");
-    if (!saved) return;
-    const { id, project } = JSON.parse(saved);
-    if (project && project === (localStorage.getItem("fw_project") || null)) {
-      api.jobStatus(id).then((s) => {
-        if (s.status === "pending" || s.status === "running") {
-          setProdJob(s);
-          watchJob(id, "resume");
-          say("已接回进行中的生产任务");
-        } else localStorage.removeItem("fw_job");
-      }).catch(() => localStorage.removeItem("fw_job"));
-    }
-  }, []);
-
-  const generating = prodJob !== null;
-
-  // ---- 生产看板操作（T-R0-08）----
+  // ---- 生产看板操作 ----
   const doGenerate = async (shotIds: string[]) => {
     if (!projectId || !shotIds.length) return;
     try {
       const job = await api.submitShotsByIds(projectId, shotIds);
-      setProdJob(job);
-      watchJob(job.id, "shot_videos");
-      say(`已提交 ${shotIds.length} 个镜头生产`);
+      trackJob(job, "shot_videos");
+      say(`已提交 ${shotIds.length} 个镜头生产（可继续提交其他镜头）`);
     } catch (e) { say(String(e)); }
   };
-  const doAdopt = async (shot: ShotInfo) => {
+  // 版本切换 = 采用该版本并同步预览/时间轴（「采用」按钮已删：生成即默认采用）
+  const doSwitchVersion = async (shot: ShotInfo, verNo: number) => {
     try {
-      await api.adoptShot(shot.id, shot.adopted_version ?? 1);
+      const r = await api.adoptShot(shot.id, verNo);
       refreshDetail();
+      if (r.video_url) previewShotVersion(shot, verNo, r.video_url);
+      say(`已切换到 V${verNo}`);
     } catch (e) { say(String(e)); }
-  };
-  const [selectedShot, setSelectedShot] = useState<ShotInfo | null>(null);
-  const onSelectShot = (s: ShotInfo) => {
-    setSelectedShot(s);
-    if (s.video_url) { setPreviewUrl(api.mediaUrl(s.video_url)); setPreviewLabel(`镜头 #${s.order}`); }
   };
 
-  // ---- R1: 人物资产时间轴 + 镜头高级面板 ----
-  const [stages, setStages] = useState<StageInfo[]>([]);
-  const [drafting, setDrafting] = useState(false);
+  // ---- 资产层（R1 人物阶段 + P1-3 场景）+ 弹窗 ----
+  const { stages, locations, drafting, refreshStages, doStagesDraft, clearStages } =
+    useStages(projectId, say);
   const [advancedShot, setAdvancedShot] = useState<ShotInfo | null>(null);
   const [fineCutOpen, setFineCutOpen] = useState(false);
-  const refreshStages = useCallback(async (pid?: string) => {
-    const id = pid ?? projectId;
-    if (!id) return;
-    try { setStages((await api.listStages(id)).stages); } catch { /* 后端旧版无此接口时静默 */ }
-  }, [projectId]);
-  useEffect(() => { if (projectId) refreshStages(projectId); }, [projectId]);
-  const doStagesDraft = async () => {
-    if (!projectId) return;
-    setDrafting(true);
-    try {
-      const r = await api.stagesDraft(projectId);
-      await refreshStages();
-      say(`✨ 识别完成：新增 ${r.created} 个阶段草稿${r.skipped_confirmed.length ? `（已确认角色保留：${r.skipped_confirmed.join("、")}）` : ""}`);
-    } catch (e) { say(String(e)); }
-    finally { setDrafting(false); }
-  };
-  const maxEp = detail?.episodes.length || 1;
 
   // ---- 一键成片 + 生产检查（T-R0-09）----
   const [preflight, setPreflight] = useState(false);
@@ -219,102 +111,127 @@ export default function App() {
     setPreflight(false);
     try {
       const job = await api.submitOneClickFilm(projectId);
-      setProdJob(job);
-      watchJob(job.id, "one_click_film");
+      trackJob(job, "one_click_film");
       say("▷ 一键成片已启动");
     } catch (e) { say(String(e)); }
   };
   const oneClickStage = !prodJob ? "" :
     prodJob.progress < 10 ? "拆解中" : prodJob.progress < 80 ? "逐镜生成" : "拼接成片";
 
-  // ---- 素材库 ----
-  const [libClips, setLibClips] = useState<LibClip[]>([]);
+  // ---- 素材层（P1-3 素材池落库）----
+  const { libClips, deleteClip, addClips, clearClips } = useLibClips(projectId, say);
 
-  // ---- AI 抽屉 ----
-  const [aiOpen, setAiOpen] = useState(false);
-  const [aiTab, setAiTab] = useState<AiTab>("script");
-  const openAi = (t: AiTab) => { setAiTab(t); setAiOpen(true); };
+  // ---- 面板尺寸拖拽（CSS 变量 + localStorage 记忆）----
+  // 上限动态取窗口尺寸：可拖至接近全屏（留出顶栏/最小预览空间）；双击分隔条恢复默认
+  const libResize = useResizable("lib-w", 360, 260, () => window.innerWidth - 320);
+  const dockResize = useResizable("dock-h", 260, 120, () => window.innerHeight - 160, false);
 
-  // ---- 剪辑时间轴（保留精编雏形）----
-  const [items, setItems] = useState<TimelineItem[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const addToTimeline = (clip: LibClip) => {
-    const item = { id: uid(), clip };
-    setItems((prev) => [...prev, item]);
-    setSelectedId(item.id);
-    setPreviewUrl(api.mediaUrl(clip.url));
-  };
-  const reorder = (from: number, to: number) =>
-    setItems((prev) => {
-      const next = [...prev];
-      const [m] = next.splice(from, 1);
-      next.splice(to, 0, m);
-      return next;
-    });
-  const removeItem = (id: string) => {
-    setItems((prev) => prev.filter((t) => t.id !== id));
-    if (selectedId === id) setSelectedId(null);
-  };
+  // ---- 版块最大化（⛶ / Esc 还原）----
+  const [maxPanel, setMaxPanel] = useState<null | "dock">(null);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "TEXTAREA" || tag === "INPUT") return;
-        removeItem(selectedId);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId]);
+    if (!maxPanel) return;
+    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") setMaxPanel(null); };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [maxPanel]);
 
-  // ---- 预览器 ----
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewLabel, setPreviewLabel] = useState("");
-  const selectItem = (id: string) => {
-    setSelectedId(id);
-    const it = items.find((t) => t.id === id);
-    if (it) { setPreviewUrl(api.mediaUrl(it.clip.url)); setPreviewLabel(it.clip.name); }
-  };
-  const previewClip = (c: LibClip) => { setPreviewUrl(api.mediaUrl(c.url)); setPreviewLabel(c.name); };
+  // ---- 导出层（快速导出 compose + 拆解 job；成片就绪即入预览器）----
+  const {
+    composeJob, composing, filmUrl, exportClips, totalSec, doExport,
+    bdProgress, doBreakdown: doBreakdownRaw, clearCompose,
+  } = useCompose({
+    detail, say, refreshDetail,
+    onFilmReady: (url) => previewMedia(url, "🎬 成片预览"),
+  });
+  const doBreakdown = (episodes?: number[]) => doBreakdownRaw(projectId, episodes);
 
-  // ---- 导出（画幅继承项目基准，T-R0-06 决策）----
-  const [composeJob, setComposeJob] = useState<JobOut | null>(null);
-  const [composing, setComposing] = useState(false);
-  const composeTimer = useRef<number | null>(null);
-  const [filmUrl, setFilmUrl] = useState<string | null>(null);
-  const doExport = async () => {
-    const videos = items.filter((t) => t.clip.kind === "video");
-    if (!videos.length) { say("剪辑时间轴上没有视频"); return; }
-    setComposing(true); setFilmUrl(null); setComposeJob(null);
+
+  // ---- 素材入轨（P0-3 归一）：素材库「＋」不再进第二条剪辑轨，
+  //      而是作为 is_special 镜头插入镜头轨末尾，与 AI 镜头同轨同导出 ----
+  const [insertingClip, setInsertingClip] = useState(false);
+  const addToTimeline = async (clip: LibClip) => {
+    if (!projectId) return;
+    if (clip.kind !== "video") { say("只有视频素材可以插入镜头轨"); return; }
+    setInsertingClip(true);
     try {
-      const aspect = detail?.base_aspect ?? "9:16";
-      const [w, h] = aspect === "16:9" ? [1920, 1080] : aspect === "1:1" ? [1080, 1080] : [1080, 1920];
-      const job = await api.submitCompose(videos.map((t) => t.clip.url), { width: w, height: h });
-      setComposeJob(job);
-      composeTimer.current = window.setInterval(async () => {
-        const s = await api.jobStatus(job.id);
-        setComposeJob(s);
-        if (s.status === "done" || s.status === "failed") {
-          if (composeTimer.current) clearInterval(composeTimer.current);
-          setComposing(false);
-          if (s.status === "done" && s.result) {
-            const url = api.mediaUrl(JSON.parse(s.result).url);
-            setFilmUrl(url); setPreviewUrl(url); setPreviewLabel("🎬 成片预览");
-            say("拼接完成！");
-          } else say(`拼接失败: ${s.error}`);
-        }
-      }, 3000);
-    } catch (e) { say(String(e)); setComposing(false); }
+      const r = await api.addSpecialShot(
+        projectId, clip.name, clip.url, undefined,
+        clip.duration > 0 ? clip.duration : undefined);
+      await refreshDetail();
+      previewMedia(clip.url, clip.name);
+      say(`已插入镜头轨 #${r.order}（外部素材），可拖动调整位置`);
+    } catch (e) { say(String(e)); }
+    finally { setInsertingClip(false); }
   };
 
-  const totalSec = items.filter((t) => t.clip.kind === "video").reduce((s, t) => s + (t.clip.duration || 5), 0);
+  // ---- 镜头轨轻剪辑（唯一真源）：改时长 / 改顺序 / 停用 / 删除外部素材 ----
+  const patchTimeline = async (
+    shotId: string, patch: { durationSec?: number; toOrder?: number; disabled?: boolean },
+  ) => {
+    try {
+      // P2-2：提交前记旧值 → 撤销 = 回写旧值（时长/顺序/停用三类各自独立入栈）
+      const old = detail?.shots.find((s) => s.id === shotId);
+      await api.patchShotTimeline(shotId, patch);
+      if (old) {
+        if (patch.durationSec !== undefined && old.duration_sec != null) {
+          const prev = old.duration_sec;
+          pushUndo(`镜头 #${old.order} 时长 → ${patch.durationSec}s`, async () => {
+            await api.patchShotTimeline(shotId, { durationSec: prev });
+            await refreshDetail();
+          });
+        }
+        if (patch.toOrder !== undefined) {
+          const prev = old.order;
+          pushUndo(`镜头 #${prev} 移到 #${patch.toOrder}`, async () => {
+            await api.patchShotTimeline(shotId, { toOrder: prev });
+            await refreshDetail();
+          });
+        }
+        if (patch.disabled !== undefined) {
+          const prev = old.disabled;
+          pushUndo(`镜头 #${old.order} ${patch.disabled ? "停用" : "恢复启用"}`, async () => {
+            await api.patchShotTimeline(shotId, { disabled: prev });
+            await refreshDetail();
+          });
+        }
+      }
+      await refreshDetail();
+    } catch (e) { say(String(e)); }
+  };
+  const deleteSpecialShot = async (shotId: string) => {
+    try {
+      await api.deleteShot(shotId);
+      if (selectedShot?.id === shotId) setSelectedShot(null);
+      await refreshDetail();
+      say("已从镜头轨移除");
+    } catch (e) { say(String(e)); }
+  };
+
+  // ---- 预览器动作（播放器层的便捷封装）----
+  const previewClip = (c: LibClip) => previewMedia(c.url, c.name);       // 素材预览
+  const previewAudio = (url: string, label: string) => previewMedia(url, label);  // 旁白/配乐试听
+
+  // ---- 跨层协调：切/关项目清场（各层 clearXxx 统一从这里调度）----
+  // 修复：切换/关闭项目时清空工作区状态，防止上一项目的预览/剪辑/选中态串到新项目
+  function resetWorkspace() {
+    clearPlayer();          // 预览/播放头/选中镜头
+    setAdvancedShot(null);
+    setFineCutOpen(false);
+    clearClips();           // 素材池内存态
+    clearStages();          // 人物/场景轨
+    clearCompose();         // 成片地址
+    clearUndo();            // P2-2：撤销栈按项目隔离，切项目即清空
+    clearAudio();           // P2-4：音频轨状态与合成轮询一并清
+    clearJobs();            // P2-3：停掉上一项目的 job 轮询（新项目从服务端重新接回）
+    clearDetail();          // P2-5：合并刷新定时器一并清 + 旧 detail 立即失效
+  }
 
   // ---- 登录门控（放在项目列表之前；探测中显示空态防闪烁）----
   if (loginRequired === null) {
     return <div className="login-page"><div className="muted">连接后端…</div></div>;
   }
   if (loginRequired) {
-    return <LoginPage onLoggedIn={(u) => { setUser(u); setLoginRequired(false); }} />;
+    return <LoginPage onLoggedIn={onLoggedIn} />;
   }
 
   // ---- 无项目：项目列表首屏（T-R0-06）----
@@ -323,7 +240,7 @@ export default function App() {
   }
 
   return (
-    <div className="studio">
+    <div className={`studio ${maxPanel === "dock" ? "max-dock" : ""}`}>
       <header className="topbar">
         <button className="btn ghost" title="返回项目列表" onClick={closeProject}>←</button>
         <div className="brand">
@@ -334,9 +251,6 @@ export default function App() {
           <button className="btn primary" disabled={generating} onClick={() => setPreflight(true)}>
             {generating ? `${oneClickStage || "生产中"} ${prodJob?.progress ?? 0}%` : "▷ 一键成片"}
           </button>
-          <button className="btn" onClick={() => openAi("script")}>📝 剧本</button>
-          <button className="btn" onClick={() => openAi("breakdown")}>🎬 拆解</button>
-          <button className="btn" onClick={() => openAi("assets")}>🖼 资产</button>
         </div>
         <div className="topbar-right">
           <span className={`dot ${backendOk === null ? "" : backendOk ? "ok" : "bad"}`} />
@@ -348,7 +262,7 @@ export default function App() {
             {composing ? `导出中 ${composeJob?.progress ?? 0}%` : "🚀 快速导出"}
           </button>
           {filmUrl && <a className="btn ok-btn" href={filmUrl} download>⬇ 下载</a>}
-          <button className="btn ghost" title="切换主题" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+          <button className="btn ghost" title="切换主题" onClick={toggleTheme}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
           {user && (
@@ -407,9 +321,11 @@ export default function App() {
           </span>
         </div>
       )}
-      {toast && <div className="banner" onClick={() => setToast("")}>{toast}</div>}
+      {toast && <div className="banner" onClick={clearToast}>{toast}</div>}
       {generating && prodJob && (
-        <div className="export-bar"><div style={{ width: `${prodJob.progress}%` }} /></div>
+        <div className="export-bar" title={jobList.length > 1 ? `${jobList.length} 个任务并行` : ""}>
+          <div style={{ width: `${Math.round(jobList.reduce((s, j) => s + j.progress, 0) / jobList.length)}%` }} />
+        </div>
       )}
       {composing && composeJob && (
         <div className="export-bar"><div style={{ width: `${composeJob.progress}%` }} /></div>
@@ -417,51 +333,92 @@ export default function App() {
 
       <div className="mid">
         <LibraryPanel
+          projectId={projectId}
           clips={libClips}
-          onAddClips={(cs) => setLibClips((prev) => [...prev, ...cs])}
+          onAddClips={addClips}
           onAddToTimeline={addToTimeline}
+          inserting={insertingClip}
           onPreview={previewClip}
-          assets={(detail?.assets ?? []).filter((a) => a.image_url).map((a) => ({ name: a.name, url: a.image_url! }))}
-          script={{ raw: detail?.raw_script ?? "", optimized: detail?.optimized_script ?? "" }}
-          onOpenAi={openAi}
+          onDeleteClip={deleteClip}
+          assetsMeta={detail?.assets ?? []}
+          stages={stages}
+          onRefreshStages={() => refreshStages()}
+          onRefresh={() => refreshDetail()}
+          onToast={say}
+          shots={detail?.shots ?? []}
+          episodes={detail?.episodes ?? []}
+          selectedShotId={selectedShot?.id ?? null}
+          onSelectShot={onSelectShot}
+          onGenerate={doGenerate}
+          onSwitchVersion={doSwitchVersion}
+          onAdvanced={(s) => setAdvancedShot(s)}
+          generating={generating}
+          onBreakdown={doBreakdown}
+          breakdownProgress={bdProgress}
         />
+        {/* 拖拽条：调整左栏宽度（双击恢复默认） */}
+        <div className="rz rz-v" title="拖动调整宽度 · 双击恢复默认"
+          onMouseDown={(e) => libResize.onMouseDown(e, 1)}
+          onDoubleClick={libResize.reset} />
         <main className="player">
           {previewUrl ? (
-            <>
-              <video key={previewUrl} src={previewUrl} controls autoPlay className="player-video" />
-              <div className="player-label">{previewLabel}</div>
-            </>
+            <div className="player-box">
+              <video key={previewUrl} src={previewUrl} controls autoPlay className="player-video"
+                ref={videoRef}
+                onLoadedMetadata={(e) => {
+                  // 跨镜 seek：新镜头元数据就绪后跳到目标秒
+                  if (pendingSeek.current != null) {
+                    e.currentTarget.currentTime = pendingSeek.current;
+                    pendingSeek.current = null;
+                  }
+                }}
+                onTimeUpdate={(e) => {
+                  if (previewShot)
+                    setPlayhead({ order: previewShot.order, offsetSec: e.currentTarget.currentTime });
+                }}
+                onEnded={() => onPreviewEnded(detail?.shots ?? [])} />
+              <div className="player-label">
+                {previewLabel}
+                {previewShot && (
+                  <label className="player-autonext" title="本镜播完自动切到下一个已生成镜头">
+                    <input type="checkbox" checked={autoNext}
+                      onChange={(e) => setAutoNext(e.target.checked)} /> 连播
+                  </label>
+                )}
+              </div>
+            </div>
           ) : (
             <div className="player-empty">
               <div className="player-empty-icon">🎬</div>
-              <div>导入剧本 → 拆解 → 生产看板生成，点击镜头即可预览</div>
-              <div className="muted">剪辑轨 {items.length} 段 · {fmtTime(totalSec)}</div>
+              <div>导入剧本 → 拆解 → 「🎬 镜头」页生成，点击镜头即可预览</div>
+              <div className="muted">镜头轨 {exportClips.length} 段可导出 · {fmtTime(totalSec)}</div>
             </div>
           )}
         </main>
       </div>
 
-      {/* R1: 人物资产时间轴（有镜头后显示） */}
-      {(detail?.shots.length ?? 0) > 0 && (
-        <CharacterTrack stages={stages} maxEp={maxEp}
-          onRefresh={() => refreshStages()} onToast={say}
-          onDraft={doStagesDraft} drafting={drafting} />
-      )}
-
-      {/* T-R0-08: 生产看板（常驻）；剪辑时间轴仅在有剪辑素材时显示 */}
-      <ProductionBoard
-        shots={detail?.shots ?? []}
-        episodes={detail?.episodes ?? []}
-        selectedShotId={selectedShot?.id ?? null}
-        onSelect={onSelectShot}
-        onGenerate={doGenerate}
-        onAdopt={doAdopt}
-        onAdvanced={(s) => setAdvancedShot(s)}
-        generating={generating}
-      />
-      {items.length > 0 && (
-        <Timeline items={items} selectedId={selectedId} onSelect={selectItem} onReorder={reorder} onRemove={removeItem} />
-      )}
+      {/* 统一时间轴版块：人物资产轨 + 镜头轨（单行横向滚动）+ 音频轨（预留）；
+          空轨默认折叠、可点头部展开，有内容自动展开；上缘可拖拽调高（可至近全屏，双击恢复）；
+          ⛶ 一键最大化，Esc 还原 */}
+      <div className="rz rz-h" title="拖动调整高度 · 双击恢复默认"
+        onMouseDown={(e) => dockResize.onMouseDown(e, -1)}
+        onDoubleClick={dockResize.reset} />
+      <TimelineDock
+        shots={detail?.shots ?? []} episodes={detail?.episodes ?? []}
+        selectedShotId={selectedShot?.id ?? null} onSelectShot={onSelectShot}
+        stages={stages} locations={locations} onRefreshStages={() => refreshStages()}
+        onToast={say} onDraft={doStagesDraft} drafting={drafting}
+        maximized={maxPanel === "dock"}
+        onToggleMax={() => setMaxPanel((m) => (m === "dock" ? null : "dock"))}
+        onPatchTimeline={patchTimeline} onDeleteShot={deleteSpecialShot}
+        totalSec={totalSec} exportCount={exportClips.length}
+        projectId={projectId ?? ""}
+        onOverridesChanged={() => { refreshStages(); refreshDetail(); }}
+        playhead={playhead} onSeek={seekTo} onPushUndo={pushUndo}
+        audioClips={audioClips} ttsAvailable={ttsAvailable}
+        onAudioChanged={() => refreshAudio()} onSynthTts={doSynthTts}
+        synthBusy={ttsJobId !== null} libClips={libClips}
+        onPreviewAudio={previewAudio} />
 
       {/* R1: 镜头高级面板（三层覆盖 + 五模式选择器） */}
       {advancedShot && (
@@ -477,12 +434,6 @@ export default function App() {
           onClose={() => setFineCutOpen(false)}
           onRegenerate={doGenerate} onToast={say} />
       )}
-
-      <AiDrawer
-        open={aiOpen} tab={aiTab} onClose={() => setAiOpen(false)} onTab={setAiTab}
-        projectId={projectId} detail={detail} onRefresh={() => refreshDetail()}
-        onToast={say}
-      />
     </div>
   );
 }
