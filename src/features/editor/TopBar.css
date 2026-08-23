@@ -1,0 +1,192 @@
+/* TopBar.css — 顶栏样式 */
+
+/* 顶栏内部用 flex 布局，组件直接把各个块扔进去 */
+/* fw-topbar 容器本身在 EditorLayout.css 里定义 */
+
+/* ---- 左段元素 ---- */
+.fw-tb-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-fast), color var(--t-fast);
+  padding: 0;
+}
+.fw-tb-icon:hover { background: var(--c-raised); color: var(--c-text); }
+.fw-tb-icon:disabled { opacity: 0.3; cursor: default; }
+
+.fw-tb-brand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  min-width: 0;
+  overflow: hidden;
+}
+.fw-tb-title {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--c-text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+.fw-tb-ver {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+
+.fw-tb-saved {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+  color: var(--c-success);
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.fw-tb-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--c-border);
+  flex-shrink: 0;
+  margin: 0 var(--sp-1);
+}
+
+/* ---- 中段（flex grow 占满）---- */
+.fw-tb-mid {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.fw-tb-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 var(--sp-3);
+  height: 30px;
+  border: none;
+  border-radius: var(--r-md);
+  background: var(--c-accent);
+  color: oklch(98% 0.005 250);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-fast);
+  white-space: nowrap;
+}
+.fw-tb-primary:hover { background: var(--c-accent-hi); }
+.fw-tb-primary:disabled { background: var(--c-border); color: var(--c-muted); cursor: default; }
+.fw-tb-primary.sm { padding: 0 var(--sp-2); height: 26px; font-size: var(--fs-xs); }
+
+.fw-tb-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  height: 22px;
+  border: 1px solid var(--c-warning);
+  border-radius: 11px;
+  background: color-mix(in oklch, var(--c-warning) 15%, transparent);
+  color: var(--c-warning);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast);
+}
+.fw-tb-badge:hover { background: color-mix(in oklch, var(--c-warning) 25%, transparent); }
+
+/* ---- 右段 ---- */
+.fw-tb-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.fw-tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 var(--sp-2);
+  height: 26px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+  white-space: nowrap;
+  text-decoration: none;
+}
+.fw-tb-btn:hover { background: var(--c-raised); border-color: var(--c-accent-dim); }
+.fw-tb-btn:disabled { opacity: 0.4; cursor: default; }
+.fw-tb-btn.ok { border-color: var(--c-success); color: var(--c-success); }
+
+.fw-tb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--c-muted);
+}
+.fw-tb-dot.ok { background: var(--c-success); }
+.fw-tb-dot.bad { background: var(--c-danger); }
+
+.fw-tb-meta {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  white-space: nowrap;
+}
+
+/* 重构进度胶囊（顶栏右侧）*/
+.fw-tb-roadmap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 var(--sp-2);
+  height: 22px;
+  border: 1px solid var(--c-accent-dim);
+  border-radius: 11px;
+  background: color-mix(in oklch, var(--c-accent) 12%, transparent);
+  color: var(--c-accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--t-fast);
+  white-space: nowrap;
+}
+.fw-tb-roadmap:hover { background: color-mix(in oklch, var(--c-accent) 22%, transparent); }
+
+.fw-tb-rm-bar {
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in oklch, var(--c-accent) 30%, transparent);
+  overflow: hidden;
+  display: inline-block;
+}
+.fw-tb-rm-fill {
+  display: block;
+  height: 100%;
+  background: var(--c-accent);
+  transition: width var(--t-std);
+}
+
+@keyframes fw-spin { to { transform: rotate(360deg); } }
+.fw-spin { animation: fw-spin 0.8s linear infinite; }
