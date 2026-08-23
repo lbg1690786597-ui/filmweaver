@@ -1,0 +1,254 @@
+/* TasksDrawer.css */
+
+.fw-tasks {
+  width: 320px;
+  background: var(--c-surface);
+  border-left: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.fw-tasks-head {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-3) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--c-text-hi);
+  flex-shrink: 0;
+  gap: var(--sp-2);
+}
+.fw-tasks-head > span { flex: 1; }
+
+.fw-tasks-head-acts { display: flex; gap: 2px; }
+
+.fw-tasks-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.fw-tasks-ico:hover { background: var(--c-raised); color: var(--c-text); }
+
+.fw-tasks-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  font-size: var(--fs-sm);
+  color: var(--c-muted);
+}
+
+.fw-tasks-body {
+  flex: 1 1 0;
+  overflow-y: auto;
+  min-height: 0;
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.fw-tasks-empty {
+  padding: var(--sp-6) var(--sp-3);
+  text-align: center;
+  font-size: var(--fs-sm);
+  color: var(--c-muted);
+}
+
+.fw-tasks-group { display: flex; flex-direction: column; gap: 2px; }
+
+.fw-tasks-group-title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--c-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: var(--sp-1) var(--sp-1);
+}
+.fw-tasks-group.accent .fw-tasks-group-title { color: var(--c-accent); }
+.fw-tasks-group.danger .fw-tasks-group-title { color: var(--c-danger); }
+
+/* 任务行 */
+.fw-tasks-row {
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-raised);
+  overflow: hidden;
+}
+.fw-tasks-row.running { border-color: color-mix(in oklch, var(--c-accent) 40%, transparent); }
+.fw-tasks-row.failed { border-color: color-mix(in oklch, var(--c-danger) 40%, transparent); }
+.fw-tasks-row.done { border-color: color-mix(in oklch, var(--c-success) 25%, transparent); }
+
+.fw-tasks-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fw-tasks-row-ico { display: flex; align-items: center; flex-shrink: 0; }
+.fw-tasks-row-ico .muted { color: var(--c-muted); }
+.fw-tasks-row-ico .accent { color: var(--c-accent); }
+.fw-tasks-row-ico .ok { color: var(--c-success); }
+.fw-tasks-row-ico .bad { color: var(--c-danger); }
+
+.fw-tasks-row-label {
+  flex: 1;
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.fw-tasks-row-phase {
+  font-size: var(--fs-xs);
+  color: var(--c-accent);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.fw-tasks-row-pct {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tasks-row-caret { display: flex; align-items: center; color: var(--c-muted); }
+
+.fw-tasks-bar {
+  height: 3px;
+  background: var(--c-border);
+  overflow: hidden;
+}
+.fw-tasks-bar > div {
+  height: 100%;
+  background: var(--c-accent);
+  transition: width var(--t-std);
+}
+
+.fw-tasks-detail {
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  border-top: 1px solid var(--c-border);
+}
+
+.fw-tasks-err {
+  font-size: var(--fs-xs);
+  color: var(--c-danger);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.fw-tasks-done-note {
+  font-size: var(--fs-xs);
+  color: var(--c-success);
+}
+
+.fw-tasks-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--sp-2);
+  border: 1px solid var(--c-danger);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-danger);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-fast);
+}
+.fw-tasks-retry:hover { background: color-mix(in oklch, var(--c-danger) 15%, transparent); }
+
+.fw-tasks-more {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  padding: var(--sp-1) var(--sp-1);
+  opacity: 0.7;
+}
+
+@keyframes fw-spin { to { transform: rotate(360deg); } }
+.fw-spin { animation: fw-spin 0.8s linear infinite; }
+
+/* 抽屉遮罩：点击空白关闭，内容贴右边缘 */
+.fw-drawer-mask {
+  position: fixed;
+  inset: 0;
+  background: oklch(0% 0 0 / 0.5);
+  z-index: 350;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* 相对时间 / 取消 / 镜头定位 */
+.fw-tasks-row-time {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  opacity: 0.7;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.fw-tasks-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in oklch, var(--c-danger) 35%, transparent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-danger);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fw-tasks-cancel:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+}
+.fw-tasks-cancel:disabled { opacity: 0.5; cursor: default; }
+
+.fw-tasks-shots {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: 4px;
+}
+
+.fw-tasks-shots-lab { font-size: var(--fs-xs); color: var(--c-muted); }
+
+.fw-tasks-locate {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.fw-tasks-locate:hover { color: var(--c-accent); border-color: var(--c-accent-dim); }
+
+.fw-tasks-row.cancelled { opacity: 0.7; }
