@@ -23,7 +23,10 @@ export default function ShotAdvanced(p: Props) {
   const [prompt, setPrompt] = useState<string>(ov.prompt ?? "");
   const [firstFrame, setFirstFrame] = useState<string>(ov.first_frame_url ?? "");
   const [lastFrame, setLastFrame] = useState<string>(ov.last_frame_url ?? "");
-  const [special, setSpecial] = useState<boolean>(p.shot.is_special);
+  // 「标记为特殊镜头」勾选框已删除（用户反馈"意义不明"：它只在导出时把该镜排除出
+  // 自动审片，UI 上没有任何配套流程，勾了看不出区别）。这里仍读取镜头原值原样回传，
+  // 避免保存覆盖时把历史数据上的 is_special 悄悄清掉。
+  const special = p.shot.is_special;
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -84,7 +87,13 @@ export default function ShotAdvanced(p: Props) {
             {Object.entries(activeProvider?.modes ?? {}).map(([m, s]) => (
               <button key={m} className={`mode-card ${genMode === m ? "on" : ""}`}
                 disabled={!s.available}
-                title={s.available ? (modeNames[m] ?? m) : (s.reason ?? "不可用")}
+                title={s.available
+                  ? [modeNames[m] ?? m,
+                     s.requires_first_frame && s.requires_last_frame ? "必须同时提供首帧图与尾帧图"
+                       : s.max_reference_images != null ? `参考图上限 ${s.max_reference_images} 张` : "",
+                     s.reference_audio === false ? "该模式不支持参考音频" : ""]
+                      .filter(Boolean).join(" · ")
+                  : (s.reason ?? "不可用")}
                 onClick={() => setGenMode(m)}>
                 {m}{!s.available && " 🔒"}
               </button>
@@ -137,11 +146,6 @@ export default function ShotAdvanced(p: Props) {
         <label>提示词覆盖（留空=用镜头剧本片段）
           <AutoTextarea className="drawer-ta" minHeight={60}
             value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-        </label>
-
-        <label className="row" style={{ alignItems: "center", gap: 6 }}>
-          <input type="checkbox" checked={special} onChange={(e) => setSpecial(e.target.checked)} />
-          标记为特殊镜头（婚礼/打斗/身份揭露等，单独审核）
         </label>
 
         <div className="row" style={{ justifyContent: "flex-end" }}>
