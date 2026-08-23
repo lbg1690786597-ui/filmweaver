@@ -1,29 +1,27 @@
-/* FilmWeaver 剪映式工作台 · 双主题 */
+/* FilmWeaver 剪映式工作台 · 双主题
+ *
+ * Phase 1 重构说明：新的全局 token 定义在 styles/tokens.css（OKLCH，更精确的感知色彩）。
+ * 本文件保留旧 --bg / --bg-panel / --primary 等变量并桥接到新 token，
+ * 使 LibraryPanel / ShotsPanel / TimelineDock 等尚未迁移的旧组件继续工作。
+ * 旧组件迁移完成后（Phase 2-4 各阶段），对应桥接行随之删除。
+ */
 :root, :root[data-theme="dark"] {
-  --bg: #101114;
-  --bg-panel: #17181d;
-  --bg-elev: #202128;
-  --border: #2b2d36;
-  --text: #e9ebf1;
-  --muted: #8a8f9f;
-  --primary: #6366f1;
-  --primary-hover: #818cf8;
-  --danger: #ef4444;
-  --ok: #22c55e;
-  --clip-bg: #2b2f4a;
+  /* ---- 旧变量桥接（不要直接用于新组件）---- */
+  --bg: var(--c-bg);
+  --bg-panel: var(--c-surface);
+  --bg-elev: var(--c-raised);
+  --border: var(--c-border);
+  --text: var(--c-text);
+  --muted: var(--c-muted);
+  --accent: var(--c-accent);
+  --primary: var(--c-accent);
+  --primary-hover: var(--c-accent-hi);
+  --danger: var(--c-danger);
+  --ok: var(--c-success);
+  --clip-bg: oklch(22% 0.04 250);
 }
 :root[data-theme="light"] {
-  --bg: #eef0f4;
-  --bg-panel: #ffffff;
-  --bg-elev: #e3e6ee;
-  --border: #d3d7e2;
-  --text: #1b2233;
-  --muted: #697082;
-  --primary: #4f46e5;
-  --primary-hover: #6366f1;
-  --danger: #dc2626;
-  --ok: #16a34a;
-  --clip-bg: #dfe3f5;
+  --clip-bg: oklch(88% 0.02 250);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -33,30 +31,6 @@ body {
   background: var(--bg); color: var(--text); font-size: 13px;
 }
 
-/* ===== 整体：顶栏 / 中区 / 时间轴 ===== */
-.studio { display: flex; flex-direction: column; height: 100vh; }
-.mid { display: flex; flex: 1; min-height: 0; }
-
-/* ===== 顶栏 ===== */
-.topbar {
-  display: flex; align-items: center; gap: 16px; height: 46px;
-  padding: 0 14px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.brand { font-size: 14px; font-weight: 700; white-space: nowrap; }
-.ver { font-size: 11px; color: var(--muted); font-weight: 400; }
-.topbar-mid { display: flex; gap: 8px; flex: 1; justify-content: center; }
-.topbar-right { display: flex; align-items: center; gap: 8px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
-.dot.ok { background: var(--ok); }
-.dot.bad { background: var(--danger); }
-.banner {
-  padding: 6px 14px; background: var(--bg-elev); border-bottom: 1px solid var(--border);
-  color: var(--primary); font-size: 12px; cursor: pointer; flex-shrink: 0;
-}
-.export-bar { height: 3px; background: var(--bg-elev); flex-shrink: 0; }
-.export-bar > div { height: 100%; background: var(--primary); transition: width 0.4s; }
-
 /* ===== 按钮 / 表单 ===== */
 .btn {
   padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
@@ -65,10 +39,10 @@ body {
 }
 .btn:hover { border-color: var(--primary); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--c-text-hi); }
 .btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn.ghost { background: transparent; border-color: transparent; }
-.btn.ok-btn { background: var(--ok); border-color: var(--ok); color: #fff; }
+.btn.ok-btn { background: var(--ok); border-color: var(--ok); color: var(--c-text-hi); }
 .btn.wide { width: 100%; }
 select {
   padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
@@ -76,13 +50,17 @@ select {
 }
 .muted { color: var(--muted); font-size: 12px; }
 .err { color: var(--danger); font-size: 12px; margin-top: 6px; white-space: pre-wrap; }
+/* 生产检查弹窗的"已就绪"绿字（与 .err 红字成对，一眼分辨阻断项/通过项） */
+.ok-text { color: var(--ok); font-size: 12px; }
 .pad { padding: 16px 8px; text-align: center; }
 .row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 
 /* ===== 左：素材库 ===== */
+/* Phase 1：.lib 已被 .fw-panel（EditorLayout）接管宽度与边框，
+ * 这里退化为纯 flex 容器占满父级；其余 .lib-* 子规则继续生效。 */
 .lib {
-  width: var(--lib-w, 360px); flex-shrink: 0; background: var(--bg-panel);
-  border-right: 1px solid var(--border); display: flex; flex-direction: column;
+  width: 100%; height: 100%; flex-shrink: 0; background: transparent;
+  border-right: none; display: flex; flex-direction: column; min-height: 0;
 }
 .lib-tabs { display: flex; border-bottom: 1px solid var(--border); }
 .lib-tabs button {
@@ -97,28 +75,28 @@ select {
   border-radius: 8px; overflow: hidden; cursor: pointer;
 }
 .lib-card:hover { border-color: var(--primary); }
-.lib-card video, .lib-card img { width: 100%; height: 74px; object-fit: cover; display: block; background: #000; }
+.lib-card video, .lib-card img { width: 100%; height: 74px; object-fit: cover; display: block; background: var(--c-bg); }
 .lib-audio { height: 74px; display: flex; align-items: center; justify-content: center; font-size: 26px; }
 .lib-dur {
-  position: absolute; top: 4px; left: 4px; font-size: 10px; padding: 1px 5px;
-  background: rgba(0,0,0,0.65); color: #fff; border-radius: 4px;
+  position: absolute; top: 4px; left: 4px; font-size: var(--fs-xs); padding: 1px 5px;
+  background: rgba(0,0,0,0.65); color: var(--c-text-hi); border-radius: 4px;
 }
 .lib-add {
   position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
-  border-radius: 50%; border: none; background: var(--primary); color: #fff;
+  border-radius: 50%; border: none; background: var(--primary); color: var(--c-text-hi);
   cursor: pointer; font-size: 14px; line-height: 1; display: none;
 }
 .lib-card:hover .lib-add { display: block; }
 /* P1-3 素材池删除按钮（与 lib-add 同风格，左上角） */
 .lib-del {
   position: absolute; top: 4px; left: 4px; width: 22px; height: 22px;
-  border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: #fff;
-  cursor: pointer; font-size: 11px; line-height: 1; display: none;
+  border-radius: 50%; border: none; background: rgba(0,0,0,.55); color: var(--c-text-hi);
+  cursor: pointer; font-size: var(--fs-sm); line-height: 1; display: none;
 }
-.lib-del:hover { background: #e05252; }
+.lib-del:hover { background: var(--c-danger); }
 .lib-card:hover .lib-del { display: block; }
 /* P1-3 资产页三分组小节标题 */
-.lib-sec { margin: 10px 0 6px; font-size: 11px; font-weight: 700; color: var(--muted); }
+.lib-sec { margin: 10px 0 6px; font-size: var(--fs-sm); font-weight: 700; color: var(--muted); }
 .lib-sec.clickable { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; }
 .lib-sec.clickable:hover { color: var(--accent); }
 
@@ -135,34 +113,29 @@ select {
 .genpick-row input[type="checkbox"] { flex-shrink: 0; margin: 0; }
 .genpick-row b { flex-shrink: 0; }
 .genpick-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.genpick-row em { font-style: normal; font-size: 10px; }
-.genpick-all { margin-left: 8px; padding: 1px 8px; font-size: 10px; }
+.genpick-row em { font-style: normal; font-size: var(--fs-xs); }
+.genpick-all { margin-left: 8px; padding: 1px 8px; font-size: var(--fs-xs); }
 
 /* ===== 统一资产详情弹窗（AssetDialog） ===== */
 .adlg-top { display: flex; gap: 12px; align-items: flex-start; }
-.adlg-img { width: 108px; height: 108px; border-radius: 8px; object-fit: cover; background: #000; flex-shrink: 0; }
-.adlg-img.ph { display: flex; align-items: center; justify-content: center; background: var(--bg-elev); border: 1px dashed var(--border); color: var(--muted); font-size: 11px; }
+.adlg-img { width: 108px; height: 108px; border-radius: 8px; object-fit: cover; background: var(--c-bg); flex-shrink: 0; }
+.adlg-img.ph { display: flex; align-items: center; justify-content: center; background: var(--bg-elev); border: 1px dashed var(--border); color: var(--muted); font-size: var(--fs-sm); }
 .adlg-meta { display: flex; flex-direction: column; gap: 6px; font-size: 12px; min-width: 0; }
 .adlg-meta b { display: inline-block; min-width: 62px; color: var(--muted); font-weight: 400; margin-right: 6px; }
+.adlg-mini { padding: 2px 8px; font-size: var(--fs-sm); }
 
-/* ===== 配角轨/场景轨 · 子行叠放段（高度减半，轨高动态） ===== */
-.ctrack-row.sup { align-items: flex-start; }
-.ctrack-row.sup .ctrack-name { margin-top: 4px; }
-.ctrack-stage.sub { border-radius: 5px; }
-.ctrack-stage.sub .ctrack-stage-label { font-size: 9px; }
-.ctrack-stage.sub img { height: 100%; }
-
-/* ===== 轨道段选中/移动 ===== */
-.ctrack-stage.selected { outline: 2px solid var(--accent); outline-offset: 1px; z-index: 5; }
-.ctrack-stage.moving { opacity: .45; }
-.ctrack-drag-ghost.move { border-style: solid; background: color-mix(in srgb, var(--accent) 22%, transparent); }
+/* ===== 定位线三视图联动高亮（🎯 定位线所在镜头/将注入的资产） ===== */
+.stl-slot.at-cursor { outline: 2px solid var(--c-accent); outline-offset: 1px; }
+.sp-shot.at-cursor { border-color: var(--c-accent); box-shadow: 0 0 0 1px var(--c-accent) inset; }
+.lib-char.at-cursor, .lib-card.at-cursor { border-color: var(--c-accent); box-shadow: 0 0 0 1px var(--c-accent) inset; }
+.lib-stage-row.at-cursor { background: color-mix(in srgb, var(--c-accent) 14%, transparent); border-radius: 6px; }
 
 /* ===== 资产页角色分层（修 E3）：角色可折叠条目 + 阶段列表 + 合并 ===== */
 .lib-charlist { display: flex; flex-direction: column; gap: 4px; }
 .lib-char { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); overflow: hidden; }
 .lib-char-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; }
 .lib-char-head:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.lib-char-avatar { width: 32px; height: 32px; border-radius: 6px; object-fit: cover; background: #000; flex-shrink: 0; }
+.lib-char-avatar { width: 32px; height: 32px; border-radius: 6px; object-fit: cover; background: var(--c-bg); flex-shrink: 0; }
 .lib-char-avatar.ph { display: flex; align-items: center; justify-content: center; background: var(--bg-panel); font-size: 15px; }
 .lib-char-name { font-size: 12px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-stage-list { padding: 4px 8px 8px 26px; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 4px; align-items: start; border-top: 1px dashed var(--border); }
@@ -170,82 +143,26 @@ select {
 .lib-stage-list > .btn, .lib-stage-list > .muted { grid-column: 1 / -1; }
 .lib-stage-row { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; }
 .lib-stage-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.lib-stage-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; background: #000; flex-shrink: 0; }
+.lib-stage-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; background: var(--c-bg); flex-shrink: 0; }
 .lib-stage-thumb.ph { display: flex; align-items: center; justify-content: center; background: var(--bg-panel); border: 1px dashed var(--border); font-size: 13px; }
 .lib-stage-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .lib-stage-info b { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lib-stage-info em { font-style: normal; font-size: 10px; color: var(--muted); }
+.lib-stage-info em { font-style: normal; font-size: var(--fs-xs); color: var(--muted); }
 
 /* ===== 轨道行数收敛：默认前 5 行 + 展开/收起开关 ===== */
 .ctrack-more { display: flex; }
-.ctrack-more-btn { position: sticky; left: 34px; margin: 2px 0; padding: 2px 10px; font-size: 10px; color: var(--muted); background: var(--bg-elev); border: 1px dashed var(--border); border-radius: 10px; cursor: pointer; }
+.ctrack-more-btn { position: sticky; left: 34px; margin: 2px 0; padding: 2px 10px; font-size: var(--fs-xs); color: var(--muted); background: var(--bg-elev); border: 1px dashed var(--border); border-radius: 10px; cursor: pointer; }
 .ctrack-more-btn:hover { color: var(--accent); border-color: var(--accent); }
 /* P1-3 场景轨段（青色系与人物轨区分） */
-.ctrack-stage.loc.ok { border-color: #14b8a6; }
+.ctrack-stage.loc.ok { border-color: var(--c-success); }
 .lib-name {
-  font-size: 11px; padding: 4px 6px; overflow: hidden;
+  font-size: var(--fs-sm); padding: 4px 6px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; color: var(--muted);
 }
 .script-preview { flex: 1; overflow-y: auto; }
 .script-preview pre {
   white-space: pre-wrap; font-family: inherit; font-size: 12px;
   color: var(--muted); line-height: 1.7;
-}
-
-/* ===== 右：预览器 ===== */
-.player {
-  flex: 1; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; background: var(--bg); min-width: 0; position: relative;
-  padding: 14px;
-}
-.player-box { display: flex; flex-direction: column; align-items: center; max-width: min(100%, 62vh); }
-.player-video { width: 100%; max-height: calc(100vh - 220px); border-radius: 8px; background: #000; object-fit: contain; }
-.player-label { margin-top: 8px; font-size: 12px; color: var(--muted); }
-.player-empty { text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 10px; }
-.player-empty-icon { font-size: 44px; opacity: 0.5; }
-
-/* ===== 底：时间轴 ===== */
-.tl {
-  height: 230px; flex-shrink: 0; background: var(--bg-panel);
-  border-top: 1px solid var(--border); display: flex; flex-direction: column;
-}
-.tl-head {
-  display: flex; align-items: center; gap: 14px; padding: 6px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.tl-title { font-size: 12px; font-weight: 700; }
-.tl-hint { margin-left: auto; }
-.tl-scroll { flex: 1; overflow-x: auto; overflow-y: hidden; padding: 4px 14px 10px; }
-.tl-ruler { position: relative; height: 18px; margin-left: 28px; }
-.tl-tick {
-  position: absolute; top: 0; font-size: 10px; color: var(--muted);
-  border-left: 1px solid var(--border); padding-left: 3px; height: 100%;
-}
-.tl-track { display: flex; align-items: stretch; gap: 3px; margin-top: 4px; min-height: 74px; }
-.tl-track.audio { min-height: 40px; }
-.tl-track-label { width: 24px; flex-shrink: 0; display: flex; align-items: center; font-size: 13px; }
-.tl-clip {
-  position: relative; flex-shrink: 0; border: 2px solid transparent; border-radius: 6px;
-  overflow: hidden; cursor: grab; background: var(--clip-bg);
-}
-.tl-clip.sel { border-color: var(--primary); }
-.tl-clip.over { border-color: var(--ok); }
-.tl-clip:active { cursor: grabbing; }
-.tl-clip video { width: 100%; height: 46px; object-fit: cover; display: block; background: #000; pointer-events: none; }
-.tl-clip.audio { height: 36px; display: flex; align-items: center; }
-.tl-clip-info { display: flex; justify-content: space-between; gap: 4px; padding: 3px 6px; }
-.tl-clip-name {
-  font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
-}
-.tl-clip-dur { font-size: 10px; color: var(--muted); flex-shrink: 0; }
-.tl-clip-x {
-  position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; border: none;
-  border-radius: 50%; background: rgba(0,0,0,0.6); color: #fff; font-size: 9px;
-  cursor: pointer; display: none; line-height: 1;
-}
-.tl-clip:hover .tl-clip-x { display: block; }
-.tl-empty {
-  display: flex; align-items: center; padding: 0 14px; color: var(--muted); font-size: 12px;
 }
 
 /* ===== AI 抽屉 ===== */
@@ -284,23 +201,14 @@ select {
 }
 .shot-no { color: var(--primary); font-weight: 700; min-width: 30px; }
 .shot-link {
-  font-size: 10px; color: var(--muted); border: 1px solid var(--border);
+  font-size: var(--fs-xs); color: var(--muted); border: 1px solid var(--border);
   border-radius: 4px; padding: 1px 5px; flex-shrink: 0;
 }
-.shot-ok { font-size: 11px; color: var(--ok, #4ade80); flex-shrink: 0; }
-.btn.tiny { font-size: 11px; padding: 2px 8px; flex-shrink: 0; }
+.shot-ok { font-size: var(--fs-sm); color: var(--ok, var(--c-success)); flex-shrink: 0; }
+.btn.tiny { font-size: var(--fs-sm); padding: 2px 8px; flex-shrink: 0; }
 /* 更新提示条 */
 .update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text); }
 .update-actions { display: flex; gap: 8px; flex-shrink: 0; }
-
-/* ===== R0: 项目列表首屏 (T-R0-06) ===== */
-.plist { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
-.plist-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 32px; border-bottom: 1px solid var(--border); }
-.plist-head h1 { font-size: 20px; margin: 0; }
-.plist-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; padding: 24px 32px; overflow-y: auto; }
-.pcard { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; cursor: pointer; transition: border-color .15s; }
-.pcard:hover { border-color: var(--accent); }
-.pcard-title { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
 
 /* ===== R0: 新建向导 / 生产检查弹窗 ===== */
 .wizard { margin: auto; width: 440px; max-width: 94vw; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; display: flex; flex-direction: column; gap: 14px; }
@@ -322,78 +230,33 @@ select {
 .board-head { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
 .board-scroll { overflow: auto; padding: 8px 14px; }
 .board-ep { margin-bottom: 8px; }
-.board-ep-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.board-ep-label { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 4px; }
 .board-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .board-shot { position: relative; width: 108px; border-radius: 8px; overflow: hidden; cursor: pointer; border: 2px solid transparent; background: var(--bg-elev); }
 .board-shot.sel { border-color: var(--accent); }
 .board-shot video { width: 100%; height: 60px; object-fit: cover; display: block; }
 .board-shot-empty { height: 60px; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 16px; }
-.board-shot-info { display: flex; justify-content: space-between; padding: 3px 6px; font-size: 10px; }
+.board-shot-info { display: flex; justify-content: space-between; padding: 3px 6px; font-size: var(--fs-xs); }
 .board-shot-status { font-weight: 600; }
 .board-shot-ops { position: absolute; top: 3px; right: 3px; display: none; gap: 3px; }
 .board-shot:hover .board-shot-ops { display: flex; }
-.board-shot-ops button { width: 22px; height: 22px; border: none; border-radius: 5px; background: rgba(0,0,0,.65); color: #fff; cursor: pointer; font-size: 11px; }
+.board-shot-ops button { width: 22px; height: 22px; border: none; border-radius: 5px; background: rgba(0,0,0,.65); color: var(--c-text-hi); cursor: pointer; font-size: var(--fs-sm); }
 /* 状态色（需求 5.9 + R0 六态） */
-.st-pending    .board-shot-status { color: #9aa0a6; }
-.st-prompting  .board-shot-status { color: #b39ddb; }
-.st-generating .board-shot-status { color: #4fc3f7; }
-.st-review     .board-shot-status { color: #ffd54f; }
-.st-adopted    .board-shot-status { color: #81c784; }
-.st-failed     .board-shot-status { color: #e57373; }
-.st-generating { border-color: #4fc3f7; }
-.st-failed { border-color: #e57373; }
-.st-review { border-color: #ffd54f; }
-
-/* ===== R1: 人物资产轨 (T-R1-03，现内嵌 TimelineDock；阶段块按集像素区间绝对定位) ===== */
-.ctrack { flex-shrink: 0; }
-.ctrack-row { position: relative; display: flex; align-items: center; height: 48px; }
-.ctrack-row + .ctrack-row { border-top: 1px dashed color-mix(in srgb, var(--border) 55%, transparent); }
-.ctrack-name { position: sticky; left: 34px; z-index: 5; flex-shrink: 0; pointer-events: none; font-size: 10px; color: var(--muted); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); padding: 1px 6px; border-radius: 4px; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ctrack-stage { position: relative; display: flex; align-items: center; gap: 6px; height: 40px; padding: 3px 4px; background: var(--bg-elev); border: 1.5px dashed var(--border); border-radius: 7px; cursor: pointer; overflow: hidden; box-sizing: border-box; }
-.ctrack-stage.ok { border-style: solid; border-color: #81c784; }
-.ctrack-stage img { width: 30px; height: 30px; object-fit: cover; border-radius: 4px; }
-.ctrack-stage-label { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ctrack-stage-label em { font-style: normal; color: var(--muted); margin-left: 4px; }
-/* 生成中：脉冲高亮（关掉弹窗也能在轨道上看到） */
-.ctrack-stage.busy { border-color: var(--accent); border-style: solid; animation: fw-pulse 1.2s ease-in-out infinite; }
-@keyframes fw-pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); } }
-.ctrack-stage-spin { position: absolute; right: 4px; top: 3px; font-size: 11px; }
-/* 会注入但缺定妆图：明确警示（原先完全不可见） */
-.ctrack-stage.noimg { border-color: #e6a23c; }
-.ctrack-stage-warn { position: absolute; right: 4px; top: 3px; font-size: 11px; color: #e6a23c; }
-/* 该阶段区间内角色无出场镜头：不占轨道，弱化显示 */
-.ctrack-stage-idle { opacity: .45; min-width: 96px; }
-
-/* ===== P1-2 资产条拖拽（ref_overrides）===== */
-/* 人工覆写段：斜纹背景 + 亮描边（一眼看出"这段是我手调的"） */
-.ctrack-stage.manual { border-color: #a78bfa; background: repeating-linear-gradient(45deg, var(--bg-elev), var(--bg-elev) 7px, color-mix(in srgb, #a78bfa 16%, var(--bg-elev)) 7px, color-mix(in srgb, #a78bfa 16%, var(--bg-elev)) 14px); }
-/* 左右拖拽把手：常隐，悬停段时显现 */
-.ctrack-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 3; opacity: 0; transition: opacity .12s; }
-.ctrack-handle.hl { left: 0; border-left: 3px solid var(--accent); border-radius: 7px 0 0 7px; }
-.ctrack-handle.hr { right: 0; border-right: 3px solid var(--accent); border-radius: 0 7px 7px 0; }
-.ctrack-stage:hover .ctrack-handle { opacity: .9; }
-.ctrack-stage.edge-dragging { border-color: var(--accent); }
-.ctrack-stage.edge-dragging .ctrack-handle { opacity: 1; }
-/* 拖拽实时反馈：影响 N 镜 */
-.ctrack-drag-tip { position: absolute; left: 50%; top: -14px; transform: translateX(-50%); z-index: 8; padding: 1px 6px; font-size: 10px; white-space: nowrap; background: var(--accent); color: #fff; border-radius: 4px; pointer-events: none; }
-/* 拖拽目标预览覆盖层：松手后段将覆盖的范围 */
-.ctrack-drag-ghost { position: absolute; top: 4px; height: 40px; z-index: 2; border: 1.5px dashed var(--accent); border-radius: 7px; background: color-mix(in srgb, var(--accent) 12%, transparent); pointer-events: none; }
-/* ↺ 重置为 AI 判定（仅人工段显示） */
-.ctrack-stage-reset { position: absolute; right: 3px; bottom: 2px; z-index: 4; width: 16px; height: 16px; padding: 0; font-size: 11px; line-height: 1; background: var(--bg-panel); color: #a78bfa; border: 1px solid #a78bfa; border-radius: 4px; cursor: pointer; }
-.ctrack-stage-reset:hover { background: #a78bfa; color: #fff; }
-/* ↻ 段内含已出片但参考图已变的镜头 */
-.ctrack-stage-stale { position: absolute; right: 22px; top: 3px; font-size: 11px; color: #f59e0b; }
-.cand-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-.cand-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
-.cand-grid img:hover { border-color: var(--accent); }
-.wizard select, .wizard textarea { padding: 8px 10px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; color: var(--text); }
-.board-shot.msel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.st-pending    .board-shot-status { color: var(--c-muted); }
+.st-prompting  .board-shot-status { color: var(--c-asset-char); }
+.st-generating .board-shot-status { color: var(--c-accent); }
+.st-review     .board-shot-status { color: var(--c-warning); }
+.st-adopted    .board-shot-status { color: var(--c-success); }
+.st-failed     .board-shot-status { color: var(--c-danger); }
+.st-generating { border-color: var(--c-accent); }
+.st-failed { border-color: var(--c-danger); }
+.st-review { border-color: var(--c-warning); }
 
 /* ===== R2: 精编器 (T-R2-04) ===== */
 .finecut { margin: auto; width: 90vw; max-width: 1100px; height: 82vh; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; }
 .finecut-body { flex: 1; display: flex; gap: 10px; padding: 10px; min-height: 0; }
 .finecut-left { flex: 3; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.finecut-left .player-video { flex: 1; min-height: 0; background: #000; border-radius: 8px; }
+.finecut-left .player-video { flex: 1; min-height: 0; background: var(--c-bg); border-radius: 8px; }
 .finecut-strip { display: flex; gap: 4px; overflow-x: auto; }
 .finecut-chip { padding: 5px 12px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 12px; white-space: nowrap; }
 .finecut-chip.on { border-color: var(--accent); color: var(--accent); }
@@ -414,39 +277,51 @@ select {
 /* ===== 左侧「镜头」页签 (ShotsPanel, 原生产看板纵向化) ===== */
 .sp { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .sp-head { display: flex; gap: 6px; padding: 10px 10px 6px; }
+/* ===== 首帧精控流程步骤条（sp-head 的引导条形态） ===== */
+.sp-steps { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px 6px; }
+.sp-step { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); font-size: 12px; }
+.sp-step.done { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+.sp-step.warn { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.sp-step-no { flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%; background: var(--bg-panel); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: var(--fs-xs); color: var(--muted); }
+.sp-step.done .sp-step-no { background: var(--ok); border-color: var(--ok); color: var(--c-text-hi); }
+.sp-step-body { flex: 1; min-width: 0; }
+.sp-step-title { color: var(--text); }
+.sp-step-sub { color: var(--muted); font-size: var(--fs-sm); }
+.sp-step-sub.warn { color: var(--danger); }
+.sp-step-ops { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .sp-list { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
-.sp-ep { font-size: 11px; color: var(--muted); padding: 8px 2px 4px; position: sticky; top: 0; background: var(--bg-panel); }
+.sp-ep { font-size: var(--fs-sm); color: var(--muted); padding: 8px 2px 4px; position: sticky; top: 0; background: var(--bg-panel); }
 .sp-shot { border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px; margin-bottom: 6px; background: var(--bg-elev); }
 .sp-shot.sel { border-color: var(--accent); }
 .sp-shot.msel { outline: 2px solid var(--accent); outline-offset: 1px; }
 .sp-shot-row { display: flex; gap: 8px; padding: 6px; cursor: pointer; align-items: center; }
-.sp-thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 5px; background: #000; flex-shrink: 0; }
+.sp-thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 5px; background: var(--c-bg); flex-shrink: 0; }
 .sp-thumb-empty { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; background: var(--bg); }
 .sp-shot-mid { flex: 1; min-width: 0; }
 .sp-shot-title { font-size: 12px; display: flex; gap: 6px; align-items: center; }
-.sp-status { font-size: 10px; font-weight: 600; }
-.sp-ref { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-status { font-size: var(--fs-xs); font-weight: 600; }
+.sp-ref { font-size: var(--fs-sm); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-ops { display: flex; gap: 3px; flex-shrink: 0; }
-.sp-ops button { width: 24px; height: 24px; border: none; border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; font-size: 11px; }
-.sp-ops button:hover { background: var(--primary); color: #fff; }
+.sp-ops button { width: 24px; height: 24px; border: none; border-radius: 5px; background: var(--bg); color: var(--text); cursor: pointer; font-size: var(--fs-sm); }
+.sp-ops button:hover { background: var(--primary); color: var(--c-text-hi); }
 .sp-detail { padding: 8px 10px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
-.sp-detail-label { font-size: 11px; font-weight: 600; color: var(--muted); }
+.sp-detail-label { font-size: var(--fs-sm); font-weight: 600; color: var(--muted); }
 .sp-detail-text { font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
-.sp-prompt { max-height: 200px; overflow-y: auto; background: var(--bg); border-radius: 6px; padding: 8px; font-size: 11px; }
+.sp-prompt { max-height: 200px; overflow-y: auto; background: var(--bg); border-radius: 6px; padding: 8px; font-size: var(--fs-sm); }
 /* 状态色左边条 */
-.sp-shot.st-pending { border-left-color: #9aa0a6; }
-.sp-shot.st-prompting { border-left-color: #b39ddb; }
-.sp-shot.st-generating { border-left-color: #4fc3f7; }
-.sp-shot.st-review { border-left-color: #ffd54f; }
-.sp-shot.st-adopted { border-left-color: #81c784; }
-.sp-shot.st-failed { border-left-color: #e57373; }
+.sp-shot.st-pending { border-left-color: var(--c-muted); }
+.sp-shot.st-prompting { border-left-color: var(--c-asset-char); }
+.sp-shot.st-generating { border-left-color: var(--c-accent); }
+.sp-shot.st-review { border-left-color: var(--c-warning); }
+.sp-shot.st-adopted { border-left-color: var(--c-success); }
+.sp-shot.st-failed { border-left-color: var(--c-danger); }
 .sp-shot .sp-status { color: inherit; }
-.sp-shot.st-pending .sp-status { color: #9aa0a6; }
-.sp-shot.st-prompting .sp-status { color: #b39ddb; }
-.sp-shot.st-generating .sp-status { color: #4fc3f7; }
-.sp-shot.st-review .sp-status { color: #ffd54f; }
-.sp-shot.st-adopted .sp-status { color: #81c784; }
-.sp-shot.st-failed .sp-status { color: #e57373; }
+.sp-shot.st-pending .sp-status { color: var(--c-muted); }
+.sp-shot.st-prompting .sp-status { color: var(--c-asset-char); }
+.sp-shot.st-generating .sp-status { color: var(--c-accent); }
+.sp-shot.st-review .sp-status { color: var(--c-warning); }
+.sp-shot.st-adopted .sp-status { color: var(--c-success); }
+.sp-shot.st-failed .sp-status { color: var(--c-danger); }
 
 /* 按集编辑剧本 (剧本页) */
 .ep-editor { display: flex; flex-direction: column; gap: 4px; }
@@ -454,7 +329,7 @@ select {
 .ep-ta { min-height: 140px; font-size: 12px; line-height: 1.7; }
 /* 镜头集级过期标记 */
 .sp-ep { display: flex; align-items: center; gap: 8px; }
-.sp-stale-badge { font-size: 10px; color: #ffb74d; border: 1px solid #ffb74d; border-radius: 4px; padding: 0 4px; }
+.sp-stale-badge { font-size: var(--fs-xs); color: var(--c-warning); border: 1px solid var(--c-warning); border-radius: 4px; padding: 0 4px; }
 .sp-shot.stale { opacity: 0.65; }
 .sp-thumb.has-video { color: var(--primary); font-size: 18px; background: var(--bg); }
 
@@ -472,135 +347,35 @@ select {
 .opt-btn .muted { text-align: center; line-height: 1.3; }
 .opt-icon { font-size: 18px; }
 
-/* ===== 拖拽分隔条 ===== */
-.rz { flex-shrink: 0; background: var(--border); transition: background .15s; z-index: 5; }
-.rz:hover { background: var(--accent); }
-.rz-v { width: 4px; cursor: col-resize; }
-.rz-h { height: 4px; cursor: row-resize; }
-
-/* ===== 统一时间轴版块（TimelineDock：集色条/资产轨/音频轨/镜头轨，单滚动容器列对齐） ===== */
-.dock { position: relative; max-height: var(--dock-h, 260px); border-top: 1px solid var(--border); background: var(--bg-panel); flex-shrink: 0; overflow: auto; }
-/* ⛶ 最大化按钮（右上角悬浮，不占轨道空间） */
-.dock-max { position: absolute; right: 6px; top: 4px; z-index: 6; width: 22px; height: 22px; padding: 0; font-size: 11px; line-height: 1; background: var(--bg-elev); color: var(--muted); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
-.dock-max:hover { color: var(--fg); border-color: var(--accent); }
-/* 最大化：时间轴占满，上方内容区收起 */
-.studio.max-dock .mid { display: none; }
-.studio.max-dock .dock { max-height: none; flex: 1; }
-.dock-scroll { display: flex; flex-direction: column; min-width: max-content; position: relative; }
-.dock-lane { display: flex; align-items: stretch; min-height: 16px; }
-.dock-lane + .dock-lane { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
-.lane-gutter { position: sticky; left: 0; z-index: 6; width: 26px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 2px 0; background: var(--bg-panel); border-right: 1px solid var(--border); cursor: pointer; }
-.lane-gutter:hover { background: var(--bg-elev); }
-.lane-gutter.mute { cursor: default; border-right-color: transparent; }
-.lane-gutter.mute:hover { background: var(--bg-panel); }
-.gutter-btn { border: none; background: none; cursor: pointer; font-size: 12px; padding: 0; line-height: 1; }
-.gutter-btn:disabled { cursor: wait; }
-.lane-body { position: relative; padding: 3px 14px 3px 8px; }
-.lane-blank { height: 24px; }
-.dock-caret { font-size: 9px; color: var(--muted); transition: transform .15s; }
-.dock-caret.open { transform: rotate(90deg); }
-.stl-epbars { position: relative; height: 16px; }
-.stl-epbar { position: absolute; top: 1px; height: 14px; border-radius: 3px; display: flex; align-items: center; padding: 0 6px; }
-.stl-epbar span { font-size: 10px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: sticky; left: 34px; }
-.stl-groups { display: flex; gap: 8px; }
-
-/* ===== 镜头槽位（TimelineDock 镜头轨复用） ===== */
-.stl-row { display: flex; gap: 3px; }
-.stl-slot { position: relative; height: 64px; border-radius: 6px; overflow: hidden; cursor: pointer; flex-shrink: 0; border: 1.5px solid var(--border); }
-.stl-slot.filled video { width: 100%; height: 100%; object-fit: cover; }
-/* P1-1 缩略图：轨道槽用首帧 JPG（替代 <video>，几百镜不再拖垮渲染） */
-.stl-slot.filled img { width: 100%; height: 100%; object-fit: cover; display: block; user-select: none; }
-.stl-slot-ok { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--muted); font-size: 14px; }
-.stl-slot.empty { border-style: dashed; background: repeating-linear-gradient(45deg, transparent, transparent 6px, color-mix(in srgb, var(--border) 40%, transparent) 6px, color-mix(in srgb, var(--border) 40%, transparent) 12px); display: flex; align-items: center; justify-content: center; }
-.stl-slot.sel { border-color: var(--accent); }
-.stl-slot.stale { opacity: .55; }
-.stl-slot-no { color: var(--muted); font-size: 11px; }
-.stl-slot-dur { position: absolute; right: 3px; bottom: 2px; font-size: 9px; padding: 0 3px; background: rgba(0,0,0,.6); color: #fff; border-radius: 3px; }
-.stl-slot-spin { position: absolute; left: 3px; top: 2px; font-size: 11px; }
-/* 生成中：轨道槽脉冲，避免"点了没反应"的错觉 */
-.stl-slot:has(.stl-slot-spin) { border-color: var(--accent); animation: fw-pulse 1.2s ease-in-out infinite; }
-/* 生成失败：轨道上直接可见（原先只在镜头页可见） */
-.stl-slot.failed { border-color: #e05252; border-style: solid; }
-.stl-slot-fail { position: absolute; left: 3px; top: 2px; font-size: 11px; color: #e05252; }
-
-/* ===== P0-3 时间轴归一：外部素材 / 停用 / 拖拽排序 / 右键菜单 ===== */
-/* 外部素材镜头（片头/片尾/转场）：与 AI 镜头同轨，用紫色边框区分来源 */
-.stl-slot.special { border-color: #a78bfa; }
-.stl-slot-badge { position: absolute; left: 3px; top: 2px; font-size: 10px; text-shadow: 0 1px 2px rgba(0,0,0,.8); }
-/* 停用：不参与导出与生成，弱化显示并叠加斜纹 */
-.stl-slot.off { opacity: .38; filter: grayscale(1); border-style: dotted; }
-.stl-slot-off { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 14px; }
-/* 拖拽排序反馈 */
-.stl-slot[draggable="true"] { cursor: grab; }
-.stl-slot.dragging { opacity: .4; cursor: grabbing; }
-.stl-slot.over { border-color: var(--accent); box-shadow: -2px 0 0 0 var(--accent); }
-/* ===== P1-2 镜头右缘拖时长 + 参考图已变标记 ===== */
-.stl-slot-durgrip { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 3; border-right: 3px solid transparent; transition: border-color .12s; }
-.stl-slot:hover .stl-slot-durgrip { border-right-color: var(--accent); }
-.stl-slot-stale-ref { position: absolute; right: 3px; top: 2px; font-size: 10px; color: #f59e0b; text-shadow: 0 1px 2px rgba(0,0,0,.8); }
-
-/* ===== P2-1 播放头 ===== */
-/* 贯穿全部轨道的竖线：absolute 于 dock-scroll（随内容横向滚动），z 低于 sticky gutter(6) 使划过轨头时被遮住 */
-.stl-playhead { position: absolute; top: 0; bottom: 0; width: 0; z-index: 5; border-left: 2px solid #ef4444; pointer-events: none; }
-.stl-playhead-cap { position: sticky; top: 0; margin-left: -6px; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid #ef4444; }
-/* 刻度尺可点击跳转 */
-.stl-ruler.seekable { cursor: pointer; }
-.stl-ruler.seekable:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-/* 预览器「连播」开关 */
-.player-autonext { margin-left: 10px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
-.player-autonext input { vertical-align: -2px; margin-right: 2px; accent-color: var(--accent); }
-
-/* ===== P2-4 音频轨 ===== */
-.atrack { position: relative; }
-.atrack-bar { display: flex; gap: 4px; align-items: center; padding: 2px 0; position: sticky; left: 8px; width: fit-content; z-index: 4; }
-.atrack-btn { padding: 1px 8px; font-size: 11px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; white-space: nowrap; }
-.atrack-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.atrack-btn:disabled { opacity: .45; cursor: default; }
-.atrack-btn.synth { border-color: var(--accent); color: var(--accent); }
-.atrack-sel { padding: 1px 4px; font-size: 11px; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 5px; max-width: 110px; }
-.atrack-lane { position: relative; height: 34px; }
-.atrack-empty { position: sticky; left: 8px; width: fit-content; font-size: 11px; color: var(--muted); line-height: 34px; }
-.atrack-clip { position: absolute; top: 3px; height: 28px; display: flex; align-items: center; gap: 4px; padding: 0 6px; box-sizing: border-box; background: color-mix(in srgb, #8b5cf6 22%, var(--bg-elev)); border: 1.5px solid #8b5cf6; border-radius: 6px; cursor: pointer; overflow: hidden; }
-.atrack-clip.music { background: color-mix(in srgb, #0ea5e9 22%, var(--bg-elev)); border-color: #0ea5e9; }
-.atrack-clip.st-pending { border-style: dashed; opacity: .8; }
-.atrack-clip.st-generating { animation: fw-pulse 1.2s ease-in-out infinite; }
-.atrack-clip.st-failed { border-color: #e05252; }
-.atrack-clip.dragging { opacity: .4; }
-.atrack-clip-label { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.atrack-clip-st { font-size: 9px; color: var(--muted); flex-shrink: 0; }
-.atrack-clip-st.failed { color: #e05252; }
-.atrack-clip-edit, .atrack-clip-del { display: none; flex-shrink: 0; width: 16px; height: 16px; padding: 0; font-size: 9px; line-height: 1; background: var(--bg-panel); color: var(--muted); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
-.atrack-clip:hover .atrack-clip-edit, .atrack-clip:hover .atrack-clip-del { display: block; }
-.atrack-clip-del:hover { color: #e05252; border-color: #e05252; }
-.atrack-drop-mark { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--accent); pointer-events: none; }
-/* 右键菜单 */
-.stl-menu { position: fixed; z-index: 60; min-width: 148px; padding: 4px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-.stl-menu-title { padding: 4px 8px 6px; font-size: 11px; color: var(--fg); border-bottom: 1px solid var(--border); margin-bottom: 4px; }
-.stl-menu-sec { padding: 2px 8px; font-size: 10px; color: var(--muted); }
-.stl-menu-item { display: block; width: 100%; padding: 5px 8px; text-align: left; font-size: 12px; background: none; border: 0; border-radius: 5px; color: var(--fg); cursor: pointer; }
-.stl-menu-item:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-.stl-menu-item.on { color: var(--accent); }
-.stl-menu-item.danger { color: #e05252; }
-.stl-menu-sep { height: 1px; margin: 4px 0; background: var(--border); }
-/* 时间轴导出概览（与「🚀 快速导出」同口径） */
-.dock-summary { position: absolute; right: 34px; top: 5px; z-index: 6; font-size: 11px; color: var(--muted); }
-
-/* ===== P1-1 时间刻度尺 + 缩放 ===== */
-/* 刻度尺：与三轨同一横向坐标系，刻度线自上而下贯穿轨顶 */
-.stl-ruler { position: relative; height: 16px; }
-.stl-tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--border); padding-left: 3px; white-space: nowrap; pointer-events: none; }
-.stl-tick span { font-size: 9px; color: var(--muted); line-height: 14px; font-variant-numeric: tabular-nums; }
-/* 缩放工具条：与最大化按钮同排，放在导出概览左侧 */
-.dock-zoom { position: absolute; right: 150px; top: 3px; z-index: 6; display: flex; gap: 2px; }
-.zoom-btn { width: 20px; height: 18px; padding: 0; font-size: 11px; line-height: 1; background: var(--bg-elev); color: var(--text); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
-.zoom-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.zoom-btn:disabled { opacity: .4; cursor: default; }
-
 /* ===== 镜头版本切换 ===== */
-.sp-ver-badge { font-size: 9px; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 3px; }
-.sp-versions { display: flex; gap: 4px; align-items: center; margin-top: 4px; font-size: 11px; }
-.sp-ver-btn { padding: 2px 8px; font-size: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); cursor: pointer; }
+.sp-ver-badge { font-size: var(--fs-xs); color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 3px; }
+.sp-versions { display: flex; gap: 4px; align-items: center; margin-top: 4px; font-size: var(--fs-sm); }
+.sp-ver-btn { padding: 2px 8px; font-size: var(--fs-xs); border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); cursor: pointer; }
 .sp-ver-btn.on { border-color: var(--accent); color: var(--accent); font-weight: 700; }
 
 /* ===== 资产占位卡 ===== */
 .lib-asset-pending { height: 74px; display: flex; align-items: center; justify-content: center; font-size: 24px; background: var(--bg); }
+
+/* ===== 收尾保留：旧组件（ProjectList / AssetDialog / FineCut / 顶层横幅）仍在用的样式 =====
+ * 其余随 TimelineDock 等四个组件一并退役的规则已删除。
+ * 这些类等对应组件在后续阶段重构完成后再清。 */
+.banner {
+  padding: 6px 14px; background: var(--bg-elev); border-bottom: 1px solid var(--border);
+  color: var(--primary); font-size: 12px; cursor: pointer; flex-shrink: 0;
+}
+.export-bar { height: 3px; background: var(--bg-elev); flex-shrink: 0; }
+.export-bar > div { height: 100%; background: var(--primary); transition: width 0.4s; }
+.tl-title { font-size: 12px; font-weight: 700; }
+.update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text); }
+.update-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.plist { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
+.plist-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 32px; border-bottom: 1px solid var(--border); }
+.plist-head h1 { font-size: 20px; margin: 0; }
+.cand-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.cand-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
+.cand-grid img:hover { border-color: var(--accent); }
+
+/* 每集容器（.sp-epi）——此前只在 tsx 里用、CSS 从未定义，
+   由 verify-css-coverage 查出。stale = 剧本改过但未重新拆解。 */
+.sp-epi { display: flex; flex-direction: column; }
+.sp-epi.stale .sp-ep { border-left: 2px solid var(--c-warning); padding-left: 6px; }
