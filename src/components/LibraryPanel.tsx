@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, AssetInfo, EpisodeInfo, ShotInfo, StageInfo } from "../api";
+import { api, AssetInfo, EpisodeInfo, JobPhase, ShotInfo, StageInfo } from "../api";
 import { LibClip, clipKind, fmtTime, probeDuration } from "../types";
 import ShotsPanel from "./ShotsPanel";
 import AssetDialog, { AssetDialogTarget } from "./AssetDialog";
@@ -27,20 +27,44 @@ interface Props {
   shots: ShotInfo[];
   episodes: EpisodeInfo[];
   selectedShotId: string | null;
+  /** 定位线所在镜头 order（镜头卡/资产卡高亮联动） */
+  cursorOrder?: number | null;
+  /** 定位线所在镜头的 effective 注入集合（资产页高亮"会用到的资产"） */
+  cursorChars?: string[];
+  cursorLoc?: string | null;
   onSelectShot: (shot: ShotInfo) => void;
   onGenerate: (shotIds: string[]) => void;
   onSwitchVersion: (shot: ShotInfo, verNo: number) => void;
   onAdvanced: (shot: ShotInfo) => void;
   generating: boolean;
+  /** 在跑的生产 job 的当前阶段（透传给镜头页步骤④，见 ShotsPanel） */
+  jobPhase?: JobPhase | null;
   onBreakdown: (episodes?: number[]) => void;
   breakdownProgress: number | null;
+  /** 批量首帧（job）。shotIds 缺省=补齐所有缺首帧的镜头 */
+  onFirstFrames: (shotIds?: string[]) => void;
+  /** 按当前资产重写镜头提示词（job，纯文本）。shotIds 缺省=全部镜头 */
+  onReprompt: (shotIds?: string[]) => void;
+  /** 首帧精控 pipeline（job，已弃用）：资产 → 全部首帧 → 全部片段。
+   * 已被顶栏「▷ 一键成片」替代（后者合并了此功能），但接口保留以免回归。 */
+  onPipeline: (opts: { genAssets: boolean; stopAfter?: "assets" | "frames" }) => void;
+  /** 全剧服装识别（job，纯文本不出图）：必须跑在补图之前，否则资产报数不作数 */
+  onCostumeScan: () => void;
+  /** Phase 1 重构：内部页签改为可由外部（Rail 导航）驱动。
+   *  不传 = 保持组件自管（旧行为，回归安全）；传了则由父组件控制。 */
+  tab?: Tab;
+  onTabChange?: (t: Tab) => void;
+  /** Phase 1：页签条由外层 LeftPanel 标题栏承担时隐藏自身页签 */
+  hideTabs?: boolean;
 }
 
-type Tab = "script" | "assets" | "shots";
+export type Tab = "script" | "assets" | "shots";
 
 /** 左侧面板：剧本(按集直接编辑) / 资产(含上传) / 镜头(拆解+提示词+生成)。 */
 export default function LibraryPanel(p: Props) {
-  const [tab, setTab] = useState<Tab>("script");
+  const [innerTab, setInnerTab] = useState<Tab>("script");
+  const tab = p.tab ?? innerTab;
+  const setTab = (t: Tab) => { p.onTabChange ? p.onTabChange(t) : setInnerTab(t); };
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -250,11 +274,13 @@ export default function LibraryPanel(p: Props) {
 
   return (
     <aside className="lib">
-      <div className="lib-tabs">
-        <button className={tab === "script" ? "on" : ""} onClick={() => setTab("script")}>📝 剧本</button>
-        <button className={tab === "assets" ? "on" : ""} onClick={() => setTab("assets")}>🖼 资产</button>
-        <button className={tab === "shots" ? "on" : ""} onClick={() => setTab("shots")}>🎬 镜头</button>
-      </div>
+      {!p.hideTabs && (
+        <div className="lib-tabs">
+          <button className={tab === "script" ? "on" : ""} onClick={() => setTab("script")}>📝 剧本</button>
+          <button className={tab === "assets" ? "on" : ""} onClick={() => setTab("assets")}>🖼 资产</button>
+          <button className={tab === "shots" ? "on" : ""} onClick={() => setTab("shots")}>🎬 镜头</button>
+        </div>
+      )}
 
       {tab === "script" && (
         <div className="lib-body">
@@ -357,14 +383,17 @@ export default function LibraryPanel(p: Props) {
             // 主角 = 有 ≥2 个造型阶段；其余（0-1 个阶段）进「其他角色」折叠组
             const mains = chars.filter((a) => stagesOf(a.name).length >= 2);
             const others = chars.filter((a) => stagesOf(a.name).length < 2);
+            // 定位线联动：所在镜头会注入的角色/场景 → 对应卡高亮
+            const hlChars = new Set(p.cursorChars ?? []);
+            const hlLoc = p.cursorLoc ?? null;
             /** 主角条目（可展开阶段 + 合并；头部可整卡拖拽） */
             const renderMainChar = (a: AssetInfo) => {
               const sts = stagesOf(a.name);
               const open = openChar === a.name;
               const cover = sts.find((s) => s.image_url)?.image_url ?? a.image_url;
               return (
-                <div key={`c-${a.name}`} className={`lib-char ${open ? "open" : ""}`}>
-                  <div className="lib-char-head" title={`${a.name} · 拖到轨道=把该角色加入镜头注入`}
+                <div key={`c-${a.name}`} className={`lib-char ${open ? "open" : ""} ${hlChars.has(a.name) ? "at-cursor" : ""}`}>
+                  <div className="lib-char-head" title={`${a.name} · 拖到轨道=把该角色加入镜头注入${hlChars.has(a.name) ? " · 🎯定位线镜头将注入此角色" : ""}`}
                     draggable
                     onDragStart={(e) => dragStartAsset(e, {
                       assetId: a.id, kind: "character", name: a.name, imageUrl: cover ?? null })}
@@ -385,7 +414,8 @@ export default function LibraryPanel(p: Props) {
                           title="点击打开详情（用途/参数/生成）· 拖到人物轨该角色的段上=替换该阶段定妆图"
                           onClick={() => setAssetDlg({
                             kind: "character", name: s.character_name, assetId: a.id,
-                            stage: s, imageUrl: s.image_url })}
+                            stage: s, imageUrl: s.image_url, voiceUrl: a.voice_url,
+                            assetPrompt: a.prompt })}
                           onDragStart={(e) => dragStartAsset(e, {
                             assetId: null, kind: "character", name: s.character_name,
                             imageUrl: s.image_url, stageId: s.id })}>
@@ -402,7 +432,7 @@ export default function LibraryPanel(p: Props) {
                             : <span className="lib-stage-thumb ph" title="还没有定妆图">⚠</span>}
                           <span className="lib-stage-info">
                             <b>{s.stage_name}</b>
-                            <em>第{s.ep_from}-{s.ep_to}集{s.status === "confirmed" ? " · ✅已确认" : " · 草稿"}</em>
+                            <em>第{s.ep_from}-{s.ep_to}集{s.image_url ? "" : " · 待生成"}</em>
                           </span>
                         </div>
                       ))}
@@ -446,11 +476,12 @@ export default function LibraryPanel(p: Props) {
                                   const st = stagesOf(a.name)[0];
                                   const img = st?.image_url ?? a.image_url;
                                   return (
-                                    <div key={a.name} className="lib-stage-row" draggable
-                                      title={`${a.name} · 点击打开详情 · 拖到轨道=把该角色加入镜头注入`}
+                                    <div key={a.name} className={`lib-stage-row ${hlChars.has(a.name) ? "at-cursor" : ""}`} draggable
+                                      title={`${a.name} · 点击打开详情 · 拖到轨道=把该角色加入镜头注入${hlChars.has(a.name) ? " · 🎯定位线镜头将注入此角色" : ""}`}
                                       onClick={() => setAssetDlg({
                                         kind: "character", name: a.name, assetId: a.id,
-                                        stage: st ?? null, imageUrl: img })}
+                                        stage: st ?? null, imageUrl: img, voiceUrl: a.voice_url,
+                                        assetPrompt: a.prompt })}
                                       onDragStart={(e) => dragStartAsset(e, {
                                         assetId: a.id, kind: "character", name: a.name,
                                         imageUrl: img, stageId: st?.id })}>
@@ -483,11 +514,12 @@ export default function LibraryPanel(p: Props) {
                     {secOpen.locs && (
                       <div className="lib-cols">
                         {locs.map((a) => (
-                          <div key={`l-${a.name}`} className="lib-card" title={`${a.name} · 点击打开详情 · 可拖到场景轨`}
+                          <div key={`l-${a.name}`} className={`lib-card ${hlLoc === a.name ? "at-cursor" : ""}`}
+                            title={`${a.name} · 点击打开详情 · 可拖到场景轨${hlLoc === a.name ? " · 🎯定位线镜头将注入此场景" : ""}`}
                             draggable
                             onClick={() => setAssetDlg({
                               kind: "location", name: a.name, assetId: a.id,
-                              stage: null, imageUrl: a.image_url })}
+                              stage: null, imageUrl: a.image_url, assetPrompt: a.prompt })}
                             onDragStart={(e) => dragStartAsset(e, {
                               assetId: a.id, kind: "location", name: a.name, imageUrl: a.image_url })}>
                             {a.image_url
@@ -529,7 +561,7 @@ export default function LibraryPanel(p: Props) {
                           draggable
                           onClick={() => setAssetDlg({
                             kind: "custom", name: a.name, assetId: a.id,
-                            stage: null, imageUrl: a.image_url })}
+                            stage: null, imageUrl: a.image_url, assetPrompt: a.prompt })}
                           onDragStart={(e) => dragStartAsset(e, {
                             assetId: a.id, kind: "custom", name: a.name, imageUrl: a.image_url })}>
                           {a.image_url
@@ -684,11 +716,24 @@ export default function LibraryPanel(p: Props) {
       })()}
 
       {/* 统一资产详情弹窗：用途（集数区间）+ 阶段 + 生成参数（点击资产卡打开） */}
-      {assetDlg && (
-        <AssetDialog projectId={p.projectId} target={assetDlg} shots={p.shots}
-          onClose={() => setAssetDlg(null)} onToast={p.onToast}
-          onChanged={() => { p.onRefresh(); p.onRefreshStages(); }} />
-      )}
+      {assetDlg && (() => {
+        // 同角色跨造型保脸：这张之外该角色已有的定妆图（与后端
+        // asset_ref.character_base_ref 同口径：别的阶段图（最早的）> 角色通用图）
+        const other = assetDlg.kind !== "character" ? null
+          : (p.stages
+            .filter((s) => s.character_name === assetDlg.name && s.image_url
+              && s.id !== assetDlg.stage?.id && s.image_url !== assetDlg.imageUrl)
+            .sort((a, b) => a.ep_from - b.ep_from)[0]?.image_url
+            ?? p.assetsMeta.find((a) => a.kind === "character" && a.name === assetDlg.name
+              && a.image_url && a.image_url !== assetDlg.imageUrl)?.image_url
+            ?? null);
+        return (
+          <AssetDialog projectId={p.projectId} target={assetDlg} shots={p.shots}
+            baseRef={other}
+            onClose={() => setAssetDlg(null)} onToast={p.onToast}
+            onChanged={() => { p.onRefresh(); p.onRefreshStages(); }} />
+        );
+      })()}
 
       {/* 自定义资产 · AI 生图弹窗 */}
       {customGen && (
@@ -717,11 +762,15 @@ export default function LibraryPanel(p: Props) {
       )}
 
       {tab === "shots" && (
-        <ShotsPanel shots={p.shots} episodes={p.episodes}
-          selectedShotId={p.selectedShotId} onSelect={p.onSelectShot}
+        <ShotsPanel projectId={p.projectId} shots={p.shots} episodes={p.episodes}
+          selectedShotId={p.selectedShotId} cursorOrder={p.cursorOrder} onSelect={p.onSelectShot}
           onGenerate={p.onGenerate} onSwitchVersion={p.onSwitchVersion}
-          onAdvanced={p.onAdvanced} generating={p.generating}
+          onAdvanced={p.onAdvanced} generating={p.generating} jobPhase={p.jobPhase}
           onBreakdown={p.onBreakdown} breakdownProgress={p.breakdownProgress}
+          onFirstFrames={p.onFirstFrames} onReprompt={p.onReprompt}
+          onPipeline={p.onPipeline}
+          onCostumeScan={p.onCostumeScan}
+          onGotoAssets={() => setTab("assets")} onToast={p.onToast}
           hasScript={epContents.length > 0} />
       )}
     </aside>
