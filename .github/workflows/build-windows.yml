@@ -117,13 +117,20 @@ jobs:
             "atempo","afade","amix","volume","anullsrc",
             "subtitles"
           )
-          $have = & $ff -hide_banner -filters | Out-String
-          $missing = @()
-          foreach ($f in $required) {
-            if ($have -notmatch "(?m)^\s*[A-Z\.]{3,}\s+$([regex]::Escape($f))\s") {
-              $missing += $f
-            }
+          # ffmpeg -filters 的行格式是「空格 + 3字符标志位 + 空格 + 名称」，例如
+          #    .S. xfade             VV->V      Cross fade one video ...
+          #    TSC gblur             V->V       Apply Gaussian Blur filter.
+          # 不要用 [A-Z.]{3,} 去匹配标志位——贪婪量词会把标志位后的空格一起吞掉，
+          # 导致一个都匹配不上（实测 28 个必需滤镜全被误报为缺失，CI 直接红）。
+          # 改为按空白切分取第 2 列，比正则稳。
+          $have = (& $ff -hide_banner -filters 2>&1 | Out-String) -split "`r?`n"
+          $names = @{}
+          foreach ($line in $have) {
+            $parts = ($line.Trim() -split '\s+')
+            if ($parts.Count -ge 2) { $names[$parts[1]] = $true }
           }
+          Write-Host "解析到 $($names.Count) 个滤镜"
+          $missing = @($required | Where-Object { -not $names.ContainsKey($_) })
           if ($missing.Count -gt 0) {
             Write-Host "::error::FFmpeg 缺少渲染引擎必需的滤镜: $($missing -join ', ')"
             Write-Host "  该构建不适合本项目——换 full 构建或改用其他来源。"
@@ -132,16 +139,21 @@ jobs:
           Write-Host "✅ $($required.Count) 个必需滤镜全部可用"
 
           # H.264/H.265 解码：AI 生成的素材基本都是这两种
-          $decoders = & $ff -hide_banner -decoders | Out-String
+          # 同上：按列取名，不用正则匹配标志位
+          $decNames = @{}
+          foreach ($line in ((& $ff -hide_banner -decoders 2>&1 | Out-String) -split "`r?`n")) {
+            $parts = ($line.Trim() -split '\s+')
+            if ($parts.Count -ge 2) { $decNames[$parts[1]] = $true }
+          }
           foreach ($d in @("h264","hevc")) {
-            if ($decoders -notmatch "(?m)^\s*[A-Z\.]{3,}\s+$d\s") {
+            if (-not $decNames.ContainsKey($d)) {
               Write-Host "::error::缺少 $d 解码器"; exit 1
             }
           }
           Write-Host "✅ H.264 / H.265 解码可用"
 
           # 字幕烧录依赖 libass；essentials 构建带，但确认一下
-          if ($have -notmatch "(?m)^\s*[A-Z\.]{3,}\s+subtitles\s") {
+          if (-not $names.ContainsKey("subtitles")) {
             Write-Host "::error::缺少 subtitles 滤镜（字幕烧录不可用）"; exit 1
           }
 
@@ -163,9 +175,13 @@ jobs:
           # GitHub Runner 是虚拟机，没有 NVIDIA/Intel/AMD 显卡，实跑必然失败
           # （本项目 capabilities.ts 就因此坚持运行时实跑探测而非查列表）。
           # 这里只确认这个构建**编译进了**这些编码器，用户机器上有硬件才会真正启用。
-          $encoders = & $ff -hide_banner -encoders | Out-String
+          $encNames = @{}
+          foreach ($line in ((& $ff -hide_banner -encoders 2>&1 | Out-String) -split "`r?`n")) {
+            $parts = ($line.Trim() -split '\s+')
+            if ($parts.Count -ge 2) { $encNames[$parts[1]] = $true }
+          }
           foreach ($e in @("h264_nvenc","h264_qsv","h264_amf")) {
-            if ($encoders -match "(?m)^\s*[A-Z\.]{3,}\s+$e\s") {
+            if ($encNames.ContainsKey($e)) {
               Write-Host "✅ 已编译 $e（用户端有对应硬件时启用）"
             } else {
               Write-Host "::warning::该构建未编译 $e —— 对应显卡的用户只能软件编码"
