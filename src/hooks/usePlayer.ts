@@ -14,6 +14,9 @@ export function usePlayer() {
   const pendingSeek = useRef<number | null>(null);
   const [autoNext, setAutoNext] = useState(false);  // 连播：本镜播完自动切下一镜
   const [selectedShot, setSelectedShot] = useState<ShotInfo | null>(null);
+  /** 定位线（editing cursor）：用户主动放置的工作锚点，独立于播放头。
+   *  单击刻度尺放置、拖把手移动；「从定位线播放」等按钮消费此状态。 */
+  const [cursor, setCursor] = useState<{ order: number; offsetSec: number } | null>(null);
 
   const onSelectShot = (s: ShotInfo) => {
     setSelectedShot(s);
@@ -63,12 +66,13 @@ export function usePlayer() {
     setSelectedShot(null);
     setPreviewShot(null);
     setPlayhead(null);
+    setCursor(null);
   }, []);
 
   return {
     videoRef, previewUrl, previewLabel, previewShot, playhead, setPlayhead,
     pendingSeek, autoNext, setAutoNext, selectedShot, setSelectedShot,
     onSelectShot, seekTo, onPreviewEnded, previewMedia, previewShotVersion,
-    clearPlayer,
+    clearPlayer, cursor, setCursor,
   };
 }
