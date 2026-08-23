@@ -1,0 +1,98 @@
+/* FilmWeaver 设计 token（Phase 1）
+ *
+ * 单一事实来源：所有颜色/间距/字号/圆角在这里定义，组件只引用 var(--x)。
+ * 旧 styles.css 里的 hard-code 十六进制值逐步迁到这里（Phase 1 迁 topbar/layout，
+ * 其余随各 Phase 重构时迁）。
+ *
+ * 色彩用 OKLCH：同一 chroma 下不同 hue 的**感知亮度一致**，做暗色高密度界面时
+ * 灰阶不会出现"某个色偏亮/偏脏"的问题，明暗主题切换也只需改 lightness 那一维。
+ */
+
+:root {
+  /* ---- 中性色阶（暗色模式基础）----
+   *
+   * ⚠️ 数值经过实测校正，不要凭"看着差不多"随手改——
+   * 改完跑 `npx tsx scripts/verify-contrast.ts` 验证 WCAG 达标。
+   *
+   * 原先 bg=12% 实际渲染出来是 #050607（亮度 0.2%），几乎是纯黑，
+   * 而注释却写着"近黑"。纯黑背景会让所有层级塌在一起：
+   * bg/surface/raised 的实际亮度是 0.2%/0.5%/0.9%，肉眼根本分不出。
+   * 成熟剪辑软件用的是**深灰层级**而非纯黑层级，故整体抬高。
+   *
+   * muted 原为 55%，在三种背景上 WCAG 对比度只有 4.19/3.94/3.65，
+   * 全部低于正文所需的 4.5——而它被引用 165 处，是"字太暗"的根因。
+   * 68% 是算出来的：要在最亮的 raised(25%) 上达到 4.5 至少需 66%，取 68% 留余量。
+   */
+  --c-bg:          oklch(19.2% 0.006 250);  /* 全局背景（Level 0）→ #111417 */
+  --c-surface:     oklch(21.9% 0.007 250);  /* 主面板（Level 1）→ #171a1d */
+  --c-raised:      oklch(25.5% 0.008 250);  /* 子面板/工具条/弹出层（Level 2） */
+  --c-hover:       oklch(28.5% 0.009 250);  /* 悬停（Level 3） */
+  --c-active:      oklch(31% 0.010 250);    /* 选中态底（Level 4） */
+  --c-border:      oklch(38% 0.010 250);    /* 分割线/边框 */
+  --c-disabled:    oklch(48% 0.008 250);    /* 禁用态文字（此前用 muted+opacity，语义混乱） */
+  --c-muted:       oklch(70% 0.010 250);    /* 次要文字（需 ≥69% 才在 active 上达 4.5） */
+  --c-text:        oklch(90% 0.006 250);   /* 正文 */
+  --c-text-hi:     oklch(97% 0.004 250);   /* 标题/高亮 */
+
+  /* 时间轴轨道：介于 surface 与 raised，隔行区分 */
+  --c-track:       oklch(23.2% 0.007 250);
+  --c-track-alt:   oklch(24.5% 0.008 250);
+
+  /* ---- 主色调（青蓝偏冷，与剪映橙区分）---- */
+  --c-accent:      oklch(65% 0.18 220);
+  --c-accent-dim:  oklch(55% 0.15 220);
+  --c-accent-hi:   oklch(75% 0.20 220);
+
+  /* ---- 语义色 ---- */
+  --c-success:     oklch(62% 0.18 150);
+  --c-warning:     oklch(68% 0.18 70);
+  --c-danger:      oklch(58% 0.22 25);
+  --c-info:        oklch(65% 0.15 240);
+
+  /* ---- 资产轨专属色（Phase 5 用；与普通视频轨必须视觉可分）---- */
+  --c-asset-char:  oklch(62% 0.15 280);   /* 人物轨：紫 */
+  --c-asset-loc:   oklch(60% 0.16 160);   /* 场景轨：绿 */
+  --c-asset-ref:   oklch(64% 0.14 50);    /* 参考资产：琥珀 */
+
+  /* ---- 间距（4px 基准）---- */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+
+  /* ---- 圆角（桌面工具：克制，不做大圆角）---- */
+  --r-sm: 3px;  --r-md: 5px;  --r-lg: 8px;
+
+  /* ---- 字号 ----
+   * 桌面工具可以高密度，但不能以牺牲辨识度换密度。
+   * 改造前实测：fs-xs(10px) 用了 111 处、硬编码 9px 有 63 处，
+   * 而正文 fs-base(12px) 只用了 1 处——整体偏小一档。故分级上调。
+   * 9px 一律不再使用（badge/meta 也用 fs-xs）。
+   */
+  --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px;
+  --fs-md: 14px; --fs-lg: 15px; --fs-xl: 17px;
+
+  /* ---- 过渡 ---- */
+  --t-fast: 120ms ease;  --t-std: 200ms ease;
+
+  /* ---- 布局尺寸（EditorLayout 四区，可被拖拽覆盖）---- */
+  --rail-w: 56px;         /* 左侧图标导航栏宽度（固定） */
+  --panel-w: 300px;       /* 左侧内容面板宽度（可拖） */
+  --inspector-w: 300px;   /* 右侧检查器宽度（可拖） */
+  --topbar-h: 44px;       /* 顶栏高度 */
+  --dock-h: 260px;        /* 底部时间轴高度（可拖） */
+}
+
+/* 亮色主题：只覆盖中性色阶，强调色/语义色沿用（OKLCH 下亮暗都够对比度） */
+[data-theme="light"] {
+  --c-bg:       oklch(97% 0.003 250);
+  --c-surface:  oklch(94% 0.004 250);
+  --c-raised:   oklch(100% 0 0);
+  --c-hover:    oklch(91% 0.005 250);
+  --c-active:   oklch(88% 0.006 250);
+  --c-border:   oklch(78% 0.008 250);
+  --c-disabled: oklch(62% 0.008 250);
+  --c-muted:    oklch(46% 0.010 250);
+  --c-text:     oklch(22% 0.006 250);
+  --c-text-hi:  oklch(10% 0.004 250);
+  --c-track:      oklch(95% 0.004 250);
+  --c-track-alt:  oklch(92% 0.005 250);
+}
