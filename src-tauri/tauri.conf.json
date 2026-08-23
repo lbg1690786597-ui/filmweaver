@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FilmWeaver",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "identifier": "com.filmweaver.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -16,7 +16,9 @@
         "width": 1080,
         "height": 800,
         "minWidth": 800,
-        "minHeight": 600
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": false
       }
     ],
     "security": {
@@ -40,11 +42,13 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk5RDA4REY2MzA4M0E3NUEKUldSYXA0TXc5bzNRbWRrNENjaGFINnBHVGJoZXNkUEFxenljRENSaEZ4ZE9QcEVMeStOREJYWnAK",
       "endpoints": [
+        "http://120.26.143.129:9080/fw/media/appcast/latest.json",
         "https://github.com/lbg1690786597-ui/filmweaver/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
-      }
+      },
+      "dangerousInsecureTransportProtocol": true
     }
   }
 }
