@@ -1,0 +1,170 @@
+/* EditorLayout.css — 四区编辑器骨架布局
+ *
+ * 外层用 CSS Grid，尺寸由 token（动态 CSS 变量）驱动。
+ * 拖拽分隔条改写 --panel-w / --inspector-w / --dock-h，整体自动响应。
+ */
+
+.fw-editor {
+  display: grid;
+  grid-template-rows: var(--topbar-h) 1fr 5px var(--dock-h);
+  grid-template-columns: 1fr;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;   /* .fw-banners 绝对定位的锚点 */
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: var(--fs-base);
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  /* 关闭系统拖拽手柄触发的文字选中 */
+  user-select: none;
+}
+
+/* 顶栏 */
+.fw-topbar {
+  grid-row: 1;
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-3);
+  gap: var(--sp-2);
+  min-width: 0;
+  z-index: 40;
+}
+
+/* 横幅层：悬浮在顶栏正下方，不参与 grid 布局
+ * （否则 toast/进度条一出现就把四区挤下去一行，播放器高度会跳） */
+.fw-banners {
+  position: absolute;
+  top: var(--topbar-h);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+.fw-banners > * { pointer-events: auto; }
+
+/* 中段（Rail + Panel + Player + Inspector）*/
+.fw-mid {
+  grid-row: 2;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* 左侧图标导航栏（固定宽，不可拖）*/
+.fw-rail {
+  width: var(--rail-w);
+  flex-shrink: 0;
+  background: var(--c-surface);
+  border-right: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--sp-2) 0;
+  gap: var(--sp-1);
+  overflow: hidden;
+  z-index: 30;
+}
+
+/* 左侧内容面板（宽度可拖）*/
+.fw-panel {
+  width: var(--panel-w);
+  flex-shrink: 0;
+  background: var(--c-surface);
+  border-right: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 中央播放器（flex-grow 占满剩余空间）*/
+.fw-player {
+  flex: 1 1 0;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--c-bg);
+}
+
+/* 右侧检查器（宽度可拖）*/
+.fw-inspector {
+  width: var(--inspector-w);
+  flex-shrink: 0;
+  background: var(--c-surface);
+  border-left: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 分隔条——水平（高度拖拽）*/
+.fw-rz.fw-rz-h {
+  grid-row: 3;
+  height: 5px;
+  width: 100%;
+  background: var(--c-border);
+  cursor: row-resize;
+  flex-shrink: 0;
+  transition: background var(--t-fast);
+}
+.fw-rz.fw-rz-h:hover { background: var(--c-accent-dim); }
+
+/* 分隔条——垂直（宽度拖拽，在 fw-mid 内）*/
+.fw-rz.fw-rz-v {
+  width: 4px;
+  flex-shrink: 0;
+  background: var(--c-border);
+  cursor: col-resize;
+  transition: background var(--t-fast);
+  z-index: 10;
+}
+.fw-rz.fw-rz-v:hover { background: var(--c-accent-dim); }
+
+/* 底部时间轴区 */
+.fw-dock {
+  grid-row: 4;
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-border);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;   /* .fw-tl-switch 等浮层的定位锚点 */
+}
+
+/* 最大化：dock */
+.fw-editor.max-dock .fw-mid { display: none; }
+.fw-editor.max-dock .fw-rz.fw-rz-h { display: none; }
+.fw-editor.max-dock .fw-dock {
+  grid-row: 2 / 5;
+  border-top: none;
+}
+
+/* 最大化：player */
+.fw-editor.max-player .fw-rail,
+.fw-editor.max-player .fw-panel,
+.fw-editor.max-player .fw-inspector,
+.fw-editor.max-player .fw-rz.fw-rz-v { display: none; }
+.fw-editor.max-player .fw-player { min-width: 0; }
+
+/* ---- 无边框窗口（decorations: false）----
+ *
+ * 关掉系统装饰后窗口没有任何外框，深色 UI 贴在深色桌面上会分不出边界。
+ * 用 1px inset 描边补一条——不能用 border，那会挤压 100vw/100vh 的 grid
+ * 导致底部被裁掉 2px。
+ *
+ * ⚠️ Windows 上 decorations:false 已知会影响四边 resize（tauri#8519）与
+ * Win11 Snap Layouts（悬停最大化键的四宫格菜单会消失）。这两项**必须在
+ * Windows 安装包里实测**；若确认失效，需接 tauri-plugin-decoration
+ * （Win32 WM_NCHITTEST 覆盖层，纯前端做不到）。
+ * Linux 开发机与浏览器预览都复现不了，别拿预览通过当验收。
+ */
+.fw-editor {
+  box-shadow: inset 0 0 0 1px var(--c-border);
+}
+
+/* 最大化时去掉描边：紧贴屏幕边缘还画线，反而像没最大化干净 */
+.fw-editor.win-maximized { box-shadow: none; }
