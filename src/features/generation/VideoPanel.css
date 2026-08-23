@@ -1,0 +1,330 @@
+/* VideoPanel.css */
+
+.fw-vp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+}
+
+/* 进度概览 */
+.fw-vp-overview {
+  background: var(--c-raised);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.fw-vp-pct {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.fw-vp-pct-num {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--c-text-hi);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.fw-vp-pct-num em { font-style: normal; font-size: var(--fs-md); color: var(--c-muted); }
+
+.fw-vp-pct-label {
+  font-size: var(--fs-sm);
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-vp-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--c-border);
+  overflow: hidden;
+}
+
+.fw-vp-fill {
+  height: 100%;
+  background: var(--c-accent);
+  transition: width var(--t-std);
+  border-radius: 3px;
+}
+
+.fw-vp-running {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  color: var(--c-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 质量档 */
+.fw-vp-sec {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--c-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.fw-vp-sec-tip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.7;
+  margin-left: auto;
+  cursor: help;
+}
+
+.fw-vp-tiers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-1);
+}
+
+.fw-vp-tier {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 2px solid var(--c-border);
+  border-radius: var(--r-lg);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.fw-vp-tier:hover { border-color: var(--c-accent-dim); background: var(--c-raised); }
+.fw-vp-tier.on {
+  border-color: var(--c-accent);
+  background: color-mix(in oklch, var(--c-accent) 10%, var(--c-raised));
+}
+.fw-vp-tier svg { color: var(--c-accent); }
+.fw-vp-tier.final svg { color: var(--c-warning); }
+.fw-vp-tier.final.on { border-color: var(--c-warning); background: color-mix(in oklch, var(--c-warning) 10%, var(--c-raised)); }
+
+.fw-vp-tier-name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-text);
+}
+.fw-vp-tier.on .fw-vp-tier-name { color: var(--c-accent); }
+.fw-vp-tier.final.on .fw-vp-tier-name { color: var(--c-warning); }
+
+.fw-vp-tier-desc {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.4;
+}
+
+/* 主按钮 */
+.fw-vp-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  border: none;
+  border-radius: var(--r-lg);
+  background: var(--c-accent);
+  color: oklch(98% 0.005 250);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--t-fast);
+  width: 100%;
+}
+.fw-vp-primary:hover:not(:disabled) { background: var(--c-accent-hi); }
+.fw-vp-primary:disabled { background: var(--c-border); color: var(--c-muted); cursor: default; }
+
+.fw-vp-hint {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  opacity: 0.7;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* 动作行 */
+.fw-vp-action {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast);
+  border-left-width: 3px;
+}
+.fw-vp-action.cost-free { border-left-color: var(--c-success); }
+.fw-vp-action.cost-image { border-left-color: var(--c-info); }
+.fw-vp-action.cost-video { border-left-color: var(--c-accent); }
+.fw-vp-action:hover:not(:disabled) { background: var(--c-raised); border-color: var(--c-accent-dim); border-left-color: inherit; }
+.fw-vp-action:disabled { opacity: 0.5; cursor: default; }
+
+.fw-vp-action-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--r-sm);
+  background: var(--c-raised);
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+.fw-vp-action:hover .fw-vp-action-ico { color: var(--c-text); }
+
+.fw-vp-action-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fw-vp-action-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.fw-vp-action-badge {
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--c-warning) 20%, transparent);
+  color: var(--c-warning);
+}
+
+.fw-vp-action-desc {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.fw-vp-cost {
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.fw-vp-cost.free { background: color-mix(in oklch, var(--c-success) 18%, transparent); color: var(--c-success); }
+.fw-vp-cost.image { background: color-mix(in oklch, var(--c-info) 18%, transparent); color: var(--c-info); }
+.fw-vp-cost.video { background: color-mix(in oklch, var(--c-accent) 18%, transparent); color: var(--c-accent); }
+
+/* 需要关注 */
+.fw-vp-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--c-warning) 12%, transparent);
+  border-left: 2px solid var(--c-warning);
+  font-size: var(--fs-xs);
+  color: var(--c-warning);
+}
+.fw-vp-alert.danger {
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+  border-left-color: var(--c-danger);
+  color: var(--c-danger);
+}
+.fw-vp-alert svg { flex-shrink: 0; }
+.fw-vp-alert span { flex: 1; }
+.fw-vp-alert button {
+  padding: 1px var(--sp-2);
+  border: 1px solid currentColor;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-fast);
+}
+.fw-vp-alert button:hover:not(:disabled) { background: color-mix(in oklch, currentColor 15%, transparent); }
+.fw-vp-alert button:disabled { opacity: 0.4; cursor: default; }
+
+.fw-vp-failed { display: flex; flex-direction: column; gap: var(--sp-1); }
+
+.fw-vp-failed-list { display: flex; flex-wrap: wrap; gap: 3px; }
+
+.fw-vp-failed-chip {
+  padding: 2px var(--sp-1);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-raised);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color var(--t-fast), color var(--t-fast);
+  font-variant-numeric: tabular-nums;
+}
+.fw-vp-failed-chip:hover { border-color: var(--c-accent-dim); color: var(--c-accent); }
+
+.fw-vp-failed-more { font-size: var(--fs-xs); color: var(--c-muted); align-self: center; }
+
+/* 高级折叠 */
+.fw-vp-adv-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  padding: var(--sp-1) 0;
+  transition: color var(--t-fast);
+}
+.fw-vp-adv-head:hover { color: var(--c-text); }
+
+.fw-vp-adv {
+  background: var(--c-bg);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.fw-vp-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fs-xs);
+}
+.fw-vp-row span:first-child { color: var(--c-muted); }
+.fw-vp-row span:last-child { color: var(--c-text); }
+
+.fw-vp-adv-note {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  opacity: 0.7;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+@keyframes fw-spin { to { transform: rotate(360deg); } }
+.fw-spin { animation: fw-spin 0.8s linear infinite; }
