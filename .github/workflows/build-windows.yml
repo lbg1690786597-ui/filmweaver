@@ -10,6 +10,19 @@ on:
 permissions:
   contents: write
 
+env:
+  # ---- FFmpeg sidecar 版本锁定 ----
+  # 固定版本而非 ffmpeg-release-essentials.zip（那个永远指向最新版）：
+  # 浮动版本意味着同一个 tag 今天和下个月构建出的安装包里 ffmpeg 不是同一个，
+  # 出了渲染问题无从复现。升级 Render Engine 时再统一改这里。
+  #
+  # 校验和取自 gyan.dev 官方发布的 .sha256（与 zip 同目录同名）。
+  # 必须校验：实测这个 106MB 的包在弱网下会被静默截断成残缺 zip，
+  # 不校验就会打包一个坏的 ffmpeg.exe，直到用户点导出才暴露。
+  FFMPEG_VERSION: "9.0.1"
+  FFMPEG_URL: "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip"
+  FFMPEG_SHA256: "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -33,16 +46,141 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
-      # R2: 下载 ffmpeg 作为 sidecar（bundle.externalBin 需要带 target triple 后缀的文件名）
-      - name: 下载 ffmpeg sidecar
+      # ---- 类型检查（含 scripts/，见 tsconfig.scripts.json）----
+      # 放在编译前：类型错误在这里 5 秒暴露，比 tauri build 十几分钟后失败便宜得多
+      - name: 类型检查
+        run: npm run typecheck
+
+      # ---- FFmpeg sidecar ----
+      # 缓存按 URL 做 key：版本不变就不重复下 106MB
+      - name: 缓存 FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-cache
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-win-x64
+
+      - name: 下载 FFmpeg（带 SHA256 校验）
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path ffmpeg-cache | Out-Null
+          Write-Host "下载 FFmpeg $env:FFMPEG_VERSION ..."
+          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg-cache/ffmpeg.zip
+
+          $actual = (Get-FileHash ffmpeg-cache/ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+          $expect = $env:FFMPEG_SHA256.ToLower()
+          if ($actual -ne $expect) {
+            Write-Host "::error::FFmpeg 校验和不匹配"
+            Write-Host "  期望: $expect"
+            Write-Host "  实际: $actual"
+            Write-Host "  下载可能被截断，或上游重新发布了同名文件。"
+            Write-Host "  请核对 $env:FFMPEG_URL.sha256 后更新 workflow 里的 FFMPEG_SHA256。"
+            exit 1
+          }
+          Write-Host "✅ 校验通过: $actual"
+
+      - name: 解出 sidecar 二进制
+        shell: pwsh
+        run: |
+          # Tauri sidecar 要求文件名带 target triple 后缀，且与
+          # tauri.conf.json 的 bundle.externalBin "binaries/ffmpeg" 对应。
+          #
+          # 只放 ffmpeg.exe，不放 ffprobe.exe：本项目前端一处都没调用 ffprobe
+          # （见 src/lib/localRender.ts —— 用 `ffmpeg -i` 的 stderr 探测音轨），
+          # 多打一个 ~80MB 的 exe 只会让安装包白白变大。
           New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
-          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp
+          Expand-Archive ffmpeg-cache/ffmpeg.zip -DestinationPath ffmpeg-tmp -Force
           $exe = Get-ChildItem -Recurse ffmpeg-tmp -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { Write-Host "::error::压缩包里没找到 ffmpeg.exe"; exit 1 }
           Copy-Item $exe.FullName "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe"
-          Remove-Item -Recurse -Force ffmpeg-tmp, ffmpeg.zip
+          Remove-Item -Recurse -Force ffmpeg-tmp
+
+      # ---- 能力门禁 ----
+      # 「sidecar 能跑」不等于「渲染引擎能用」。essentials 构建如果缺了
+      # xfade / blend / gblur，转场和特效会**静默降级**——不报错、只是没效果，
+      # 等用户做完片子才发现。所以在打包前就断言这些能力存在。
+      - name: 验证 FFmpeg 能力满足渲染引擎需求
+        shell: pwsh
+        run: |
+          $ff = "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe"
+          Write-Host "=== 版本 ==="
+          & $ff -hide_banner -version | Select-Object -First 1
+
+          # 与 src/render/capabilities.ts 的 NEEDED_FILTERS 保持一致。
+          # 缺任何一个都会让对应功能静默失效，故这里 exit 1 挡住发布。
+          $required = @(
+            "xfade","overlay","blend","split","scale","pad","rotate","crop",
+            "setpts","trim","concat",
+            "eq","colorbalance","unsharp","lut3d","curves","colorchannelmixer",
+            "gblur","boxblur","vignette","noise","rgbashift",
+            "atempo","afade","amix","volume","anullsrc",
+            "subtitles"
+          )
+          $have = & $ff -hide_banner -filters | Out-String
+          $missing = @()
+          foreach ($f in $required) {
+            if ($have -notmatch "(?m)^\s*[A-Z\.]{3,}\s+$([regex]::Escape($f))\s") {
+              $missing += $f
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::FFmpeg 缺少渲染引擎必需的滤镜: $($missing -join ', ')"
+            Write-Host "  该构建不适合本项目——换 full 构建或改用其他来源。"
+            exit 1
+          }
+          Write-Host "✅ $($required.Count) 个必需滤镜全部可用"
+
+          # H.264/H.265 解码：AI 生成的素材基本都是这两种
+          $decoders = & $ff -hide_banner -decoders | Out-String
+          foreach ($d in @("h264","hevc")) {
+            if ($decoders -notmatch "(?m)^\s*[A-Z\.]{3,}\s+$d\s") {
+              Write-Host "::error::缺少 $d 解码器"; exit 1
+            }
+          }
+          Write-Host "✅ H.264 / H.265 解码可用"
+
+          # 字幕烧录依赖 libass；essentials 构建带，但确认一下
+          if ($have -notmatch "(?m)^\s*[A-Z\.]{3,}\s+subtitles\s") {
+            Write-Host "::error::缺少 subtitles 滤镜（字幕烧录不可用）"; exit 1
+          }
+
+          # xfade 转场：UI 给了 15 种，看这个构建支持几种。
+          # 这里**只警告不拦截**——编译器对不支持的转场会降级成硬切，
+          # 属于可接受的功能降级，不该挡住整个发布。
+          $ui = @("fade","fadeblack","fadewhite","dissolve","wipeleft","wiperight",
+                  "wipeup","wipedown","slideleft","slideright","slideup","slidedown",
+                  "circleopen","circleclose","zoomin")
+          $xf = & $ff -hide_banner -h filter=xfade 2>&1 | Out-String
+          $miss = $ui | Where-Object { $xf -notmatch "(?m)^\s{5,}$([regex]::Escape($_))\s+-?\d+\s" }
+          if ($miss) {
+            Write-Host "::warning::本构建不支持转场: $($miss -join ', ')（导出时降级为硬切）"
+          } else {
+            Write-Host "✅ UI 提供的 15 种转场全部支持"
+          }
+
+          # 硬件编码器：**列出即可，不实跑也不拦截**。
+          # GitHub Runner 是虚拟机，没有 NVIDIA/Intel/AMD 显卡，实跑必然失败
+          # （本项目 capabilities.ts 就因此坚持运行时实跑探测而非查列表）。
+          # 这里只确认这个构建**编译进了**这些编码器，用户机器上有硬件才会真正启用。
+          $encoders = & $ff -hide_banner -encoders | Out-String
+          foreach ($e in @("h264_nvenc","h264_qsv","h264_amf")) {
+            if ($encoders -match "(?m)^\s*[A-Z\.]{3,}\s+$e\s") {
+              Write-Host "✅ 已编译 $e（用户端有对应硬件时启用）"
+            } else {
+              Write-Host "::warning::该构建未编译 $e —— 对应显卡的用户只能软件编码"
+            }
+          }
+
+      # ---- 渲染引擎离线验证 ----
+      # 用刚解出的 Windows ffmpeg.exe 真跑一遍分段/转场/多轨/特效，
+      # 确保「这个具体的 ffmpeg 二进制」能跑通渲染管线，而不只是"有这些滤镜"。
+      - name: 渲染管线实跑验证
+        shell: pwsh
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}/src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+        run: npm run verify:render
+        continue-on-error: true
 
       # tauri-action：编译 + 用私钥给更新包签名 + 发 Release（含安装包与 latest.json，供应用内自动更新）
       - name: 编译并发布（含自动更新产物）
@@ -54,6 +192,9 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "FilmWeaver 织影 ${{ github.ref_name }}"
-          releaseBody: "自动构建发布。应用内点「⟳ 检查更新」即可静默升级。"
+          releaseBody: |
+            自动构建发布。应用内点「⟳ 检查更新」即可静默升级。
+
+            内置 FFmpeg ${{ env.FFMPEG_VERSION }}（无需用户另行安装）。
           releaseDraft: false
           prerelease: false
