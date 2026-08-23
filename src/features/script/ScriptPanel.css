@@ -1,0 +1,273 @@
+/* ScriptPanel.css */
+
+.fw-script {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+}
+
+/* 导入区 */
+.fw-script-import { display: flex; gap: var(--sp-1); }
+
+.fw-script-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.fw-script-btn:hover:not(:disabled) { background: var(--c-raised); border-color: var(--c-accent-dim); }
+.fw-script-btn:disabled { opacity: 0.5; cursor: default; }
+.fw-script-btn.primary {
+  flex: 1;
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+  color: oklch(98% 0.005 250);
+  font-weight: 600;
+}
+.fw-script-btn.primary:hover:not(:disabled) { background: var(--c-accent-hi); }
+.fw-script-btn.primary:disabled { background: var(--c-border); border-color: var(--c-border); color: var(--c-muted); }
+.fw-script-btn.wide { width: 100%; margin-top: var(--sp-2); }
+
+/* 粘贴区 */
+.fw-script-paste { display: flex; flex-direction: column; gap: var(--sp-1); }
+.fw-script-paste textarea {
+  width: 100%;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2);
+  resize: vertical;
+  outline: none;
+  font-family: inherit;
+  line-height: 1.6;
+}
+.fw-script-paste textarea:focus { border-color: var(--c-accent-dim); }
+
+.fw-script-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: var(--sp-2);
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+  border-left: 2px solid var(--c-danger);
+  border-radius: var(--r-sm);
+  color: var(--c-danger);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.fw-script-err svg { flex-shrink: 0; margin-top: 1px; }
+
+/* 分集列表 */
+.fw-script-sec {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  padding: var(--sp-1) 0;
+}
+
+.fw-script-eps { display: flex; flex-direction: column; gap: 2px; }
+
+.fw-script-ep {
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--c-raised);
+}
+.fw-script-ep.open { border-color: var(--c-accent-dim); }
+
+.fw-script-ep-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--t-fast);
+}
+.fw-script-ep-head:hover { background: var(--c-surface); }
+.fw-script-ep-head > svg { flex-shrink: 0; color: var(--c-muted); }
+
+.fw-script-ep-title {
+  flex: 1;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.fw-script-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--c-surface);
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+.fw-script-chip.warn {
+  background: color-mix(in oklch, var(--c-warning) 20%, transparent);
+  color: var(--c-warning);
+}
+
+.fw-script-ep-len {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-script-ep-body {
+  padding: var(--sp-2);
+  border-top: 1px solid var(--c-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.fw-script-ta {
+  width: 100%;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  padding: var(--sp-2);
+  outline: none;
+  font-family: inherit;
+  line-height: 1.7;
+  resize: vertical;
+}
+.fw-script-ta:focus { border-color: var(--c-accent-dim); }
+
+.fw-script-ep-acts {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.fw-script-hint {
+  flex: 1;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  opacity: 0.7;
+}
+
+.fw-script-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.fw-script-mini:hover:not(:disabled) { background: var(--c-surface); color: var(--c-text); }
+.fw-script-mini:disabled { opacity: 0.4; cursor: default; }
+
+/* 分集确认弹窗 */
+.fw-script-mask {
+  position: fixed;
+  inset: 0;
+  background: oklch(0% 0 0 / 0.6);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fw-script-dialog {
+  width: 420px;
+  max-width: 90vw;
+  max-height: 80vh;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  box-shadow: 0 12px 40px oklch(0% 0 0 / 0.5);
+}
+
+.fw-script-dialog h3 {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--c-text-hi);
+  margin: 0;
+}
+
+.fw-script-draft-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fw-script-draft-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--c-raised);
+  font-size: var(--fs-xs);
+}
+
+.fw-script-draft-no {
+  width: 20px;
+  text-align: center;
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.fw-script-draft-title {
+  flex: 1;
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.fw-script-draft-wc { color: var(--c-muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+.fw-script-dialog-acts {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+@keyframes fw-spin { to { transform: rotate(360deg); } }
+.fw-spin { animation: fw-spin 0.8s linear infinite; }
