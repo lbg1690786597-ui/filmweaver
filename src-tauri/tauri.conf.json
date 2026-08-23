@@ -42,7 +42,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk5RDA4REY2MzA4M0E3NUEKUldSYXA0TXc5bzNRbWRrNENjaGFINnBHVGJoZXNkUEFxenljRENSaEZ4ZE9QcEVMeStOREJYWnAK",
       "endpoints": [
-        "http://120.26.143.129:9080/fw/media/appcast/latest.json",
+        "http://118.196.33.51:9080/fw/media/appcast/latest.json",
         "https://github.com/lbg1690786597-ui/filmweaver/releases/latest/download/latest.json"
       ],
       "windows": {
