@@ -1,15 +1,20 @@
 {
   "name": "filmweaver-desktop",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "verify:render": "tsx scripts/verify-capabilities.ts && tsx scripts/verify-segments.ts && tsx scripts/verify-compiler.ts && tsx scripts/verify-multitrack.ts && tsx scripts/verify-overlay-ui.ts && tsx scripts/verify-effects.ts",
+    "verify:ui": "tsx scripts/verify-contrast.ts && tsx scripts/verify-css-coverage.ts && tsx scripts/verify-snap.ts && tsx scripts/verify-layout.ts"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-fs": "^2.5.1",
@@ -17,14 +22,19 @@
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.1",
+    "lucide-react": "^1.33.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.2",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
+    "@types/node": "^26.2.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "tsx": "^4.23.12",
     "typescript": "^5.5.3",
     "vite": "^5.4.0"
   }
