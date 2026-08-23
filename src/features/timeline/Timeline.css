@@ -1,0 +1,279 @@
+/* Timeline.css */
+
+.fw-tl {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--c-surface);
+}
+
+.fw-tl.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+
+/* ---- 工具条 ---- */
+.fw-tl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 32px;
+  padding: 0 var(--sp-2);
+  border-bottom: 1px solid var(--c-border);
+  flex-shrink: 0;
+  background: var(--c-surface);
+}
+
+.fw-tl-tbtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--t-fast), color var(--t-fast);
+  flex-shrink: 0;
+}
+.fw-tl-tbtn:hover:not(:disabled) { background: var(--c-raised); color: var(--c-text); }
+.fw-tl-tbtn:disabled { opacity: 0.3; cursor: default; }
+
+.fw-tl-zoom {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+}
+
+.fw-tl-tb-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--c-border);
+  flex-shrink: 0;
+  margin: 0 var(--sp-1);
+}
+
+.fw-tl-tb-spacer { flex: 1; }
+
+.fw-tl-summary {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 滚动区 ---- */
+.fw-tl-scroll {
+  flex: 1 1 0;
+  overflow: auto;
+  min-height: 0;
+  position: relative;
+  /* 横向滚动 */
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+/* ---- 轨道行 ---- */
+.fw-tl-track {
+  display: flex;
+  border-bottom: 1px solid color-mix(in oklch, var(--c-border) 60%, transparent);
+  position: relative;
+  /* 轨道要与时间轴底色分开，否则一片糊在一起看不出行 */
+  background: var(--c-track);
+}
+/* 隔行区分：多轨时更容易横向扫读 */
+.fw-tl-track:nth-child(even) { background: var(--c-track-alt); }
+
+/* 资产轨用左边框 + 专属色与媒体轨区分（不做大面积鲜艳底色） */
+.fw-tl-track[data-track-kind="asset-char"] { border-left: 3px solid var(--c-asset-char); }
+.fw-tl-track[data-track-kind="asset-loc"]  { border-left: 3px solid var(--c-asset-loc); }
+.fw-tl-track[data-track-kind="asset-ref"]  { border-left: 3px solid var(--c-asset-ref); }
+
+.fw-tl-track.hidden { opacity: 0.3; }
+
+/* ---- 轨道内容区（Clip 绝对定位在这里）---- */
+.fw-tl-lane {
+  position: relative;
+  flex: 1;
+  min-height: 100%;
+  cursor: default;
+}
+
+/* ---- 播放头 ---- */
+.fw-tl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--c-accent);
+  pointer-events: none;
+  z-index: 25;
+}
+
+.fw-tl-playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -4px;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 8px solid var(--c-accent);
+}
+
+/* ---- 定位线 ---- */
+.fw-tl-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--c-text-hi) 0px, var(--c-text-hi) 4px,
+    transparent 4px, transparent 8px
+  );
+  pointer-events: none;
+  z-index: 24;
+  opacity: 0.7;
+}
+
+/* ---- 资产段 ---- */
+.fw-asset-seg {
+  position: absolute;
+  top: 4px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-asset-char);
+  background: color-mix(in oklch, var(--c-asset-char) 20%, var(--c-surface));
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color var(--t-fast);
+}
+.fw-asset-seg:hover { border-color: var(--c-asset-char); z-index: 2; }
+
+/* 场景轨颜色 */
+[data-track-kind="asset-loc"] .fw-asset-seg {
+  border-color: var(--c-asset-loc);
+  background: color-mix(in oklch, var(--c-asset-loc) 20%, var(--c-surface));
+}
+
+.fw-asset-seg-img {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.fw-asset-seg-ph {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.fw-asset-seg-label {
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* 框选浮层（轨道空白处横拖） */
+.fw-tl-marquee {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border: 1px solid var(--c-accent);
+  background: color-mix(in oklch, var(--c-accent) 18%, transparent);
+  border-radius: var(--r-sm);
+  pointer-events: none;
+  z-index: 8;
+}
+
+/* 拖拽中的实时读数（松手前显示落点） */
+.fw-tl-live {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--c-accent);
+  background: color-mix(in oklch, var(--c-accent) 15%, transparent);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 新旧时间轴切换按钮（Phase 2 过渡期，Phase 5 完成后移除） */
+.fw-tl-switch {
+  position: absolute;
+  right: var(--sp-2);
+  bottom: var(--sp-2);
+  z-index: 30;
+  padding: 2px var(--sp-2);
+  height: 20px;
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: var(--c-raised);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: color var(--t-fast), border-color var(--t-fast);
+  opacity: 0.7;
+}
+.fw-tl-switch:hover { opacity: 1; color: var(--c-text); border-color: var(--c-accent-dim); }
+.fw-tl-switch.on { color: var(--c-accent); border-color: var(--c-accent-dim); opacity: 1; }
+
+/* 资产轨内容区：AssetTrack 自己管行布局，这里只提供定位上下文
+ * （不能给 padding/align，否则每行的绝对定位基准会偏） */
+.fw-tl-lane-asset {
+  padding: 0;
+  display: block;
+}
+
+/* Overlay 叠加轨：与主轨视觉区分——它的 clip 是"盖在上面"而非"排在后面"，
+   位置由绝对时间决定，拖动语义也不同（自由拖 vs 换顺序）。 */
+[data-track-kind="overlay"] {
+  background: color-mix(in oklch, var(--c-warning) 5%, transparent);
+}
+[data-track-kind="overlay"] .fw-clip {
+  border-style: dashed;
+  border-color: color-mix(in oklch, var(--c-warning) 55%, transparent);
+}
+[data-track-kind="overlay"] .fw-clip.selected {
+  border-style: solid;
+  border-color: var(--c-warning);
+  box-shadow: 0 0 0 1px var(--c-warning) inset;
+}
+
+/* ---- 工具条：激活态与危险操作 ---- */
+.fw-tl-tbtn.on {
+  background: color-mix(in oklch, var(--c-accent) 20%, transparent);
+  color: var(--c-accent);
+}
+.fw-tl-tbtn.danger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--c-danger) 15%, transparent);
+  color: var(--c-danger);
+}
+
+/* ---- 吸附 guide 线 ----
+   命中吸附点时画一条竖线，让用户知道"贴上了"而不是"手抖停在这儿"。 */
+.fw-tl-snapguide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--c-accent);
+  box-shadow: 0 0 4px var(--c-accent);
+  pointer-events: none;
+  z-index: 25;
+}
