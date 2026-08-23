@@ -1,0 +1,43 @@
+/* WindowControls.css — 原生风格窗口按钮
+ *
+ * 刻意不做成业务按钮的样子（无圆角、无外边距、贴死右上角）：
+ * Windows 用户对这三个按钮的位置和形状有肌肉记忆，做成胶囊按钮反而认不出。
+ * 尺寸对齐 Windows 原生：46×32 的方形热区，图标居中。
+ */
+
+.fw-wc {
+  display: flex;
+  align-self: stretch;   /* 撑满顶栏高度——原生按钮是顶到边的 */
+  /* 抵消 .fw-topbar 的右内边距，让关闭按钮真正贴到窗口右上角 */
+  margin-right: calc(-1 * var(--sp-3));
+  margin-left: var(--sp-1);
+  flex-shrink: 0;
+}
+
+.fw-wc-btn {
+  width: 46px;
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  /* 不加 transition：原生窗口按钮是瞬时反馈，渐变会显得迟滞 */
+}
+
+.fw-wc-btn:hover {
+  background: var(--c-hover);
+  color: var(--c-text-hi);
+}
+
+.fw-wc-btn:active { background: var(--c-active); }
+
+/* 关闭键 hover 变红，与 Windows 一致。用固定红而非 --c-danger：
+   语义色会随主题变化，而这个红是操作系统约定，不该跟着主题走。 */
+.fw-wc-btn.close:hover {
+  background: oklch(52% 0.21 25);
+  color: oklch(98% 0.01 25);
+}
+.fw-wc-btn.close:active { background: oklch(45% 0.19 25); }
