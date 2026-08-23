@@ -1,0 +1,20 @@
+{
+  // 验证脚本跑在 Node 里（node: 内建模块 + tsx 执行），
+  // 与浏览器端的 tsconfig.json 不能共用 lib/types。
+  //
+  // 单独建这份而不是把 scripts 塞进主 include：主配置的 lib 只有 DOM，
+  // 脚本里的 node:child_process 会全部报 TS2307。
+  //
+  // 缘由：verify-* 的 mock Capabilities 漏了 transitions 字段，
+  // 因为完全不在任何 tsconfig 覆盖内，一直到运行期才炸
+  // （"Cannot read properties of undefined (reading 'size')"）。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // DOM 也留着：脚本 import 的 render/ 模块间接牵到浏览器类型
+    "lib": ["ES2022", "DOM"],
+    // vite/client：脚本 import 的 src/api.ts 用了 import.meta.env
+    "types": ["node", "vite/client"],
+    "noEmit": true
+  },
+  "include": ["scripts"]
+}
