@@ -1,0 +1,212 @@
+/* Inspector.css — 右侧属性检查器 */
+
+.fw-insp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+  flex-shrink: 0;
+}
+
+.fw-insp-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-insp-status {
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--c-border);
+  color: var(--c-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.fw-insp-status.adopted { background: color-mix(in oklch, var(--c-success) 25%, transparent); color: var(--c-success); }
+.fw-insp-status.generating,
+.fw-insp-status.prompting { background: color-mix(in oklch, var(--c-accent) 25%, transparent); color: var(--c-accent); }
+.fw-insp-status.failed { background: color-mix(in oklch, var(--c-danger) 25%, transparent); color: var(--c-danger); }
+.fw-insp-status.review { background: color-mix(in oklch, var(--c-warning) 25%, transparent); color: var(--c-warning); }
+
+/* Tab 条 */
+.fw-insp-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--c-border);
+  flex-shrink: 0;
+}
+
+.fw-insp-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color var(--t-fast), border-color var(--t-fast);
+}
+.fw-insp-tab:hover { color: var(--c-text); }
+.fw-insp-tab.active { color: var(--c-accent); border-bottom-color: var(--c-accent); }
+
+.fw-insp-body {
+  flex: 1 1 0;
+  overflow-y: auto;
+  min-height: 0;
+  padding-bottom: var(--sp-4);
+}
+
+/* Section */
+.fw-insp-sec {
+  border-bottom: 1px solid var(--c-border);
+}
+
+.fw-insp-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: var(--sp-3) var(--sp-3) var(--sp-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  /* 标题此前和 key 同为 muted，导致「区块标题」与「字段名」分不出层级。
+     提到 text-hi 并加字号，让 标题 > 值 > 字段名 的三级关系成立。 */
+  color: var(--c-text-hi);
+  letter-spacing: 0.02em;
+}
+.fw-insp-sec-head svg { color: var(--c-accent); }
+
+.fw-insp-sec-body {
+  padding: 0 var(--sp-3) var(--sp-3);
+}
+
+/* 键值行 */
+.fw-insp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 4px 0;
+  font-size: var(--fs-sm);
+  min-height: 22px;
+}
+
+.fw-insp-k {
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+
+.fw-insp-v {
+  color: var(--c-text);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chip */
+.fw-insp-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 9px;
+  font-size: var(--fs-xs);
+  background: var(--c-raised);
+  color: var(--c-text);
+  white-space: nowrap;
+}
+.fw-insp-chip.ok { background: color-mix(in oklch, var(--c-success) 20%, transparent); color: var(--c-success); }
+.fw-insp-chip.warn { background: color-mix(in oklch, var(--c-warning) 20%, transparent); color: var(--c-warning); }
+.fw-insp-chip.info { background: color-mix(in oklch, var(--c-info) 20%, transparent); color: var(--c-info); }
+.fw-insp-chip.char { background: color-mix(in oklch, var(--c-asset-char) 22%, transparent); color: var(--c-asset-char); }
+.fw-insp-chip.loc { background: color-mix(in oklch, var(--c-asset-loc) 22%, transparent); color: var(--c-asset-loc); }
+
+.fw-insp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.fw-insp-empty {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  opacity: 0.7;
+  padding: var(--sp-1) 0;
+}
+
+.fw-insp-alert {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--c-warning) 12%, transparent);
+  border-left: 2px solid var(--c-warning);
+  color: var(--c-warning);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.fw-insp-thumb {
+  width: 100%;
+  border-radius: var(--r-sm);
+  display: block;
+  background: var(--c-bg);
+}
+
+.fw-insp-prompt {
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--c-muted);
+  background: var(--c-bg);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* 操作按钮组 */
+.fw-insp-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-1);
+  padding: var(--sp-3);
+}
+
+.fw-insp-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.fw-insp-act:hover:not(:disabled) { background: var(--c-raised); border-color: var(--c-accent-dim); }
+.fw-insp-act:disabled { opacity: 0.35; cursor: default; }
+
+.fw-insp-tip {
+  padding: var(--sp-4) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.6;
+  text-align: center;
+  opacity: 0.7;
+}
