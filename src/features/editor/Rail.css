@@ -1,0 +1,68 @@
+/* Rail.css — 左侧图标导航栏 */
+
+.fw-rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-md);
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  gap: 2px;
+  padding: 0;
+  transition: background var(--t-fast), color var(--t-fast);
+  position: relative;
+}
+
+.fw-rail-btn svg { stroke-width: 1.75; }
+
+.fw-rail-btn:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+
+.fw-rail-btn.active {
+  background: color-mix(in oklch, var(--c-accent) 18%, transparent);
+  color: var(--c-accent);
+}
+
+.fw-rail-btn.active::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 22px;
+  border-radius: 0 2px 2px 0;
+  background: var(--c-accent);
+}
+
+.fw-rail-label {
+  font-size: var(--fs-xs);
+  line-height: 1;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+.fw-rail-sep {
+  width: 32px;
+  height: 1px;
+  background: var(--c-border);
+  margin: var(--sp-1) auto;
+  flex-shrink: 0;
+}
+
+.fw-rail-group-tag {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--c-muted);
+  letter-spacing: 0.06em;
+  text-align: center;
+  padding: 2px 0;
+  cursor: default;
+}
