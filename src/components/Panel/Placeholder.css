@@ -1,0 +1,29 @@
+/* Placeholder.css — 面板兜底空态 */
+
+.fw-ph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  gap: var(--sp-2);
+}
+
+.fw-ph-icon {
+  color: var(--c-border);
+  margin-bottom: var(--sp-1);
+}
+
+.fw-ph-title {
+  font-size: var(--fs-base);
+  color: var(--c-text);
+}
+
+.fw-ph-desc {
+  font-size: var(--fs-sm);
+  color: var(--c-muted);
+  line-height: 1.6;
+  max-width: 240px;
+}
