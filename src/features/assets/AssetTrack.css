@@ -1,0 +1,200 @@
+/* AssetTrack.css — AI 资产轨
+ *
+ * 视觉上必须与普通视频轨明显区分（PLAN §10）：
+ * 资产轨用**虚线边框 + 半透明色块 + 专属色相**，视频轨是实心缩略图卡片。
+ * 用户一眼要能分出"这条是在播的画面"和"这条是生成时参考什么"。
+ */
+
+.fw-at { display: flex; flex-direction: column; }
+
+.fw-at-row {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid color-mix(in oklch, var(--c-border) 45%, transparent);
+}
+.fw-at-row:last-child { border-bottom: none; }
+
+/* 行头（sticky，横向滚动时不动）
+ *
+ * 两个关键点：
+ * 1) left 必须等于 Timeline 的 GUTTER_W：sticky 偏移相对**滚动容器**算，
+ *    写 left:0 会滑到轨道头（同样 sticky 在 0）底下去，名字被盖住。
+ * 2) margin-right 取负的自身宽度：否则行头会占掉 62px 的轨道宽度，
+ *    资产段的 left = startSec×pxPerSec 就整体右移，与上方视频轨对不齐——
+ *    资产轨的全部意义就是"这一段时间参考什么"，错位等于全错。 */
+.fw-at-rowhead {
+  position: sticky;
+  left: 68px;
+  z-index: 12;
+  width: 62px;
+  margin-right: -62px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 3px;
+  background: color-mix(in oklch, var(--c-surface) 88%, transparent);
+  backdrop-filter: blur(2px);
+  border-right: 1px solid var(--c-border);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.fw-at-rowhead img {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.fw-at-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--c-raised);
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+
+.fw-at-rowname {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* 轨道内容区 */
+.fw-at-lane {
+  position: relative;
+  flex: 1;
+  min-height: 100%;
+}
+
+/* ---- 注入段 ---- */
+.fw-at-run {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  /* 虚线边框：与视频 Clip 的实线卡片区分开 */
+  border: 1px dashed var(--c-asset-char);
+  background: color-mix(in oklch, var(--c-asset-char) 16%, transparent);
+  cursor: pointer;
+  overflow: hidden;
+  box-sizing: border-box;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.fw-at-run:hover { background: color-mix(in oklch, var(--c-asset-char) 28%, transparent); z-index: 3; }
+.fw-at-run.selected {
+  border-style: solid;
+  border-color: var(--c-asset-char);
+  box-shadow: 0 0 0 1px var(--c-asset-char) inset;
+  z-index: 4;
+}
+/* 定位线落在本段内 → 高亮（PLAN §11 联动） */
+.fw-at-run.at-cursor {
+  box-shadow: 0 0 0 1px var(--c-text-hi) inset;
+}
+.fw-at-run.locked { border-style: solid; opacity: 0.85; }
+/* 含人工加入的注入 → 斜纹，区别于 AI 自动判定 */
+.fw-at-run.has-manual {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 4px,
+    color-mix(in oklch, var(--c-text-hi) 10%, transparent) 4px 8px
+  );
+}
+
+/* 场景轨 / 参考轨换色 */
+.fw-at.kind-location .fw-at-run {
+  border-color: var(--c-asset-loc);
+  background: color-mix(in oklch, var(--c-asset-loc) 16%, transparent);
+}
+.fw-at.kind-location .fw-at-run:hover { background: color-mix(in oklch, var(--c-asset-loc) 28%, transparent); }
+.fw-at.kind-location .fw-at-run.selected { border-color: var(--c-asset-loc); box-shadow: 0 0 0 1px var(--c-asset-loc) inset; }
+
+.fw-at.kind-reference .fw-at-run {
+  border-color: var(--c-asset-ref);
+  background: color-mix(in oklch, var(--c-asset-ref) 16%, transparent);
+}
+.fw-at.kind-reference .fw-at-run:hover { background: color-mix(in oklch, var(--c-asset-ref) 28%, transparent); }
+
+.fw-at-run-img {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.fw-at-run-label {
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.fw-at-run-lock { color: var(--c-muted); flex-shrink: 0; }
+
+/* 边缘手柄：改生效范围 */
+.fw-at-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  z-index: 5;
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.fw-at-edge.left { left: 0; background: linear-gradient(to left, transparent, var(--c-text-hi)); }
+.fw-at-edge.right { right: 0; background: linear-gradient(to right, transparent, var(--c-text-hi)); }
+.fw-at-run:hover .fw-at-edge { opacity: 0.5; }
+.fw-at-run.selected .fw-at-edge { opacity: 0.8; }
+.fw-at-run.locked .fw-at-edge { cursor: not-allowed; }
+
+/* 拖入落点提示 */
+.fw-at-dropmark {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border: 1px dashed var(--c-success);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--c-success) 18%, transparent);
+  color: var(--c-success);
+  font-size: var(--fs-xs);
+  pointer-events: none;
+  z-index: 6;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 空态 */
+.fw-at-empty {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  opacity: 0.7;
+  height: 100%;
+  min-height: 20px;
+}
+.fw-at-empty svg { flex-shrink: 0; }
