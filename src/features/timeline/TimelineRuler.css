@@ -1,0 +1,60 @@
+/* TimelineRuler.css */
+
+.fw-tl-ruler-row {
+  display: flex;
+  flex-shrink: 0;
+  height: 22px;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-surface);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.fw-tl-ruler-gutter {
+  flex-shrink: 0;
+  background: var(--c-surface);
+  border-right: 1px solid var(--c-border);
+}
+
+.fw-tl-ruler {
+  position: relative;
+  height: 22px;
+  cursor: col-resize;
+  user-select: none;
+}
+
+.fw-tl-tick {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 2px;
+}
+
+.fw-tl-tick::before {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 8px;
+  background: var(--c-border);
+}
+
+.fw-tl-tick-label {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  padding-left: 3px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-tl-subtick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background: color-mix(in oklch, var(--c-border) 60%, transparent);
+}
