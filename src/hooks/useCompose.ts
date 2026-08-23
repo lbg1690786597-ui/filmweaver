@@ -23,13 +23,43 @@ export function useCompose(opts: {
     .sort((a, b) => a.order - b.order);
   const totalSec = exportClips.reduce((s, x) => s + (x.duration_sec ?? 5), 0);
 
-  const doExport = async () => {
+  const doExport = async (opts?: {
+    width: number; height: number; fps: number;
+    vcodec: string; crf: number; withAudio: boolean;
+  }) => {
     if (!exportClips.length) { say("镜头轨上还没有已生成的镜头"); return; }
     setComposing(true); setFilmUrl(null); setComposeJob(null);
     try {
       const aspect = detail?.base_aspect ?? "9:16";
-      const [w, h] = aspect === "16:9" ? [1920, 1080] : aspect === "1:1" ? [1080, 1080] : [1080, 1920];
-      const job = await api.submitCompose(exportClips.map((s) => s.video_url!), { width: w, height: h });
+      const [dw, dh] = aspect === "16:9" ? [1920, 1080] : aspect === "1:1" ? [1080, 1080] : [1080, 1920];
+      const w = opts?.width ?? dw, h = opts?.height ?? dh;
+      // TB-02：有字幕就取 SRT 一起烧进成片（时间码由后端按镜头顺序换算）
+      let burnSrt: string | undefined;
+      try {
+        const r = await api.subtitlesSrt(detail!.id);
+        if (r.count > 0) burnSrt = r.srt;
+      } catch { /* 拉不到字幕不该挡住导出 */ }
+
+      // TB-01：被分割过的镜头带取片窗口，后端 ffmpeg 用 -ss/-t 裁出对应片段
+      // TB-03/TB-10：带调整参数的镜头把 transform_meta 一并下发
+      const job = await api.submitCompose(
+        exportClips.map((s) => {
+          const hasClip = s.clip_in_sec != null || s.clip_dur_sec != null;
+          const hasTm = !!s.transform_meta && Object.keys(s.transform_meta).length > 0;
+          if (!hasClip && !hasTm) return s.video_url!;
+          return {
+            url: s.video_url!,
+            in: s.clip_in_sec ?? 0,
+            dur: s.clip_dur_sec ?? (s.duration_sec ?? undefined),
+            tm: hasTm ? s.transform_meta! : undefined,
+          };
+        }),
+        {
+          width: w, height: h, fps: opts?.fps ?? 30, burn_srt: burnSrt,
+          vcodec: opts?.vcodec ?? "libx264",
+          crf: opts?.crf ?? 20,
+          with_audio: opts?.withAudio ?? true,
+        });
       setComposeJob(job);
       composeTimer.current = window.setInterval(async () => {
         const s = await api.jobStatus(job.id);
