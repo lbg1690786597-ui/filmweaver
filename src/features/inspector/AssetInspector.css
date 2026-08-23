@@ -1,0 +1,106 @@
+/* AssetInspector.css */
+
+.fw-ai-close {
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  flex-shrink: 0;
+}
+.fw-ai-close:hover { background: var(--c-raised); color: var(--c-text); }
+
+.fw-ai-hero {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+}
+.fw-ai-hero img {
+  width: 100%;
+  border-radius: var(--r-md);
+  display: block;
+  background: var(--c-bg);
+  max-height: 180px;
+  object-fit: contain;
+}
+
+.fw-ai-range {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--c-text);
+  padding: var(--sp-1) 0;
+}
+.fw-ai-range b {
+  font-size: var(--fs-lg);
+  color: var(--c-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-ai-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-ai-hint {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.5;
+  opacity: 0.8;
+  margin-top: 2px;
+}
+
+.fw-ai-manual {
+  margin-top: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--c-info) 12%, transparent);
+  color: var(--c-info);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.fw-ai-sub {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--c-muted);
+}
+
+/* 受影响镜头 chips */
+.fw-ai-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.fw-ai-shot {
+  padding: 2px 5px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-raised);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: border-color var(--t-fast), color var(--t-fast);
+  flex-shrink: 0;
+}
+.fw-ai-shot:hover { border-color: var(--c-accent-dim); color: var(--c-accent); }
+.fw-ai-shot.done {
+  border-color: color-mix(in oklch, var(--c-success) 45%, transparent);
+  color: var(--c-success);
+}
+.fw-ai-shot.stale {
+  border-color: var(--c-warning);
+  color: var(--c-warning);
+}
