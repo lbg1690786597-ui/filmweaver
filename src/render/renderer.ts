@@ -1,0 +1,223 @@
+/**
+ * render/renderer.ts — Render Engine V2 执行器
+ *
+ * 把 RenderPlan 真正跑成一个 mp4：
+ *
+ *     RenderPlan → 分段 → 缓存素材 → 逐段渲染 → concat → 烧字幕 → 另存
+ *
+ * ## 与 legacy localRender 的区别
+ *
+ * legacy 是"逐段归一化再 concat"的单轨流水线，做不了转场/叠加/多轨。
+ * 本模块基于 RenderPlan + 分段器，能力上是它的超集；且**内存恒定**——
+ * 每段最多 6 个输入进 filter_complex，不随项目长度增长
+ * （实测 1424 镜项目峰值 686MB，单图方案需 187GB）。
+ *
+ * legacy 保留为 fallback：sidecar 不可用、或用户选"经典导出"时走那条。
+ *
+ * ## 中断与清理
+ *
+ * 长任务必须能取消——1424 镜项目渲染要几十分钟，不给取消等于卡死软件。
+ * 用 AbortSignal：每段开始前检查，已启动的 ffmpeg 进程随之 kill。
+ * 无论成功失败取消，工作目录一律清理（finally）。
+ */
+
+import { Command } from "@tauri-apps/plugin-shell";
+import { appDataDir, join } from "@tauri-apps/api/path";
+import { exists, mkdir, writeFile, writeTextFile, remove, copyFile } from "@tauri-apps/plugin-fs";
+import { save } from "@tauri-apps/plugin-dialog";
+import { api } from "../api";
+import type { RenderPlan } from "./model";
+import { buildSegments, segmentStats } from "./segment";
+import { probeCapabilities, pickEncoder, hasFilter } from "./capabilities";
+import {
+  compileSegment, compileConcat, compileBurnSubtitles,
+} from "./ffmpegCompiler";
+
+export interface RenderProgress {
+  /** 0-100 */
+  pct: number;
+  /** 面向用户的阶段描述 */
+  stage: string;
+  /** 当前段 / 总段数（分段渲染阶段有效） */
+  segment?: { done: number; total: number };
+}
+
+export interface RenderOptions {
+  plan: RenderPlan;
+  /** 期望编码器；"auto" = 有硬件编码就用硬件 */
+  preferEncoder?: string;
+  /** 字幕 SRT 文本；空则不烧 */
+  burnSrt?: string;
+  /** 默认另存文件名（不含扩展名） */
+  defaultName?: string;
+  onProgress?: (p: RenderProgress) => void;
+  signal?: AbortSignal;
+}
+
+export interface RenderResult {
+  /** 用户选择的保存路径；null = 用户取消了另存 */
+  outputPath: string | null;
+  segments: number;
+  estPeakMB: number;
+  encoder: string;
+  elapsedMs: number;
+}
+
+class Aborted extends Error {
+  constructor() { super("用户已取消渲染"); this.name = "Aborted"; }
+}
+
+async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Aborted();
+  const cmd = Command.sidecar("binaries/ffmpeg", args);
+  const child = await cmd.spawn();
+  let stderr = "";
+  cmd.stderr.on("data", (line: string) => { stderr += line; });
+
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => { void child.kill(); reject(new Aborted()); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    cmd.on("close", (data: { code: number | null }) => {
+      signal?.removeEventListener("abort", onAbort);
+      if (data.code === 0) resolve();
+      // 只保留 stderr 尾部：ffmpeg 会刷几千行进度，全带上没法看
+      else reject(new Error(`ffmpeg 失败(${data.code}): ${stderr.slice(-500)}`));
+    });
+    cmd.on("error", (e: string) => {
+      signal?.removeEventListener("abort", onAbort);
+      reject(new Error(String(e)));
+    });
+  });
+}
+
+/** 把 RenderPlan 里的媒体缓存到本地；返回 mediaId → 本地绝对路径 */
+async function cacheMedia(
+  plan: RenderPlan,
+  report: (done: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<Map<string, string>> {
+  const base = await appDataDir();
+  const cacheDir = await join(base, "cache", plan.projectId);
+  if (!(await exists(cacheDir))) await mkdir(cacheDir, { recursive: true });
+
+  const map = new Map<string, string>();
+  for (let i = 0; i < plan.media.length; i++) {
+    if (signal?.aborted) throw new Aborted();
+    const m = plan.media[i];
+    const name = m.url.split("/").pop()!.split("?")[0];
+    const dest = await join(cacheDir, name);
+    // 已缓存直接复用——重复导出时这一步几乎是零成本
+    if (!(await exists(dest))) {
+      const resp = await fetch(api.mediaUrl(m.url));
+      if (!resp.ok) throw new Error(`素材下载失败 ${resp.status}: ${name}`);
+      await writeFile(dest, new Uint8Array(await resp.arrayBuffer()));
+    }
+    map.set(m.id, dest);
+    report(i + 1, plan.media.length);
+  }
+  return map;
+}
+
+/**
+ * 执行渲染。抛 Aborted 表示用户取消（调用方应静默处理，不当作错误弹窗）。
+ */
+export async function render(opts: RenderOptions): Promise<RenderResult> {
+  const t0 = Date.now();
+  const { plan, signal } = opts;
+  const report = (p: RenderProgress) => opts.onProgress?.(p);
+
+  const caps = await probeCapabilities();
+  if (!caps.available) {
+    throw new Error("本机渲染不可用：未找到 ffmpeg（网页预览环境请改用服务端导出）");
+  }
+  const encoder = pickEncoder(caps, opts.preferEncoder);
+
+  const segs = buildSegments(plan);
+  if (!segs.length) throw new Error("没有可渲染的片段");
+  const stats = segmentStats(segs);
+
+  const base = await appDataDir();
+  const work = await join(base, "render_v2");
+  if (await exists(work)) await remove(work, { recursive: true });
+  await mkdir(work, { recursive: true });
+
+  try {
+    // 1) 缓存素材（0-15%）
+    report({ pct: 0, stage: "准备素材" });
+    const paths = await cacheMedia(plan, (d, t) => {
+      report({ pct: Math.round((d / t) * 15), stage: `下载素材 ${d}/${t}` });
+    }, signal);
+
+    const ctx = {
+      plan, caps, encoder,
+      crf: plan.output.crf,
+      localPath: (id: string) => {
+        const p = paths.get(id);
+        if (!p) throw new Error(`素材未缓存: ${id}`);
+        return p;
+      },
+    };
+
+    // 2) 逐段渲染（15-85%）——内存在这里恒定，是整个方案的关键
+    const segFiles: string[] = [];
+    for (let i = 0; i < segs.length; i++) {
+      if (signal?.aborted) throw new Aborted();
+      const out = await join(work, `seg_${String(i).padStart(4, "0")}.mp4`);
+      const { args } = compileSegment(segs[i], ctx, out);
+      await runFfmpeg(args, signal);
+      segFiles.push(out);
+      report({
+        pct: 15 + Math.round(((i + 1) / segs.length) * 70),
+        stage: `渲染片段 ${i + 1}/${segs.length}`,
+        segment: { done: i + 1, total: segs.length },
+      });
+    }
+
+    // 3) concat（85-92%）——各段编码参数一致，-c copy 安全
+    report({ pct: 85, stage: "拼接片段" });
+    const listPath = await join(work, "list.txt");
+    await writeTextFile(listPath,
+      segFiles.map((f) => `file '${f.replace(/\\/g, "/")}'`).join("\n") + "\n");
+    let final = await join(work, "merged.mp4");
+    await runFfmpeg(compileConcat(listPath, final), signal);
+
+    // 4) 烧字幕（92-97%）——放最后，避免每段各烧一次导致时间码错位
+    if (opts.burnSrt?.trim()) {
+      if (!hasFilter(caps, "subtitles")) {
+        // 能力不足时跳过而不是失败：没字幕的成片仍然可用
+        report({ pct: 92, stage: "当前 ffmpeg 不支持字幕烧录，已跳过" });
+      } else {
+        report({ pct: 92, stage: "烧录字幕" });
+        const srt = await join(work, "subs.srt");
+        await writeTextFile(srt, opts.burnSrt);
+        const burned = await join(work, "final.mp4");
+        await runFfmpeg(
+          compileBurnSubtitles(final, srt, burned, encoder, plan.output.crf), signal);
+        final = burned;
+      }
+    }
+
+    // 5) 另存（97-100%）
+    report({ pct: 97, stage: "保存文件" });
+    const dest = await save({
+      defaultPath: `${opts.defaultName || "film"}.mp4`,
+      filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
+    });
+    if (!dest) {
+      return { outputPath: null, segments: segs.length,
+               estPeakMB: stats.estPeakMB, encoder, elapsedMs: Date.now() - t0 };
+    }
+    await copyFile(final, dest);
+    report({ pct: 100, stage: "已导出" });
+
+    return {
+      outputPath: dest, segments: segs.length,
+      estPeakMB: stats.estPeakMB, encoder, elapsedMs: Date.now() - t0,
+    };
+  } finally {
+    // 成功/失败/取消都要清工作目录，否则几十 GB 中间文件会堆在用户盘上
+    await remove(work, { recursive: true }).catch(() => {});
+  }
+}
+
+export { Aborted };
