@@ -1,0 +1,203 @@
+/* ClipView.css */
+
+.fw-clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: var(--c-raised);
+  cursor: grab;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.fw-clip:hover:not(.locked) {
+  border-color: var(--c-accent-dim);
+  z-index: 2;
+}
+
+.fw-clip.selected {
+  border-color: var(--c-accent);
+  box-shadow: 0 0 0 1px var(--c-accent) inset;
+  z-index: 3;
+}
+
+.fw-clip.drop-target {
+  border-color: var(--c-success);
+  box-shadow: 0 0 0 1px var(--c-success) inset;
+}
+
+.fw-clip.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+  z-index: 10;
+}
+
+.fw-clip.locked { cursor: default; }
+
+.fw-clip.disabled { opacity: 0.4; }
+
+/* 状态色 */
+.fw-clip.st-done { background: color-mix(in oklch, var(--c-accent) 18%, var(--c-raised)); }
+.fw-clip.st-failed { background: color-mix(in oklch, var(--c-danger) 18%, var(--c-raised)); }
+.fw-clip.st-generating { background: color-mix(in oklch, var(--c-warning) 12%, var(--c-raised)); }
+.fw-clip.special { border-style: dashed; }
+
+/* 缩略图背景 */
+.fw-clip-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.35;
+}
+
+.fw-clip-thumb.ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--c-muted);
+  opacity: 0.4;
+  width: 100%;
+  height: 100%;
+}
+
+/* 内容层（叠在缩略图上）*/
+.fw-clip-info {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 5px;
+  height: 100%;
+  min-width: 0;
+}
+
+.fw-clip-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--c-text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fw-clip-dur {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 角标组 */
+.fw-clip-badges {
+  position: absolute;
+  top: 2px;
+  right: 16px;
+  z-index: 2;
+  display: flex;
+  gap: 2px;
+}
+
+.fw-clip-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--c-raised);
+  opacity: 0.9;
+}
+.fw-clip-badge.dim { color: var(--c-muted); }
+.fw-clip-badge.warn { color: var(--c-warning); }
+.fw-clip-badge.bad { color: var(--c-danger); }
+
+/* trim 手柄（右边缘）*/
+.fw-clip-trim {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 4;
+  background: linear-gradient(
+    to right, transparent, color-mix(in oklch, var(--c-accent) 30%, transparent)
+  );
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.fw-clip:hover .fw-clip-trim { opacity: 1; }
+.fw-clip.selected .fw-clip-trim { opacity: 1; background: linear-gradient(to right, transparent, var(--c-accent)); }
+
+/* 音频波形容器（占满 clip，居中） */
+.fw-clip-wave {
+  position: absolute;
+  inset: 1px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  opacity: 0.75;
+}
+
+/* 字幕轨：直接显示文字，不挂缩略图 */
+.fw-clip-subtext {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 5px;
+  font-size: var(--fs-xs);
+  color: var(--c-text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* spin keyframe（从 tokens.css 里复用）*/
+@keyframes fw-spin { to { transform: rotate(360deg); } }
+.fw-spin { animation: fw-spin 0.8s linear infinite; }
+
+/* 分割工具激活：光标提示"点这儿会切开" */
+.fw-clip.split-mode { cursor: crosshair; }
+.fw-clip.split-mode:hover {
+  outline: 1px solid var(--c-warning);
+  outline-offset: -1px;
+}
+
+/* hover 态：此前只有 selected 有反馈，静止/悬停无区分 */
+.fw-clip:hover:not(.selected):not(.dragging) {
+  background: var(--c-hover);
+}
+
+/* 选中边框加粗到 2px（1px 在深色背景上几乎看不见） */
+.fw-clip.selected { border-width: 2px; }
+
+/* 生成中：底部进度条，比"底色略有不同"更能说明它在动 */
+.fw-clip.st-generating::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg,
+    transparent, var(--c-warning), transparent);
+  background-size: 50% 100%;
+  animation: fw-clip-scan 1.4s linear infinite;
+}
+@keyframes fw-clip-scan {
+  from { background-position: -50% 0; }
+  to   { background-position: 150% 0; }
+}
+
+/* 素材已更新但未重新生成 */
+.fw-clip.stale { border-left: 3px solid var(--c-warning); }
