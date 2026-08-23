@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ProjectInfo } from "../api";
+import ProjectCards from "../features/projects/ProjectCards";
 
 interface Props {
   onOpen: (id: string) => void;
@@ -16,20 +17,36 @@ const ASPECTS: { key: string; w: number; h: number; hint: string }[] = [
 ];
 
 /** 视频模型（按钮化展示；与后端 providers 对应） */
-const VIDEO_MODELS = [
+/** 视频模型兜底清单（后端 /v2/providers/video 不可达时用）。
+ *  正常路径走后端注册表——它才知道哪些 endpoint 真的配好了。 */
+const VIDEO_MODELS_FALLBACK = [
   { key: "veo-3-1-fast", label: "Veo 快速", icon: "⚡", hint: "1-3分钟出片 · 8s固定" },
   { key: "veo-3-1", label: "Veo 质量", icon: "🎥", hint: "质量档 · 8s固定" },
-  { key: "minimax-h3-ref2v", label: "海螺 H3", icon: "🎭", hint: "9图参考 · 音色参考 · 约10分钟" },
+  { key: "minimax-h3-ref2v", label: "海螺 H3", icon: "🎭", hint: "9图参考/首帧/首尾帧 · 音色参考 · 约10分钟" },
   { key: "seedance-2.0", label: "Seedance 2.0", icon: "💎", hint: "音画一体 · 首尾帧/参考图全能" },
   { key: "seedance-2.0-mini", label: "Seedance mini", icon: "🔹", hint: "轻量快出 · 成本更低" },
 ];
 
-/** 生图模型（暂只一个，预留扩展位） */
-const IMAGE_MODELS = [
-  { key: "gpt-image-2", label: "GPT Image", icon: "🖼", hint: "资产定妆图" },
+/** 生图模型的展示补充（图标/一句话用途）。
+ *  **模型清单本身以后端 /v2/providers/image 为准**——两边各维护一份
+ *  必然漂移（后端加了模型前端看不到，或前端列了后端不认的 id）。
+ *  这里只提供人读的修饰，后端没回的 id 用兜底样式照常显示。 */
+const IMAGE_MODEL_META: Record<string, { icon: string; hint: string }> = {
+  "gpt-image-2": { icon: "🖼", hint: "资产定妆图 · 通用稳" },
+  "nano-banana-pro": { icon: "🍌", hint: "Gemini 3 · 首帧优选" },
+  "nano-banana-2": { icon: "🍌", hint: "Gemini 3.1 · 快" },
+  "z-image": { icon: "👤", hint: "人像专用" },
+};
+
+/** 后端不可达时的兜底清单（离线/后端未起也能建项目） */
+const IMAGE_MODELS_FALLBACK = [
+  { key: "gpt-image-2", label: "GPT Image", icon: "🖼", hint: "资产定妆图 · 通用稳" },
+  { key: "nano-banana-pro", label: "Nano Banana Pro", icon: "🍌", hint: "Gemini 3 · 首帧优选" },
+  { key: "nano-banana-2", label: "Nano Banana 2", icon: "🍌", hint: "Gemini 3.1 · 快" },
+  { key: "z-image", label: "Z-Image", icon: "👤", hint: "人像专用" },
 ];
 
-/** 生成模式（对齐海螺官方五形态） */
+/** 生成模式的展示补充；可用性由所选模型的 modes 决定（后端回）。 */
 const GEN_MODES = [
   { key: "t2va", label: "纯文本", icon: "📝", hint: "无参考素材直出" },
   { key: "full_reference", label: "全能参考", icon: "🎭", hint: "参考图/音频保持一致性" },
@@ -48,9 +65,12 @@ const RESOLUTIONS = [
 
 /** 预设 → 各选项定位（点预设联动；用户再改任一项 → 归入 custom） */
 const PRESETS: Record<string, { video: string; image: string; gen: string; res: string }> = {
-  fast: { video: "veo-3-1-fast", image: "gpt-image-2", gen: "t2va", res: "720p" },
-  consistent: { video: "minimax-h3-ref2v", image: "gpt-image-2", gen: "full_reference", res: "720p" },
+  // 快速验证 = 海螺 H3 全能参考：资产图直接作身份参考，不经首帧那一跳，链路短、成功率高
+  fast: { video: "minimax-h3-ref2v", image: "gpt-image-2", gen: "full_reference", res: "720p" },
+  // 角色一致 = 同 H3 全参考链路，1080p 档位偏成片质量
+  consistent: { video: "minimax-h3-ref2v", image: "gpt-image-2", gen: "full_reference", res: "1080p" },
   premium: { video: "seedance-2.0", image: "gpt-image-2", gen: "full_reference", res: "1080p" },
+  first_frame: { video: "seedance-2.0", image: "nano-banana-pro", gen: "i2va", res: "1080p" },
 };
 
 /** 项目列表 + 新建向导（画幅图标化 / 生产模式展开可视化 / 预设联动）。 */
@@ -66,6 +86,53 @@ export default function ProjectList(p: Props) {
   const [imageModel, setImageModel] = useState(PRESETS.fast.image);
   const [genMode, setGenMode] = useState(PRESETS.fast.gen);
   const [resolution, setResolution] = useState(PRESETS.fast.res);
+  /** 生图模型清单以后端为准，取不到时用兜底（离线也能建项目） */
+  const [imageModels, setImageModels] = useState(IMAGE_MODELS_FALLBACK);
+  const [videoModels, setVideoModels] = useState(VIDEO_MODELS_FALLBACK);
+  /** model_id → 各生成模式的可用性与不可用原因。
+   *  ⚠️ modes 的值是 {available, reason} 对象而非布尔——按真值过滤会把
+   *  不可用的模式也当成可用（对象恒为真），实测 H3 的 l2va 就是这种情况。 */
+  const [modelModes, setModelModes] =
+    useState<Record<string, Record<string, { available: boolean; reason?: string | null }>>>({});
+
+  useEffect(() => {
+    api.videoProviders()
+      .then((r) => {
+        if (!r.providers?.length) return;
+        const meta = Object.fromEntries(
+          VIDEO_MODELS_FALLBACK.map((m) => [m.key, m]));
+        setVideoModels(r.providers.map((pv) => ({
+          key: pv.model_id,
+          label: meta[pv.model_id]?.label ?? pv.model_id,
+          icon: meta[pv.model_id]?.icon ?? "🎬",
+          hint: meta[pv.model_id]?.hint ?? "",
+        })));
+        setModelModes(Object.fromEntries(
+          r.providers.map((pv) => [pv.model_id, pv.modes ?? {}])));
+      })
+      .catch(() => { /* 后端不可达：保留兜底清单 */ });
+
+    api.imageProviders()
+      .then((r) => {
+        if (!r.models?.length) return;
+        setImageModels(r.models.map((m) => ({
+          key: m.id,
+          label: m.label,
+          icon: IMAGE_MODEL_META[m.id]?.icon ?? "🖼",
+          hint: IMAGE_MODEL_META[m.id]?.hint ?? "",
+        })));
+      })
+      .catch(() => { /* 后端不可达：保留兜底清单 */ });
+  }, []);
+
+  // 换模型后若当前模式在新模型上不可用，自动落到第一个可用模式。
+  // 不做这一步，用户带着无效模式建项目，直到第一次生成才报错。
+  useEffect(() => {
+    const modes = modelModes[videoModel];
+    if (!modes || modes[genMode]?.available !== false) return;
+    const fallback = GEN_MODES.find((m) => modes[m.key]?.available !== false);
+    if (fallback) setGenMode(fallback.key);
+  }, [videoModel, modelModes, genMode]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -73,7 +140,7 @@ export default function ProjectList(p: Props) {
   }, []);
 
   /** 点预设：把所有选项定位到预设值 */
-  const applyPreset = (k: "fast" | "consistent" | "premium") => {
+  const applyPreset = (k: "fast" | "consistent" | "premium" | "first_frame") => {
     setMode(k);
     setVideoModel(PRESETS[k].video);
     setImageModel(PRESETS[k].image);
@@ -148,6 +215,9 @@ export default function ProjectList(p: Props) {
                   onClick={() => applyPreset("consistent")}>🎭 角色一致</button>
                 <button className={`mode-card ${mode === "premium" ? "on" : ""}`}
                   onClick={() => applyPreset("premium")}>💎 精品制作</button>
+                <button className={`mode-card ${mode === "first_frame" ? "on" : ""}`}
+                  title="先出每镜首帧图（图生图喂角色/场景资产 + 场景基准帧），再由首帧生长为视频。可控性最高、最防场景偏移"
+                  onClick={() => applyPreset("first_frame")}>🎬 首帧精控</button>
                 <button className={`mode-card ${mode === "custom" ? "on" : ""}`}
                   title="修改下方任一选项即进入自定义">🛠 自定义</button>
               </div>
@@ -155,7 +225,7 @@ export default function ProjectList(p: Props) {
 
             <label>视频模型
               <div className="opt-grid">
-                {VIDEO_MODELS.map((m) => (
+                {videoModels.map((m) => (
                   <button key={m.key} className={`opt-btn ${videoModel === m.key ? "on" : ""}`}
                     title={m.hint} onClick={() => touch({ video: m.key })}>
                     <span className="opt-icon">{m.icon}</span>
@@ -166,9 +236,9 @@ export default function ProjectList(p: Props) {
               </div>
             </label>
 
-            <label>生图模型（资产定妆图；更多模型接入后在此扩展）
+            <label>生图模型（资产定妆图）
               <div className="opt-grid">
-                {IMAGE_MODELS.map((m) => (
+                {imageModels.map((m) => (
                   <button key={m.key} className={`opt-btn ${imageModel === m.key ? "on" : ""}`}
                     title={m.hint} onClick={() => touch({ image: m.key })}>
                     <span className="opt-icon">{m.icon}</span>
@@ -176,10 +246,6 @@ export default function ProjectList(p: Props) {
                     <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
                   </button>
                 ))}
-                <button className="opt-btn" disabled title="更多生图模型接入后开放">
-                  <span className="opt-icon">➕</span>
-                  <span className="muted">敬请期待</span>
-                </button>
               </div>
             </label>
 
@@ -198,14 +264,25 @@ export default function ProjectList(p: Props) {
 
             <label>生成模式（全能参考 / 首尾帧等；镜头级可单独覆盖）
               <div className="opt-grid">
-                {GEN_MODES.map((m) => (
-                  <button key={m.key} className={`opt-btn ${genMode === m.key ? "on" : ""}`}
-                    title={m.hint} onClick={() => touch({ gen: m.key })}>
+                {GEN_MODES.map((m) => {
+                  // 后端没回该模型的 modes 时按全支持处理——宁可让用户试一次，
+                  // 也不要因为探测失败把功能全灰掉
+                  const modes = modelModes[videoModel];
+                  const info = modes?.[m.key];
+                  const ok = !modes || info?.available !== false;
+                  const why = info?.reason ?? "当前模型不支持";
+                  return (
+                  <button key={m.key} disabled={!ok}
+                    className={`opt-btn ${genMode === m.key ? "on" : ""}`}
+                    title={ok ? m.hint : why}
+                    onClick={() => touch({ gen: m.key })}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
-                    <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
-                  </button>
-                ))}
+                    <span className="muted" style={{ fontSize: 10 }}>
+                      {ok ? m.hint : "该模型不支持"}
+                    </span>
+                  </button>);
+                })}
               </div>
             </label>
 
@@ -219,20 +296,8 @@ export default function ProjectList(p: Props) {
         </div>
       )}
 
-      <div className="plist-grid">
-        {projects.map((proj) => (
-          <div key={proj.id} className="pcard" onClick={() => p.onOpen(proj.id)}>
-            <div className="pcard-title">{proj.title}</div>
-            <div className="muted">
-              {proj.base_aspect} · {proj.production_mode ?? "未定模式"}
-              {proj.episodes_count ? ` · ${proj.episodes_count} 集` : ""}
-            </div>
-          </div>
-        ))}
-        {!projects.length && !err && (
-          <div className="muted pad">还没有项目，点右上角「新建项目」开始</div>
-        )}
-      </div>
+      {/* Phase 6：卡片网格（缩略图 / 进度 / 时长 / 搜索）替换原纯文字列表 */}
+      <ProjectCards projects={projects} onOpen={p.onOpen} />
     </div>
   );
 }
