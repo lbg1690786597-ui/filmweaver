@@ -3,11 +3,22 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /** 尺寸上限：常数或动态函数（如 () => window.innerHeight - 100，支持拖到近全屏）。 */
 type MaxSpec = number | (() => number);
 
+/** 拖拽轴向。用字面量而不是 boolean：第 5 个参数写 `false` 时，
+ *  既可能被读成"不横向"也可能被误读成"方向取反"——实际发生过：
+ *  inspector-w 被传了 false，于是调宽度却要上下拖鼠标。
+ *  写成 "x" / "y" 就没有歧义了。 */
+export type ResizeAxis = "x" | "y";
+
 /** 可拖拽分隔条：拖动调整相邻面板尺寸（写入 CSS 变量，localStorage 记忆）。
  *  max 传函数时每次拖拽实时求值，窗口尺寸变化后上限自动跟随。
- *  返回的 reset() 用于双击分隔条恢复默认尺寸。 */
+ *  返回的 reset() 用于双击分隔条恢复默认尺寸。
+ *
+ *  @param axis "x"=调宽度（读 clientX），"y"=调高度（读 clientY）。
+ *              轴向由**被调整的尺寸**决定，不是由分隔条的朝向决定。
+ */
 export function useResizable(varName: string, initial: number, min: number, max: MaxSpec,
-                             horizontal = true) {
+                             axis: ResizeAxis = "x") {
+  const horizontal = axis === "x";
   const maxOf = useCallback(() => (typeof max === "function" ? max() : max), [max]);
   const [size, setSize] = useState<number>(() => {
     const saved = Number(localStorage.getItem(`fw_sz_${varName}`));
