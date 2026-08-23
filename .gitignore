@@ -2,3 +2,13 @@ node_modules
 dist
 src-tauri/target
 src-tauri/gen
+
+# FFmpeg sidecar 二进制：由 CI 在构建时下载（见 .github/workflows/build-windows.yml），
+# 不提交进仓。理由有二：
+#   ① 106MB 的二进制进 git 历史就再也删不掉，而这是个**公开仓**
+#      （release.py 用 git ls-files 选文件推 GitHub，放这儿就会被推上去）
+#   ② 版本锁在 workflow 的 FFMPEG_VERSION/SHA256 里，比"谁本地随手下的那个"可复现
+#
+# ⚠️ 因此 CI 的下载步骤是**必需**的，不是优化——删掉它发布包里就没有 FFmpeg，
+#    用户点导出会直接失败。本地调试想用 sidecar 时手动放一个即可，不会被提交。
+src-tauri/binaries/
