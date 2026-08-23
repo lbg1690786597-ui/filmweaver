@@ -1,0 +1,30 @@
+/* LeftPanel.css — 左侧内容面板 */
+
+.fw-lp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+  flex-shrink: 0;
+}
+
+.fw-lp-title {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-text-hi);
+  letter-spacing: 0.02em;
+}
+
+.fw-lp-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.fw-lp-body {
+  flex: 1 1 0;
+  overflow: auto;
+  min-height: 0;
+}
