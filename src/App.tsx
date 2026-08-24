@@ -67,7 +67,7 @@ export default function App() {
   const { updateState, setUpdateState, updateProgress, updateNotes, checkUpdate } = useUpdater(say);
 
   // ---- 会话层：后端探测 + 登录门控 ----
-  const { backendOk, loginRequired, user, doLogout, onLoggedIn } = useAuth();
+  const { backendOk, loginRequired, user, doLogout, onLoggedIn, retry: retryBackend } = useAuth();
 
 
   // ---- 项目层（T-R0-07 状态云端化）----
@@ -103,6 +103,10 @@ export default function App() {
     resetWorkspace();          // 修复：切项目必须清空上一项目的预览/剪辑/选中态
     setProjectId(id);
     localStorage.setItem("fw_project", id);
+    // 落到「镜头」页而不是默认的「媒体」：媒体库对新项目必然是空的，
+    // 而镜头页有四步引导条（拆解→资产→首帧→片段），是用户真正的起点。
+    // 老项目同样合适——打开就看到进度到哪一步了。
+    setLeftTab("ai-shots");
     refreshDetail(id);
   };
   const closeProject = () => {
@@ -244,21 +248,65 @@ export default function App() {
     if (!generating && projectId) void refreshStages(projectId);
   }, [generating, projectId, refreshStages]);
 
+  // 一键成片跑到「资产/服装」段时也要重拉——否则资产图早就出好了、库里也有，
+  // 轨道却要等整条流水线（首帧+片段+拼接，可能几十分钟）全跑完才显示。
+  // 上面那个 effect 的条件是 !generating，一键成片全程为 true，永远不会触发。
+  //
+  // 用 done 的分档而不是 done 本身做依赖：refreshStages 没有防抖，
+  // 25 张图逐张触发就是 25 次请求。每 5 张刷一次，够用且不打崩后端。
+  const phaseKey = jobPhase?.key;
+  const assetBatch = phaseKey === "assets" || phaseKey === "costume"
+    ? Math.floor((jobPhase?.done ?? 0) / 5)
+    : -1;
+  useEffect(() => {
+    if (!projectId || assetBatch < 0) return;
+    void refreshStages(projectId);
+  }, [phaseKey, assetBatch, projectId, refreshStages]);
+
   // ---- 一键成片 + 生产检查（T-R0-09）----
   // 原「🚀 一条龙」已与本入口合并：同一条链（拆解→资产→首帧→片段→拼接）没有理由
   // 摆两个按钮。后端 run_one_click_film 会跳过已完成的环节，所以从哪一环切入都安全。
   const [preflight, setPreflight] = useState(false);
-  const doOneClick = async (opts: { genAssets: boolean }) => {
+  const doOneClick = async (opts: {
+    genAssets: boolean;
+    videoModel?: string | null;
+    width?: number;
+    height?: number;
+  }) => {
     if (!projectId) return;
-    setPreflight(false);
+    // 刻意**不**关弹窗：它原地变成五段进度面板，用户能看到卡在哪一步。
+    // 关掉的话进度就只剩顶栏一个百分比，看不出是在补资产还是在出片。
     try {
-      const job = await api.submitOneClickFilm(projectId, { genAssets: opts.genAssets });
+      const job = await api.submitOneClickFilm(projectId, {
+        genAssets: opts.genAssets,
+        // 这三个是"本次覆写"，undefined 时后端沿用项目设置
+        videoModel: opts.videoModel ?? undefined,
+        width: opts.width,
+        height: opts.height,
+      });
       trackJob(job, "one_click_film");
       say("▷ 一键成片已启动");
+    } catch (e) { say(String(e)); setPreflight(false); }
+  };
+
+  /** 停止一键成片。语义是"不再为后续镜头发起新请求"——
+   *  已经发给上游的那些照样会返回并计费，不假装能撤回。 */
+  const stopOneClick = async () => {
+    if (!prodJob) return;
+    if (!window.confirm(
+      "停止生产？\n\n已经提交给上游的生成请求无法撤回（该扣的费用仍会产生），"
+      + "但后续镜头不会再发起新请求。\n已生成的内容都会保留。")) return;
+    try {
+      await api.cancelJob(prodJob.id);
+      say("已请求停止，正在收尾…");
     } catch (e) { say(String(e)); }
   };
-  const oneClickStage = !prodJob ? "" :
-    prodJob.progress < 10 ? "拆解中" : prodJob.progress < 80 ? "逐镜生成" : "拼接成片";
+
+  // 阶段标签直接用后端的 phase.label（五段），拿不到时退回按 progress 粗分。
+  // 旧的三段硬编码把资产/首帧/片段三段全叫"逐镜生成"，用户看不出卡在哪。
+  const oneClickStage = !prodJob ? ""
+    : jobPhase?.label ? jobPhase.label
+      : prodJob.progress < 10 ? "拆解中" : prodJob.progress < 80 ? "逐镜生成" : "拼接成片";
 
   // ---- 素材层（P1-3 素材池落库）----
   const { libClips, deleteClip, addClips, clearClips } = useLibClips(projectId, say);
@@ -505,6 +553,13 @@ export default function App() {
   // 命令处理函数要读到"当前"的 store，用 getState() 而不是订阅——
   // 订阅会让 App 在每次选中/缩放变化时整棵树重渲，而这些命令只在按键时才需要值。
   const tlStore = () => useTimelineStore.getState();
+  // 订阅栈长度（而非整个栈）：只有可撤销/可重做的**有无**变化时才重渲顶栏按钮。
+  // 用 getState() 拿不到更新——它不建立订阅，按钮会一直停在初始的禁用态。
+  // 顶栏撤销/重做接的就是这个栈（与时间轴工具条同一套）。此前顶栏写死
+  // canUndo={false}，按钮永远灰着、点了没反应，而时间轴上的同名按钮是活的——
+  // 同一功能两个入口，一个是死的。
+  const tlUndoCount = useTimelineStore((s) => s.undoStack.length);
+  const tlRedoCount = useTimelineStore((s) => s.redoStack.length);
   useCommands({
     playPause: playFromCursor,
     playFromStart,
@@ -577,6 +632,25 @@ export default function App() {
     clearTransitions();     // Render V2：转场同理
     clearJobs();            // P2-3：停掉上一项目的 job 轮询（新项目从服务端重新接回）
     clearDetail();          // P2-5：合并刷新定时器一并清 + 旧 detail 立即失效
+  }
+
+  // ---- 后端不可达：给出可诊断的错误页 + 重试入口 ----
+  // 此前这里把用户直接放进空项目列表，然后每个操作都失败，
+  // 看不出是"后端挂了"还是"我的项目没了"。
+  if (backendOk === false) {
+    return (
+      <div className="login-page">
+        <div className="fw-offline">
+          <div className="fw-offline-title">连不上后端服务</div>
+          <div className="fw-offline-desc">
+            请确认后端已启动。正在每 15 秒自动重试，恢复后会自动进入。
+          </div>
+          <button className="btn primary" onClick={() => { void retryBackend(); }}>
+            立即重试
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // ---- 登录门控（放在项目列表之前；探测中显示空态防闪烁）----
@@ -692,6 +766,36 @@ export default function App() {
 
   /** TB-05 生成变体：同提示词换一个随机 seed 再出一版，落成新的 shot_version，
    *  用户可在 Inspector 版本列表里对比、择优采用。 */
+  /** 修正镜头拆解结果。后端会置 stale，提示已出片内容已过期。 */
+  const doPatchBreakdown = async (shotId: string, patch: {
+    scriptRef?: string; characters?: string[];
+    location?: string; linkToPrev?: "continuous" | "transition";
+  }) => {
+    await api.patchShotBreakdown(shotId, patch);
+    await refreshDetail();
+  };
+
+  /** 保存手改的提示词。后端同时写 profile_override.prompt，
+   *  否则有参考图时会被 AI 重新优化覆盖。 */
+  const doPatchPrompt = async (shotId: string, text: string) => {
+    await api.patchShotPrompt(shotId, text);
+    await refreshDetail();
+  };
+
+  /** 撤销手改，交还给 AI */
+  const doResetPrompt = async (shotId: string) => {
+    await api.resetShotPrompt(shotId);
+    await refreshDetail();
+  };
+
+  /** 单镜重算提示词（异步 job，只调文本模型，不出图不出片） */
+  const doRepromptOne = (shotId: string) => {
+    if (!projectId) return;
+    void api.submitReprompt(projectId, { shotIds: [shotId] })
+      .then((job) => { trackJob(job, "reprompt"); say("正在重新生成提示词…"); })
+      .catch((e) => say(String(e)));
+  };
+
   const doGenerateVariant = async (shot: ShotInfo) => {
     if (!projectId) return;
     // seed 在前端摇：后端拿到显式 seed 会记进版本 meta，同一个 seed 可复现
@@ -747,8 +851,8 @@ export default function App() {
           productionMode={detail?.production_mode}
           backendOk={backendOk}
           onBack={closeProject}
-          canUndo={false} onUndo={() => {}}
-          canRedo={false} onRedo={() => {}}
+          canUndo={tlUndoCount > 0} onUndo={() => { void useTimelineStore.getState().undo(); }}
+          canRedo={tlRedoCount > 0} onRedo={() => { void useTimelineStore.getState().redo(); }}
           generating={generating}
           progress={prodJob?.progress ?? 0}
           stageLabel={oneClickStage}
@@ -926,6 +1030,11 @@ export default function App() {
           onGenerateVariant={doGenerateVariant}
           onUpgrade={(sh) => { void doUpgrade(sh); }}
           onSwitchVersion={doSwitchVersion}
+          assets={detail?.assets ?? []}
+          onPatchBreakdown={doPatchBreakdown}
+          onPatchPrompt={doPatchPrompt}
+          onResetPrompt={doResetPrompt}
+          onRepromptOne={doRepromptOne}
           onToast={say}
           />
         )
@@ -1000,7 +1109,9 @@ export default function App() {
           {preflight && detail && (
             <PreflightDialog projectId={projectId} mode="film"
               hasScript={!!(detail.raw_script || detail.optimized_script)}
+              running={!!prodJob} progress={prodJob?.progress} phase={jobPhase}
               onToast={say} onClose={() => setPreflight(false)} onFilm={doOneClick}
+              onStop={stopOneClick}
               onProceed={() => { setPreflight(false); doGenerate(shots.filter((s) => !s.video_url).map((s) => s.id)); }}
               onGenFrames={(ids) => { setPreflight(false); doFirstFrames(ids); }}
               onFillAssets={() => { setPreflight(false); doPipeline({ genAssets: true, stopAfter: "assets" }); }}
