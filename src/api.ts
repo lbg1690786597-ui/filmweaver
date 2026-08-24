@@ -155,6 +155,11 @@ export interface ShotInfo {
   /** P1-1 缩略图：轨道用首帧 JPG 渲染（不再每槽挂 <video>，837 镜也不卡） */
   thumb_url: string | null;
   status: "pending" | "prompting" | "generating" | "review" | "adopted" | "failed";
+  /** 失败原因摘要（≤300 字符）；成功后由后端清空 */
+  fail_reason?: string | null;
+  /** 失败分类：moderation=内容审核拒绝（重试无效，需改词/换模型）
+   *  channel=渠道或网络故障（值得重试）| other */
+  fail_kind?: "moderation" | "channel" | "other" | null;
   adopted_version: number | null;
   is_special: boolean;
   /** 拆解阶段预生成的提示词（"拆解镜头并生成提示词"第二阶段产物） */
@@ -256,6 +261,8 @@ export interface Readiness {
   generation_mode: string | null;
   video_model: string;
   image_model: string | null;
+  /** 项目画幅（9:16 等）。生产检查弹窗据此算分辨率可选档位 */
+  base_aspect?: string | null;
   /** 当前视频模型是否支持首帧输入；false 时后端会静默回退全参考 */
   i2va_supported: boolean;
   i2va_reason: string | null;
@@ -294,7 +301,11 @@ export interface Readiness {
     /** 真要花钱生成的张数 */
     to_generate: number;
   };
-  warnings: string[];
+  /** 分级提示。level 决定 UI 用色：
+   *  info=流程还没走到（正常，不该标红）| warn=会自动降级但能跑 | error=真会失败。
+   *  action 非空时前端可给一键修复入口（如 costume_scan）。 */
+  warnings: { level: "info" | "warn" | "error"; text: string;
+              action?: string | null }[];
 }
 
 /** 场景归一字典（GET /v2/projects/{id}/scenes）：
@@ -818,6 +829,47 @@ export const api = {
     }),
 
   /** P0-3 轻剪辑：改时长（服务端钳整数秒 1-15）/ 改顺序 / 停用。 */
+  /** 修正单镜拆解结果。不自动重算提示词——那要调文本模型花钱，
+   *  由用户显式点「重新生成提示词」。改完后端会置 stale 提醒重生。 */
+  patchShotBreakdown: (shotId: string, patch: {
+    scriptRef?: string; characters?: string[];
+    location?: string; linkToPrev?: "continuous" | "transition";
+  }) =>
+    fetch(`${BASE}/v2/shots/${shotId}/breakdown`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        script_ref: patch.scriptRef ?? null,
+        characters: patch.characters ?? null,
+        location: patch.location ?? null,
+        link_to_prev: patch.linkToPrev ?? null,
+      }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{ ok: boolean; changed: string[]; stale: boolean }>;
+    }),
+
+  /** 保存手改的提示词。后端会同时写 profile_override.prompt——
+   *  只写 gen_prompt 的话，有参考图时会被 AI 重新优化覆盖掉。 */
+  patchShotPrompt: (shotId: string, genPrompt: string) =>
+    fetch(`${BASE}/v2/shots/${shotId}/prompt`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ gen_prompt: genPrompt }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{ ok: boolean; prompt_state: string }>;
+    }),
+
+  /** 撤销手改，把提示词交还给 AI（清 override，下次生成重新优化） */
+  resetShotPrompt: (shotId: string) =>
+    fetch(`${BASE}/v2/shots/${shotId}/prompt`, {
+      method: "DELETE", headers: { ...authHeaders() },
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{ ok: boolean; prompt_state: string }>;
+    }),
+
   patchShotTimeline: (shotId: string, patch: {
     durationSec?: number; toOrder?: number; disabled?: boolean;
     /** TB-03/TB-10：传 {} 清除全部调整 */
