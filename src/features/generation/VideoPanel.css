@@ -328,3 +328,13 @@
 
 @keyframes fw-spin { to { transform: rotate(360deg); } }
 .fw-spin { animation: fw-spin 0.8s linear infinite; }
+
+/* 审核拒绝的失败芯片：与可重试的区分开 */
+.fw-vp-failed-chip.mod {
+  border-color: color-mix(in oklch, var(--c-warning) 45%, transparent);
+  color: var(--c-warning);
+}
+.fw-vp-alert.warn em {
+  font-style: normal;
+  color: var(--c-muted);
+}
