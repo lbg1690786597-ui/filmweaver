@@ -11,7 +11,9 @@
 }
 
 .fw-ex {
-  width: 480px;
+  /* 560px：字段行是「标签 + 控件」横排，480px 下分辨率下拉
+     （"1080×1920 · 1080p (推荐)" 这种）会被压到显示不全 */
+  width: 560px;
   max-width: 92vw;
   max-height: 88vh;
   background: var(--c-surface);
@@ -162,7 +164,7 @@
 .fw-ex-input {
   flex: 1;
   min-width: 0;
-  max-width: 240px;
+  max-width: 300px;
   background: var(--c-bg);
   border: 1px solid var(--c-border);
   border-radius: var(--r-sm);
@@ -184,7 +186,11 @@
   padding: 3px var(--sp-1);
   outline: none;
   cursor: pointer;
-  min-width: 150px;
+  /* 跟随控件区伸展：分辨率档位标签较长（"1080×1920 · 1080p (推荐)"），
+     固定窄宽会把文字截断成"1080×1920 · 108…" */
+  flex: 1;
+  min-width: 0;
+  max-width: 300px;
 }
 .fw-ex-select:disabled { opacity: 0.45; cursor: default; }
 
