@@ -15,6 +15,10 @@ import {
 } from "lucide-react";
 import type { ShotInfo } from "../../api";
 import { fmtSec } from "../../types/timeline";
+// 画幅→分辨率表抽到 lib/resolutions.ts 共用：一键成片的参数覆写要用同一张表，
+// 各存一份必然漂移（这里原本只列了 3 种画幅，而后端 BASE_ASPECTS 支持 6 种，
+// 选了 3:4 的项目会静默落到 9:16 的档位上）
+import { resListOf } from "../../lib/resolutions";
 import "./ExportDialog.css";
 
 /** 是否运行在 Tauri 容器内（网页预览下为 false） */
@@ -23,23 +27,6 @@ export const IS_TAURI = typeof window !== "undefined"
 
 type Channel = "local" | "server";
 type Range = "all" | "generated" | "selection";
-
-const RESOLUTIONS: Record<string, { label: string; w: number; h: number }[]> = {
-  "9:16": [
-    { label: "1080×1920 (推荐)", w: 1080, h: 1920 },
-    { label: "720×1280", w: 720, h: 1280 },
-    { label: "1440×2560", w: 1440, h: 2560 },
-  ],
-  "16:9": [
-    { label: "1920×1080 (推荐)", w: 1920, h: 1080 },
-    { label: "1280×720", w: 1280, h: 720 },
-    { label: "2560×1440", w: 2560, h: 1440 },
-  ],
-  "1:1": [
-    { label: "1080×1080 (推荐)", w: 1080, h: 1080 },
-    { label: "720×720", w: 720, h: 720 },
-  ],
-};
 
 const FPS_OPTIONS = [24, 25, 30, 60];
 const CODECS = [
@@ -88,7 +75,7 @@ export default function ExportDialog(p: Props) {
   const [name, setName] = useState(
     () => `${p.projectTitle || "film"}_${new Date().toISOString().slice(0, 10)}`);
 
-  const resList = RESOLUTIONS[p.baseAspect] ?? RESOLUTIONS["9:16"];
+  const resList = resListOf(p.baseAspect);
   const res = resList[Math.min(resIdx, resList.length - 1)];
 
   const clips = useMemo(() => {
