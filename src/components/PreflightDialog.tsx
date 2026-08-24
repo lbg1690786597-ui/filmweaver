@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, CostumeReport, Readiness } from "../api";
 import { videoModelLabel, imageModelLabel, genModeLabel } from "../lib/modelLabels";
+import { ASPECTS, resListOf } from "../lib/resolutions";
 
 /** 出片前二次确认弹窗（「▷ 一键成片」「▶ 全部生成视频」「🎬 批量首帧」共用）。
  *
@@ -28,14 +29,42 @@ interface Props {
   onProceed: () => void;
   /** 先补齐首帧：shotIds 为缺首帧的镜头 */
   onGenFrames: (shotIds: string[]) => void;
-  /** 一键成片全链路（仅 mode="film" 需要） */
-  onFilm?: (opts: { genAssets: boolean }) => void;
+  /** 一键成片全链路（仅 mode="film" 需要）。
+   *  videoModel/width/height 为本次覆写，null/undefined = 沿用项目设置。 */
+  onFilm?: (opts: {
+    genAssets: boolean;
+    videoModel?: string | null;
+    width?: number;
+    height?: number;
+  }) => void;
   /** 只补资产图（人物一致性的前置条件），补完停下让用户决定下一步 */
   onFillAssets: () => void;
   /** 全剧服装识别（纯文本 job，不出图不花钱）：服装表为空时的前置步骤 */
   onCostumeScan: () => void;
   onToast: (m: string) => void;
+
+  // ---- 运行态（mode="film" 用；弹窗在跑的时候原地变进度面板，不关闭）----
+  /** 一键成片是否正在跑 */
+  running?: boolean;
+  /** 0-100，来自 job */
+  progress?: number;
+  /** 当前阶段标签（后端 set_job_phase），key 与 STAGES 对应 */
+  phase?: { key: string; label: string; done: number; total: number } | null;
+  /** 停止生产。语义是"不再为后续镜头发起新请求"，不是立即中止 */
+  onStop?: () => void;
 }
+
+/** 一键成片的五段流程，与 backend/app/jobs.py::run_one_click_film 的
+ *  set_job_phase key 一一对应——改名要两边一起改，否则进度点不亮。
+ *  pct 是该段结束时的 job progress，用于"已越过即视为完成"的推导。 */
+const STAGES: { key: string; label: string; pct: number; hint?: string }[] = [
+  { key: "breakdown", label: "拆解镜头", pct: 10 },
+  { key: "costume", label: "识别服装造型", pct: 12, hint: "纯文本 · 不花钱" },
+  { key: "assets", label: "补齐资产图", pct: 30, hint: "会产生费用" },
+  { key: "frames", label: "生成首帧", pct: 60 },
+  { key: "videos", label: "生成片段", pct: 85, hint: "最耗时" },
+  { key: "compose", label: "拼接成片", pct: 100 },
+];
 
 /** 粗略耗时预估已删除：并发池排队 + 渠道队列长度不可预测，给出的数字必然离真实值
  * 很远，用户按它安排时间只会被误导。进度条与阶段标签是真实反馈，不需要假承诺。 */
@@ -49,12 +78,33 @@ export default function PreflightDialog(p: Props) {
   const [rep, setRep] = useState<CostumeReport | null>(null);
   const [repOpen, setRepOpen] = useState(false);
 
+  // ---- 本次生产的参数覆写（只影响这一次，不改项目默认）----
+  // 项目创建时选的模型/画幅未必适合这一次跑：换个模型重出、或先用 720p 试片
+  // 都是常见需求，此前只能回项目设置改、改完还影响后续所有生产。
+  // null = 沿用项目设置（rd 里回的那套）。
+  const [ovModel, setOvModel] = useState<string | null>(null);
+  const [ovAspect, setOvAspect] = useState<string | null>(null);
+  const [ovResIdx, setOvResIdx] = useState(0);
+  const [paramOpen, setParamOpen] = useState(false);
+  const [videoModels, setVideoModels] = useState<{ key: string; label: string }[]>([]);
+
   const load = async () => {
     setErr("");
     try { setRd(await api.projectReadiness(p.projectId)); }
     catch (e) { setErr(String(e)); }
   };
   useEffect(() => { load(); }, [p.projectId]);
+
+  // 模型清单以后端注册表为准：硬编码必然漂移（配了 endpoint 才会注册，
+  // 实测同一份代码在不同环境下是 2 个 vs 5 个模型）
+  useEffect(() => {
+    if (p.mode !== "film") return;
+    api.videoProviders()
+      .then((r) => setVideoModels((r.providers ?? []).map((pv) => ({
+        key: pv.model_id, label: videoModelLabel(pv.model_id),
+      }))))
+      .catch(() => { /* 拉不到就只显示"沿用项目设置" */ });
+  }, [p.mode]);
 
   const openRep = async () => {
     setRepOpen(!repOpen);
@@ -91,16 +141,78 @@ export default function PreflightDialog(p: Props) {
     ?? (noImg.length + noAsset.length
       + (rd?.assets.locations_no_image.length ?? 0));
 
+  // ---- 五段流程的每步状态（mode="film"）----
+  // 由 progress + phase.key 共同推导：phase 命中即 running，progress 越过即 done。
+  // 只用 progress 不够——同一个区间里跑的可能是 assets 也可能是 costume；
+  // 只用 phase 也不够——phase 只反映"当前在哪段"，说不出前面几段是否已完成。
+  const stageState = (i: number): "done" | "running" | "pending" => {
+    if (!p.running) return "pending";
+    const st = STAGES[i];
+    if (p.phase?.key === st.key) return "running";
+    const prev = i === 0 ? 0 : STAGES[i - 1].pct;
+    if ((p.progress ?? 0) >= st.pct) return "done";
+    // 已越过上一段但当前 phase 不在本段：本段被跳过（如 full_reference 项目无首帧）
+    if ((p.progress ?? 0) > prev && !p.phase) return "done";
+    return "pending";
+  };
+
   return (
     <div className="drawer-mask" onClick={p.onClose}>
       <div className="wizard wizard-lg" onClick={(e) => e.stopPropagation()}>
-        <h2>{p.mode === "film" ? "▷ 一键成片 · 生产检查"
+        <h2>{p.mode === "film"
+          ? (p.running ? "▷ 一键成片 · 生产中" : "▷ 一键成片")
           : p.mode === "frames" ? "🎬 批量首帧 · 生产检查" : "生产检查"}</h2>
+
+        {/* ---- 五段流程面板（film 模式）：开跑前是流程预览，开跑后原地变进度 ---- */}
+        {p.mode === "film" && (
+          <div className="pf-flow">
+            {STAGES.map((st, i) => {
+              // 全能参考模式不出首帧（readiness.mode_active=false，后端整段跳过），
+              // 标成"跳过"而不是留一个永远不会亮的步骤让用户干等
+              const skipped = st.key === "frames" && rd != null && !ffActive;
+              const state = skipped ? "skipped" : stageState(i);
+              const isCur = state === "running";
+              return (
+                <div key={st.key} className={`pf-step ${state}`}>
+                  <span className="pf-step-no">
+                    {skipped ? "–"
+                      : state === "done" ? "✓"
+                        : state === "running" ? "▸" : i + 1}
+                  </span>
+                  <span className="pf-step-label">{st.label}</span>
+                  <span className="pf-step-meta">
+                    {skipped ? "本模式跳过"
+                      : isCur && p.phase
+                        ? (p.phase.total > 0
+                          ? `${p.phase.done}/${p.phase.total}`
+                          : "进行中")
+                        : state === "done" ? "完成"
+                          : state === "running" ? "进行中"
+                            : (st.hint ?? "待开始")}
+                  </span>
+                </div>
+              );
+            })}
+            {p.running && (
+              <div className="pf-flow-foot">
+                <span className="muted">{p.progress ?? 0}%</span>
+                <span className="muted pf-flow-note">
+                  关闭本窗口不会中断生产
+                </span>
+                {p.onStop && (
+                  <button className="btn tiny danger" onClick={p.onStop}>
+                    停止生产
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {!rd && !err && <div className="muted">体检中…</div>}
         {err && <div className="err">{err}</div>}
 
-        {rd && (
+        {rd && !p.running && (
           <>
             <table className="preflight-table"><tbody>
               <tr>
@@ -187,12 +299,18 @@ export default function PreflightDialog(p: Props) {
               {/* 服装（花费闸门）：先把"要出几张图、免费复用几张"报清楚，
                   用户点了「🖼 先补齐资产图」才真去生成。不设硬上限，只如实报数。
                   识别没跑过时**不能**报数——那时下面所有数字都只反映"有几个角色没图"，
-                  与剧情真正需要的服装套数无关，报出去就是误导。 */}
+                  与剧情真正需要的服装套数无关，报出去就是误导。
+
+                  ⚠️ 这里**不再**重复渲染"尚未识别服装"的红字：同一条信息
+                  readiness.warnings 里已有一份（level=info），两处各标一次红，
+                  正是"刚导入剧本就满屏标红"的一半来源。 */}
               {rd.costumes && !rd.costumes.stages_total && (
                 <tr>
                   <td>服装</td>
                   <td>
-                    <div className="err">⚠️ 尚未识别全剧服装造型，下方资产报数不作准</div>
+                    <div className="muted" style={{ fontSize: 12 }}>
+                      尚未识别（流程第 ② 步会自动跑，也可现在单独跑）
+                    </div>
                     <button className="btn" style={{ fontSize: 11, marginTop: 4 }}
                       onClick={() => { p.onCostumeScan(); p.onClose(); }}>
                       🔍 识别全剧服装（不出图）
@@ -293,8 +411,17 @@ export default function PreflightDialog(p: Props) {
                 <tr>
                   <td>提醒</td>
                   <td>
+                    {/* 按 level 分色：info 用灰（流程还没走到，不是故障）、
+                        warn 用黄（会自动降级但能跑完）、error 用红（真会失败）。
+                        此前全用 .err，于是"还没识别服装"这种正常状态也是刺眼的红字。 */}
                     {rd.warnings.map((w, i) => (
-                      <div key={i} className="err" style={{ fontSize: 12 }}>⚠️ {w}</div>
+                      <div key={i}
+                        className={w.level === "error" ? "err"
+                          : w.level === "warn" ? "warn-text" : "muted"}
+                        style={{ fontSize: 12, marginBottom: 3 }}>
+                        {w.level === "error" ? "⛔ " : w.level === "warn" ? "⚠️ " : "ℹ️ "}
+                        {w.text}
+                      </div>
                     ))}
                   </td>
                 </tr>
@@ -307,9 +434,70 @@ export default function PreflightDialog(p: Props) {
                   onChange={(e) => setGenAssets(e.target.checked)} />
                 <span>
                   先补齐缺失的资产图（缺图的定妆阶段 / 无定妆图的角色 / 无图场景），
-                  再出首帧和片段
+                  {/* 文案必须跟着真实链路走：全能参考模式下 readiness.first_frames
+                      .mode_active=false，后端**整段跳过首帧**（实测 required=0），
+                      写死"再出首帧和片段"是纯误导。 */}
+                  {ffActive ? "再出首帧和片段" : "再直接出片段"}
                 </span>
               </label>
+            )}
+
+            {/* ---- 本次参数覆写（只影响这一次生产，不改项目默认）----
+                此前想换模型/降分辨率试片，只能回项目设置改，改完还影响后续所有生产。 */}
+            {p.mode === "film" && (
+              <div className="pf-params">
+                <button className="pf-params-head" onClick={() => setParamOpen(!paramOpen)}>
+                  {paramOpen ? "▾" : "▸"} 本次参数
+                  {(ovModel || ovAspect) && <span className="pf-params-dot">已改</span>}
+                  <span className="muted">
+                    {videoModelLabel(ovModel ?? rd.video_model)}
+                    {" · "}{ovAspect ?? rd.base_aspect ?? "9:16"}
+                  </span>
+                </button>
+
+                {paramOpen && (
+                  <div className="pf-params-body">
+                    <label className="pf-param">
+                      <span>视频模型</span>
+                      <select value={ovModel ?? ""}
+                        onChange={(e) => setOvModel(e.target.value || null)}>
+                        <option value="">沿用项目设置（{videoModelLabel(rd.video_model)}）</option>
+                        {videoModels.map((m) => (
+                          <option key={m.key} value={m.key}>{m.label}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="pf-param">
+                      <span>画面比例</span>
+                      <select value={ovAspect ?? ""}
+                        onChange={(e) => {
+                          setOvAspect(e.target.value || null);
+                          setOvResIdx(0);   // 换画幅后旧档位索引可能越界
+                        }}>
+                        <option value="">沿用项目设置（{rd.base_aspect ?? "9:16"}）</option>
+                        {ASPECTS.map((a) => <option key={a} value={a}>{a}</option>)}
+                      </select>
+                    </label>
+
+                    {/* 分辨率依附于画幅：没改画幅时用项目画幅的档位表 */}
+                    <label className="pf-param">
+                      <span>分辨率</span>
+                      <select value={ovResIdx}
+                        onChange={(e) => setOvResIdx(Number(e.target.value))}>
+                        {resListOf(ovAspect ?? rd.base_aspect ?? "9:16").map((r, i) => (
+                          <option key={r.label} value={i}>{r.label}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <div className="muted" style={{ fontSize: 10, lineHeight: 1.6 }}>
+                      仅本次生效，不修改项目默认设置。
+                      分辨率越高越贵也越慢，试片建议先用较低档。
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             <div className="row" style={{ justifyContent: "flex-end", flexWrap: "wrap" }}>
@@ -331,7 +519,20 @@ export default function PreflightDialog(p: Props) {
               {p.mode === "film" ? (
                 <button className="btn primary" disabled={nothingToDo}
                   title="拆解 → 资产 → 首帧 → 片段 → 拼接成片，已完成的环节自动跳过"
-                  onClick={() => p.onFilm?.({ genAssets })}>
+                  onClick={() => {
+                    // 只在用户真改过画幅/分辨率时才下发 width/height；
+                    // 没改就传 undefined，让后端沿用项目默认（别用前端算出来的值
+                    // 去覆盖，那会把"沿用"悄悄变成"锁定成当前档位"）
+                    const aspect = ovAspect ?? rd.base_aspect ?? "9:16";
+                    const res = resListOf(aspect)[ovResIdx];
+                    const changed = ovAspect !== null || ovResIdx !== 0;
+                    p.onFilm?.({
+                      genAssets,
+                      videoModel: ovModel,
+                      width: changed ? res?.w : undefined,
+                      height: changed ? res?.h : undefined,
+                    });
+                  }}>
                   {p.hasScript === false ? "请先导入剧本"
                     : nothingToDo ? "全部镜头已出片" : "▷ 开始生产"}
                 </button>
@@ -361,6 +562,14 @@ export default function PreflightDialog(p: Props) {
               )}
             </div>
           </>
+        )}
+
+        {/* 运行中：体检表已隐藏，这里给一个关闭入口。
+            关闭 ≠ 取消——任务继续在后端跑，顶栏进度条和任务中心都还能看到。 */}
+        {p.running && (
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <button className="btn" onClick={p.onClose}>关闭窗口（继续生产）</button>
+          </div>
         )}
       </div>
     </div>
