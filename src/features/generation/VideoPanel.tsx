@@ -70,6 +70,9 @@ export default function VideoPanel(p: Props) {
   const pct = stat.total ? Math.round((stat.done / stat.total) * 100) : 0;
   const pendingIds = p.shots.filter((s) => !s.disabled && !s.video_url).map((s) => s.id);
   const failedShots = p.shots.filter((s) => s.status === "failed" && !s.disabled);
+  // 审核拒绝 vs 可重试：两类失败的处置完全相反，混在一起给"全部重试"会误导用户
+  const moderationShots = failedShots.filter((s) => s.fail_kind === "moderation");
+  const retryableShots = failedShots.filter((s) => s.fail_kind !== "moderation");
 
   return (
     <div className="fw-vp">
@@ -187,19 +190,36 @@ export default function VideoPanel(p: Props) {
           )}
           {failedShots.length > 0 && (
             <div className="fw-vp-failed">
-              <div className="fw-vp-alert danger">
-                <AlertTriangle size={12} />
-                <span>{failedShots.length} 个镜头生成失败</span>
-                <button disabled={p.generating}
-                  onClick={() => p.onGenerate(failedShots.map((s) => s.id))}>
-                  全部重试
-                </button>
-              </div>
+              {/* 按失败原因分流：内容审核拒绝的镜头，用同一提示词重试**必然再被拒**，
+                  给「全部重试」按钮是错误引导（实测一个项目 40 个失败里 39 个是审核）。
+                  只有渠道/网络故障才值得重试。 */}
+              {moderationShots.length > 0 && (
+                <div className="fw-vp-alert warn">
+                  <AlertTriangle size={12} />
+                  <span>
+                    {moderationShots.length} 个镜头被内容审核拒绝
+                    <em>——重试无效，需改提示词或换模型</em>
+                  </span>
+                </div>
+              )}
+              {retryableShots.length > 0 && (
+                <div className="fw-vp-alert danger">
+                  <AlertTriangle size={12} />
+                  <span>{retryableShots.length} 个镜头因渠道故障失败</span>
+                  <button disabled={p.generating}
+                    onClick={() => p.onGenerate(retryableShots.map((s) => s.id))}>
+                    重试这些
+                  </button>
+                </div>
+              )}
               <div className="fw-vp-failed-list">
                 {failedShots.slice(0, 8).map((s) => (
-                  <button key={s.id} className="fw-vp-failed-chip"
+                  <button key={s.id}
+                    className={`fw-vp-failed-chip ${s.fail_kind === "moderation" ? "mod" : ""}`}
                     onClick={() => p.onSelectShot(s)}
-                    title="点击定位到该镜头">
+                    title={s.fail_reason
+                      ? `${s.fail_kind === "moderation" ? "内容审核拒绝" : "生成失败"}：${s.fail_reason}`
+                      : "点击定位到该镜头"}>
                     #{s.order}
                   </button>
                 ))}
