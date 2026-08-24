@@ -1,7 +1,7 @@
 {
   "name": "filmweaver-desktop",
   "private": true,
-  "version": "0.7.1",
+  "version": "0.7.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "verify:render": "tsx scripts/verify-capabilities.ts && tsx scripts/verify-segments.ts && tsx scripts/verify-compiler.ts && tsx scripts/verify-multitrack.ts && tsx scripts/verify-overlay-ui.ts && tsx scripts/verify-effects.ts",
-    "verify:ui": "tsx scripts/verify-contrast.ts && tsx scripts/verify-css-coverage.ts && tsx scripts/verify-snap.ts && tsx scripts/verify-layout.ts"
+    "verify:ui": "tsx scripts/verify-contrast.ts && tsx scripts/verify-css-coverage.ts && tsx scripts/verify-snap.ts && tsx scripts/verify-layout.ts && tsx scripts/verify-resolutions.ts",
+    "ui:shot": "tsx scripts/ui-shot.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -34,6 +35,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "playwright": "^1.62.1",
     "tsx": "^4.23.12",
     "typescript": "^5.5.3",
     "vite": "^5.4.0"
