@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 
 export interface AuthUser {
@@ -13,8 +13,11 @@ export function useAuth() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null); // null=探测中
   const [user, setUser] = useState<AuthUser | null>(null);
 
-  useEffect(() => {
-    api.health().then(async (h) => {
+  const probe = useCallback(async () => {
+    setBackendOk(null);
+    setLoginRequired(null);
+    try {
+      const h = await api.health();
       setBackendOk(true);
       if (!h.login) { setLoginRequired(false); return; }  // 后端未启用登录
       // 启用登录：验证本地会话是否仍有效
@@ -28,8 +31,24 @@ export function useAuth() {
         } catch { localStorage.removeItem("fw_session"); }
       }
       setLoginRequired(true);
-    }).catch(() => { setBackendOk(false); setLoginRequired(false); });
+    } catch {
+      // 后端不可达：**不能**把 loginRequired 置成 false 放人进去——
+      // 那样用户会落到一个空项目列表，然后每个操作都失败，且看不出是后端的问题。
+      // 保持 loginRequired=null，由 App 渲染「连不上后端」页并给重试入口。
+      setBackendOk(false);
+      setLoginRequired(null);
+    }
   }, []);
+
+  useEffect(() => { void probe(); }, [probe]);
+
+  // 后端重启后自动恢复：探测只跑一次的话，用户得手动刷新整个应用。
+  // 15s 一次，只在确认断开时轮询——连上之后就不再打扰后端。
+  useEffect(() => {
+    if (backendOk !== false) return;
+    const t = window.setInterval(() => { void probe(); }, 15000);
+    return () => clearInterval(t);
+  }, [backendOk, probe]);
 
   const doLogout = async () => {
     const t = localStorage.getItem("fw_session");
@@ -40,5 +59,5 @@ export function useAuth() {
 
   const onLoggedIn = (u: AuthUser) => { setUser(u); setLoginRequired(false); };
 
-  return { backendOk, loginRequired, user, doLogout, onLoggedIn };
+  return { backendOk, loginRequired, user, doLogout, onLoggedIn, retry: probe };
 }
