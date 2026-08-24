@@ -8,11 +8,12 @@
  * 不是假数据——先让"选中就能看到这个镜头的全部信息"这件事成立。
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Layers, Clock, Volume2, Sparkles, Info, ImageIcon, RefreshCw, Gem, History,
+  Scissors, Undo2,
 } from "lucide-react";
-import type { ShotInfo, TransformMeta } from "../../api";
+import type { ShotInfo, TransformMeta, AssetInfo } from "../../api";
 import { api } from "../../api";
 import { shotDuration } from "../../adapters/shotToClip";
 import ClipProperties from "./ClipProperties";
@@ -38,6 +39,9 @@ const PROMPT_STATE_LABEL: Record<string, { text: string; cls: string }> = {
 export interface InspectorProps {
   shot: ShotInfo | null;
   projectTitle: string;
+  /** 项目已有的角色/场景资产——拆解编辑时从这里选，不让用户手打
+   *  （手打的名字对不上资产库就注入不到参考图，等于白填） */
+  assets: AssetInfo[];
   baseAspect?: string;
   shotCount: number;
   doneCount: number;
@@ -54,11 +58,82 @@ export interface InspectorProps {
   onPatchTransform: (shotId: string, tm: TransformMeta | Record<string, never>) => void;
   /** Phase 3：版本切换（后端 adopt） */
   onSwitchVersion: (shot: ShotInfo, verNo: number) => void;
+  /** 修正镜头拆解结果（script_ref / 角色 / 场景 / 连接方式） */
+  onPatchBreakdown: (shotId: string, patch: {
+    scriptRef?: string; characters?: string[];
+    location?: string; linkToPrev?: "continuous" | "transition";
+  }) => Promise<void>;
+  /** 保存手改的提示词（后端同时写 profile_override.prompt 保证真的下发） */
+  onPatchPrompt: (shotId: string, prompt: string) => Promise<void>;
+  /** 撤销手改，交还给 AI 重新优化 */
+  onResetPrompt: (shotId: string) => Promise<void>;
+  /** 按当前拆解与资产重算本镜提示词（异步 job） */
+  onRepromptOne: (shotId: string) => void;
   onToast: (m: string) => void;
 }
 
 export default function Inspector(p: InspectorProps) {
   const [tab, setTab] = useState<Tab>("ai");
+
+  // 拆解编辑本地状态
+  const [bdScript, setBdScript] = useState("");
+  const [bdChars, setBdChars] = useState<string[]>([]);
+  const [bdLoc, setBdLoc] = useState("");
+  const [bdLink, setBdLink] = useState<"continuous" | "transition">("continuous");
+  const [bdDirty, setBdDirty] = useState(false);
+  const [bdSaving, setBdSaving] = useState(false);
+
+  // 提示词编辑本地状态
+  const [prompt, setPrompt] = useState("");
+  const [promptDirty, setPromptDirty] = useState(false);
+  const [promptSaving, setPromptSaving] = useState(false);
+
+  // 选中镜头变化时同步到编辑状态
+  const sid = p.shot?.id ?? null;
+  useEffect(() => {
+    if (!p.shot) return;
+    setBdScript(p.shot.script_ref ?? "");
+    setBdChars([...p.shot.characters]);
+    setBdLoc(p.shot.location ?? "");
+    setBdLink((p.shot.link_to_prev as "continuous" | "transition") ?? "continuous");
+    setBdDirty(false);
+    setPrompt(p.shot.gen_prompt ?? "");
+    setPromptDirty(false);
+  }, [sid]);  // 只在镜头切换时重置，不跟随 prop 更新（避免在用户输入时被刷掉）
+
+  const saveBd = async () => {
+    if (!p.shot || !bdDirty) return;
+    setBdSaving(true);
+    try {
+      await p.onPatchBreakdown(p.shot.id, {
+        scriptRef: bdScript, characters: bdChars,
+        location: bdLoc, linkToPrev: bdLink,
+      });
+      setBdDirty(false);
+      p.onToast("拆解已保存");
+    } catch (e) { p.onToast(String(e)); }
+    finally { setBdSaving(false); }
+  };
+
+  const savePrompt = async () => {
+    if (!p.shot || !promptDirty) return;
+    setPromptSaving(true);
+    try {
+      await p.onPatchPrompt(p.shot.id, prompt);
+      setPromptDirty(false);
+      p.onToast("提示词已保存（已锁定，不会被 AI 重写）");
+    } catch (e) { p.onToast(String(e)); }
+    finally { setPromptSaving(false); }
+  };
+
+  const resetPrompt = async () => {
+    if (!p.shot) return;
+    try {
+      await p.onResetPrompt(p.shot.id);
+      setPromptDirty(false);
+      p.onToast("已解锁，下次生成时 AI 重新优化提示词");
+    } catch (e) { p.onToast(String(e)); }
+  };
 
   if (!p.shot) {
     return (
@@ -89,6 +164,11 @@ export default function Inspector(p: InspectorProps) {
   const locs = [...(s.location ? [s.location] : []), ...(ov.add_loc ?? [])]
     .filter((c) => !rmLoc.has(c));
 
+  // 拆解编辑的可选项：只给资产库里真实存在的名字。
+  // 手打的名字对不上资产库就注入不到参考图，等于白填——所以不给自由输入。
+  const charOptions = p.assets.filter((a) => a.kind === "character").map((a) => a.name);
+  const locOptions = p.assets.filter((a) => a.kind === "location").map((a) => a.name);
+
   return (
     <>
       <div className="fw-insp-head">
@@ -116,6 +196,22 @@ export default function Inspector(p: InspectorProps) {
               <Row label="所属集" value={`第 ${s.episode} 集`} />
               <Row label="提示词状态"
                 value={ps ? <span className={`fw-insp-chip ${ps.cls}`}>{ps.text}</span> : "-"} />
+              {/* 失败原因：此前只有一个红色"失败"角标，用户不知道为什么失败，
+                  也分不清重试有没有用。原因存在 job 的 error JSON 里，只有查库才看得到。 */}
+              {s.status === "failed" && s.fail_reason && (
+                <div className={`fw-insp-alert ${s.fail_kind === "moderation" ? "" : "danger"}`}>
+                  <div className="fw-insp-fail-head">
+                    {s.fail_kind === "moderation" ? "⚠ 内容审核拒绝" : "✕ 生成失败"}
+                  </div>
+                  <div className="fw-insp-fail-body">{s.fail_reason}</div>
+                  {s.fail_kind === "moderation" && (
+                    <div className="fw-insp-fail-hint">
+                      用同一提示词重试必然再次被拒。可改写提示词、更换生图/视频模型，
+                      或减少参考图数量后重试。
+                    </div>
+                  )}
+                </div>
+              )}
               {s.refs_stale && (
                 <div className="fw-insp-alert">
                   ↻ 参考图已变更，建议重新生成本镜
@@ -124,6 +220,90 @@ export default function Inspector(p: InspectorProps) {
               {s.stale && (
                 <div className="fw-insp-alert">
                   ⚠ 所属集剧本已修改，本镜拆解已过期
+                </div>
+              )}
+            </Section>
+
+            <Section title="镜头拆解" Icon={Scissors}>
+              {/* AI 拆镜难免有偏差（并错镜、认错角色、场景名写岔）。
+                  此前只能重跑整集拆解，会把已调好的其他镜头一起冲掉——现在可单镜改。 */}
+              <div className="fw-insp-field">
+                <span className="fw-insp-field-label">剧本片段（提示词的原始依据）</span>
+                <textarea className="fw-insp-ta" value={bdScript}
+                  onChange={(e) => { setBdScript(e.target.value); setBdDirty(true); }}
+                  placeholder="这一镜对应的剧本内容" />
+              </div>
+
+              <div className="fw-insp-field">
+                <span className="fw-insp-field-label">出场角色（决定注入哪些定妆图）</span>
+                <div className="fw-insp-taglist">
+                  {bdChars.map((c) => (
+                    <span key={c} className="fw-insp-tag">
+                      {c}
+                      <button title="移除" onClick={() => {
+                        setBdChars(bdChars.filter((x) => x !== c)); setBdDirty(true);
+                      }}>×</button>
+                    </span>
+                  ))}
+                  <select className="fw-insp-tag-add"
+                    value=""
+                    onChange={(e) => {
+                      const n = e.target.value;
+                      if (n && !bdChars.includes(n)) {
+                        setBdChars([...bdChars, n]); setBdDirty(true);
+                      }
+                    }}>
+                    <option value="">+ 添加</option>
+                    {charOptions.filter((c) => !bdChars.includes(c)).map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="fw-insp-field">
+                <span className="fw-insp-field-label">场景</span>
+                <select className="fw-insp-input" value={bdLoc}
+                  onChange={(e) => { setBdLoc(e.target.value); setBdDirty(true); }}>
+                  <option value="">(无)</option>
+                  {locOptions.map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                  {bdLoc && !locOptions.includes(bdLoc) && (
+                    <option value={bdLoc}>{bdLoc}（当前值）</option>
+                  )}
+                </select>
+              </div>
+
+              <div className="fw-insp-field">
+                <span className="fw-insp-field-label">
+                  与上一镜的关系（连续=同一场戏顺下来；转场=换场景或时间跳跃）
+                </span>
+                <div className="fw-insp-seg">
+                  {(["continuous", "transition"] as const).map((v) => (
+                    <button key={v} className={bdLink === v ? "on" : ""}
+                      onClick={() => { setBdLink(v); setBdDirty(true); }}>
+                      {v === "continuous" ? "连续" : "转场"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="fw-insp-sec-acts">
+                <button className="primary" disabled={!bdDirty || bdSaving}
+                  onClick={saveBd}>
+                  {bdSaving ? "保存中…" : "保存拆解"}
+                </button>
+                <button disabled={bdDirty}
+                  title={bdDirty ? "请先保存拆解，否则重算用的还是旧内容"
+                    : "按当前拆解与已有资产重新生成提示词（调文本模型，不出图不出片）"}
+                  onClick={() => p.onRepromptOne(s.id)}>
+                  <RefreshCw size={12} /> 重新生成提示词
+                </button>
+              </div>
+              {bdDirty && (
+                <div className="fw-insp-dirty">
+                  有未保存的改动。保存后再点「重新生成提示词」才会用新内容。
                 </div>
               )}
             </Section>
@@ -150,15 +330,46 @@ export default function Inspector(p: InspectorProps) {
               </Section>
             )}
 
-            {s.gen_prompt && (
-              <Section title="提示词" Icon={Info}>
-                <div className="fw-insp-prompt">{s.gen_prompt}</div>
-              </Section>
-            )}
+            <Section title="提示词" Icon={Info}>
+              {/* 可直接编辑。保存后走 profile_override.prompt——只写 gen_prompt
+                  的话，有参考图时会被 AI 重新优化覆盖（jobs.py:983 那条分支）。 */}
+              <textarea className="fw-insp-ta prompt" value={prompt}
+                onChange={(e) => { setPrompt(e.target.value); setPromptDirty(true); }}
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void savePrompt();
+                }}
+                placeholder={s.gen_prompt ? "" : "尚未生成提示词。可先点上方「重新生成提示词」，或直接在这里手写。"} />
+              <div className="fw-insp-sec-acts">
+                <button className="primary" disabled={!promptDirty || promptSaving}
+                  onClick={savePrompt}
+                  title="保存后本镜提示词被锁定，生成时原样下发，不会被 AI 重写（Ctrl+Enter）">
+                  {promptSaving ? "保存中…" : "保存提示词"}
+                </button>
+                {s.prompt_state === "manual" && (
+                  <button onClick={resetPrompt}
+                    title="解除锁定，下次生成时由 AI 按当前资产重新优化">
+                    <Undo2 size={12} /> 交还 AI
+                  </button>
+                )}
+              </div>
+              {s.prompt_state === "manual" && (
+                <div className="fw-insp-dirty">
+                  已锁定为手动稿：生成时原样下发，AI 不会改写。
+                </div>
+              )}
+            </Section>
 
             <Section title="版本" Icon={History}>
               <VersionList shot={s} onSwitchVersion={p.onSwitchVersion} onToast={p.onToast} />
             </Section>
+
+            {/* 说明写在界面上而不只挂 tooltip——这两个按钮都花钱。
+                只留"做什么"，细节交给按钮自己的 title。 */}
+            <div className="fw-insp-note">
+              <b>变体</b>：同词换个种子，画面不同。
+              <b>精品</b>：换 Seedance 2.0 重出，更好更贵。
+              都不覆盖原版本。
+            </div>
 
             <div className="fw-insp-actions">
               <button className="fw-insp-act" onClick={() => p.onRegenerate([s.id])}>
