@@ -210,3 +210,109 @@
   text-align: center;
   opacity: 0.7;
 }
+
+/* 失败原因块：分类决定色调——审核拒绝是"要改做法"，渠道故障是"可重试" */
+.fw-insp-alert.danger {
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+  border-left-color: var(--c-danger);
+}
+.fw-insp-fail-head { font-weight: 600; margin-bottom: 3px; }
+.fw-insp-fail-body {
+  font-size: var(--fs-xs);
+  opacity: 0.85;
+  word-break: break-all;
+  max-height: 72px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+.fw-insp-fail-hint {
+  margin-top: 5px;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.6;
+}
+
+/* ---- 镜头拆解编辑 ---- */
+.fw-insp-field { display: flex; flex-direction: column; gap: 3px; margin-bottom: var(--sp-2); }
+.fw-insp-field-label { font-size: var(--fs-xs); color: var(--c-muted); }
+
+.fw-insp-ta,
+.fw-insp-input {
+  width: 100%;
+  background: var(--c-bg);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: var(--sp-2);
+  font-size: var(--fs-xs);
+  font-family: inherit;
+  line-height: 1.6;
+  outline: none;
+  resize: vertical;
+}
+.fw-insp-ta:focus,
+.fw-insp-input:focus { border-color: var(--c-accent-dim); }
+.fw-insp-ta { min-height: 88px; }
+.fw-insp-ta.prompt { min-height: 120px; }
+
+/* 角色 chips 编辑 */
+.fw-insp-taglist { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.fw-insp-tag {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 4px 1px 6px; border-radius: 8px;
+  background: color-mix(in oklch, var(--c-asset-char) 20%, transparent);
+  color: var(--c-asset-char); font-size: var(--fs-xs);
+}
+.fw-insp-tag button {
+  border: none; background: transparent; color: inherit;
+  cursor: pointer; padding: 0 2px; line-height: 1; opacity: 0.7;
+}
+.fw-insp-tag button:hover { opacity: 1; }
+.fw-insp-tag-add {
+  width: 68px; background: transparent; border: 1px dashed var(--c-border);
+  border-radius: 8px; color: var(--c-text); font-size: var(--fs-xs);
+  padding: 1px 6px; outline: none;
+}
+.fw-insp-tag-add:focus { border-color: var(--c-accent-dim); border-style: solid; }
+
+/* 连续/转场切换 */
+.fw-insp-seg { display: flex; gap: 2px; }
+.fw-insp-seg button {
+  flex: 1; padding: 3px 6px; border: 1px solid var(--c-border);
+  border-radius: var(--r-sm); background: transparent;
+  color: var(--c-muted); font-size: var(--fs-xs); cursor: pointer;
+}
+.fw-insp-seg button.on {
+  background: color-mix(in oklch, var(--c-accent) 18%, transparent);
+  color: var(--c-accent); border-color: var(--c-accent-dim);
+}
+
+/* 区块内的操作按钮行 */
+.fw-insp-sec-acts { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
+.fw-insp-sec-acts button {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center;
+  gap: 4px; height: 26px; border: 1px solid var(--c-border);
+  border-radius: var(--r-sm); background: transparent;
+  color: var(--c-text); font-size: var(--fs-xs); cursor: pointer;
+}
+.fw-insp-sec-acts button:hover:not(:disabled) {
+  background: var(--c-hover); border-color: var(--c-accent-dim);
+}
+.fw-insp-sec-acts button.primary {
+  background: var(--c-accent); color: var(--c-bg); border-color: var(--c-accent);
+}
+.fw-insp-sec-acts button.primary:hover:not(:disabled) { background: var(--c-accent-hi); }
+.fw-insp-sec-acts button:disabled { opacity: 0.45; cursor: default; }
+
+/* 未保存提示 */
+.fw-insp-dirty {
+  font-size: var(--fs-xs); color: var(--c-warning);
+  margin-top: 4px; line-height: 1.5;
+}
+
+/* 按钮组上方的说明（不只靠 hover tooltip） */
+.fw-insp-note {
+  font-size: var(--fs-xs); color: var(--c-muted);
+  line-height: 1.7; padding: 0 var(--sp-3) var(--sp-2);
+}
+.fw-insp-note b { color: var(--c-text); font-weight: 600; }
