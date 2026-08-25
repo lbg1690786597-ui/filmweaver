@@ -26,7 +26,7 @@
       "identifier": "fs:allow-app-write-recursive",
       "allow": [{ "path": "$APPDATA/**" }]
     },
-    "shell:allow-execute",
+
     {
       "identifier": "shell:allow-execute",
       "allow": [
@@ -36,6 +36,18 @@
           "args": true
         }
       ]
-    }
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/ffmpeg",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "shell:allow-kill",
+    "shell:allow-stdin-write"
   ]
 }
