@@ -169,6 +169,8 @@ select {
 .drawer-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 50;
   display: flex; justify-content: flex-end;
+  /* 见 ExportDialog.css 同处注释：钉住整个 grid，避免被隐式行挤扁 */
+  grid-area: 1 / 1 / -1 / -1;
 }
 .drawer {
   width: 560px; max-width: 92vw; height: 100%; background: var(--bg-panel);
