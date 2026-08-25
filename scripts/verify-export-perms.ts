@@ -53,7 +53,35 @@ const caps = JSON.parse(read("src-tauri/capabilities/default.json"));
 const perms: string[] = caps.permissions.map((p: unknown) =>
   typeof p === "string" ? p : (p as { identifier: string }).identifier);
 ok(perms.includes("dialog:default"), "dialog:default 已声明（保存对话框需要）");
-ok(perms.includes("shell:allow-execute"), "shell:allow-execute 已声明（ffmpeg sidecar 需要）");
+
+// ---- ③b shell 权限必须覆盖实际用到的每种调用方式 ----
+//
+// 踩过的坑：capabilities 只声明了 shell:allow-execute，但 renderer 用的是
+// cmd.spawn()。在 Tauri v2 里 execute 与 spawn 是**两个独立权限**——
+// 能力探测走 execute（通过），真正渲染走 spawn（被拒），
+// 表现为"素材下载完就毫无反应"，且不弹任何错误。
+// 所以不能只检查"有没有 shell 权限"，要检查**用到的调用方式都有对应权限**。
+console.log("\n③b shell 调用方式与权限匹配");
+const SHELL_API: Array<{ call: string; perm: string }> = [
+  { call: ".execute()", perm: "shell:allow-execute" },
+  { call: ".spawn()", perm: "shell:allow-spawn" },
+  { call: ".kill()", perm: "shell:allow-kill" },
+];
+const renderSrcs = ["src/render/renderer.ts", "src/render/capabilities.ts",
+                    "src/lib/localRender.ts"]
+  .map((f) => { try { return read(f); } catch { return ""; } }).join("\n");
+for (const { call, perm } of SHELL_API) {
+  if (!renderSrcs.includes(call)) continue;   // 没用到这种调用方式就不要求权限
+  ok(perms.includes(perm),
+     `用到 ${call}，已声明 ${perm}`,
+     `Tauri v2 中 execute/spawn/kill 是独立权限；缺了会静默拒绝，表现为"点了没反应"`);
+}
+
+// 同一 identifier 不能既裸声明又带 scope 声明——裸的会覆盖掉 scope 限制，
+// 要么放宽了权限，要么让 scope 失效，两种都不是本意。
+const dupes = perms.filter((p, i) => perms.indexOf(p) !== i);
+ok(dupes.length === 0, "无重复的权限 identifier",
+   `重复项: ${[...new Set(dupes)].join(", ")}`);
 
 // ---- ④ sidecar 配置 ----
 console.log("\n④ ffmpeg sidecar");
