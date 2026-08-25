@@ -22,8 +22,9 @@
  */
 
 import { Command } from "@tauri-apps/plugin-shell";
+import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
-import { exists, mkdir, writeFile, writeTextFile, remove, copyFile } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, writeFile, writeTextFile, remove } from "@tauri-apps/plugin-fs";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { RenderPlan } from "./model";
@@ -207,7 +208,11 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
       return { outputPath: null, segments: segs.length,
                estPeakMB: stats.estPeakMB, encoder, elapsedMs: Date.now() - t0 };
     }
-    await copyFile(final, dest);
+    // 走 Rust 侧的 export_copy_file 而不是 fs 插件的 copyFile：
+    // fs 插件受 capabilities scope 限制（只允许 $APPDATA 等预声明目录），
+    // 而这里的 dest 来自系统保存对话框，用户可能选任意盘符，无法事先枚举。
+    // 此前导出"闪一下就没反应"正是 copyFile 被 scope 拦下所致。
+    await invoke("export_copy_file", { src: final, dst: dest });
     report({ pct: 100, stage: "已导出" });
 
     return {
