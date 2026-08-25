@@ -5,7 +5,8 @@
  */
 import { Command } from "@tauri-apps/plugin-shell";
 import { appDataDir, join } from "@tauri-apps/api/path";
-import { exists, mkdir, writeFile, writeTextFile, remove, copyFile } from "@tauri-apps/plugin-fs";
+import { exists, mkdir, writeFile, writeTextFile, remove } from "@tauri-apps/plugin-fs";
+import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 
@@ -118,7 +119,9 @@ export async function localRender(
       filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
     });
     if (!dest) return null;
-    await copyFile(final, dest);
+    // 同 render/renderer.ts：fs 插件的 copyFile 受 capabilities scope 限制，
+    // 存不到用户在保存框里选的任意路径，改走 Rust 侧命令。
+    await invoke("export_copy_file", { src: final, dst: dest });
     report(100, "已导出");
     return dest;
   } finally {
