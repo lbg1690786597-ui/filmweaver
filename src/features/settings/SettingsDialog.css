@@ -8,6 +8,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 见 ExportDialog.css 同处注释：弹窗是 .fw-editor(4 行 grid) 的子元素，
+     不钉住 grid-area 会被塞进隐式行并被挤扁。 */
+  grid-area: 1 / 1 / -1 / -1;
 }
 
 .fw-set {
