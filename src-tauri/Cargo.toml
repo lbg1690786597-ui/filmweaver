@@ -1,6 +1,6 @@
 [package]
 name = "filmweaver-desktop"
-version = "0.7.3"
+version = "0.7.4"
 description = "FilmWeaver 织影 - 剧本成片桌面客户端"
 edition = "2021"
 
