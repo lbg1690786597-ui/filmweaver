@@ -199,6 +199,8 @@
   z-index: 350;
   display: flex;
   justify-content: flex-end;
+  /* 见 ExportDialog.css 同处注释：钉住整个 grid，避免被隐式行挤扁 */
+  grid-area: 1 / 1 / -1 / -1;
 }
 
 /* 相对时间 / 取消 / 镜头定位 */
