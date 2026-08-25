@@ -51,7 +51,11 @@
 .fw-ex-close:hover { background: var(--c-raised); color: var(--c-text); }
 
 .fw-ex-body {
-  flex: 1 1 0;
+  /* flex-basis 用 auto 而不是 0：basis:0 时这一块不主张任何初始高度，
+     父容器（.fw-ex 只有 max-height 没有 height）算不出可分配空间，
+     正文会被压成一条缝——只剩标题和滚动条，内容全看不见。
+     实测截图即此症状。auto 让它先按内容撑开，超过 max-height 再滚。 */
+  flex: 1 1 auto;
   overflow-y: auto;
   min-height: 0;
   padding: var(--sp-3) var(--sp-4);
@@ -60,7 +64,9 @@
   gap: var(--sp-4);
 }
 
-.fw-ex-sec { display: flex; flex-direction: column; gap: var(--sp-2); }
+/* flex-shrink:0 —— 作为 .fw-ex-body（column flex）的子项，
+   默认可收缩；父高度算不出时整段会被压扁到不可见。 */
+.fw-ex-sec { display: flex; flex-direction: column; gap: var(--sp-2); flex-shrink: 0; }
 
 .fw-ex-sec-title {
   font-size: var(--fs-xs);
