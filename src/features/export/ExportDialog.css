@@ -8,6 +8,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* ⚠️ 弹窗挂在 .fw-editor 里，而那是个只定义了 4 行的 CSS Grid
+     （topbar / 1fr / 5px / dock）。作为第 5 个子元素，它会被塞进**隐式行**，
+     即使 position:fixed 也会先被分配轨道再定位——高度被 grid 挤扁，
+     正文只剩一条缝。用 grid-area 把它钉在整个网格上，
+     再把自身从流里摘出去。 */
+  grid-area: 1 / 1 / -1 / -1;
 }
 
 .fw-ex {
