@@ -71,23 +71,43 @@ class Aborted extends Error {
 async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new Aborted();
   const cmd = Command.sidecar("binaries/ffmpeg", args);
-  const child = await cmd.spawn();
+
+  // stderr 监听必须在 spawn 之前注册，否则进程启动瞬间的输出会丢——
+  // ffmpeg 的致命错误（缺编码器、参数非法）恰恰是最先打出来的那几行。
   let stderr = "";
   cmd.stderr.on("data", (line: string) => { stderr += line; });
 
   return new Promise<void>((resolve, reject) => {
-    const onAbort = () => { void child.kill(); reject(new Aborted()); };
+    let settled = false;
+    const done = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+
+    const onAbort = () => done(() => { void child?.kill(); reject(new Aborted()); });
     signal?.addEventListener("abort", onAbort, { once: true });
+
     cmd.on("close", (data: { code: number | null }) => {
       signal?.removeEventListener("abort", onAbort);
-      if (data.code === 0) resolve();
-      // 只保留 stderr 尾部：ffmpeg 会刷几千行进度，全带上没法看
-      else reject(new Error(`ffmpeg 失败(${data.code}): ${stderr.slice(-500)}`));
+      done(() => {
+        if (data.code === 0) resolve();
+        // 只保留 stderr 尾部：ffmpeg 会刷几千行进度，全带上没法看
+        else reject(new Error(`ffmpeg 失败(${data.code}): ${stderr.slice(-500)}`));
+      });
     });
     cmd.on("error", (e: string) => {
       signal?.removeEventListener("abort", onAbort);
-      reject(new Error(String(e)));
+      done(() => reject(new Error(String(e))));
     });
+
+    // spawn 本身会失败：sidecar 未打包、或 capabilities 缺
+    // shell:allow-spawn（execute 与 spawn 是两个独立权限，只声明前者时
+    // 能力探测能过、真正渲染却启动不了，表现为"点了没反应"）。
+    // 这里必须把 reject 接出来，否则 Promise 永远悬着，UI 停在上一个进度不动。
+    let child: Awaited<ReturnType<typeof cmd.spawn>> | undefined;
+    cmd.spawn().then(
+      (c) => { child = c; if (signal?.aborted) onAbort(); },
+      (e) => done(() => reject(new Error(
+        `无法启动 ffmpeg：${String(e)}\n`
+        + "（若提示权限不足，说明安装包的 capabilities 缺 shell:allow-spawn）"))),
+    );
   });
 }
 
