@@ -188,7 +188,14 @@ export default function ScriptPanel(p: Props) {
 
                 {isOpen && (
                   <div className="fw-script-ep-body">
-                    <AutoTextarea className="fw-script-ta" minHeight={140} maxHeight={400}
+                    {/* key 绑定内容：defaultValue 只在**挂载时**读一次，
+                        不换 key 的话，AI 优化后 ep.content 已经是新文本，
+                        框里却还显示旧文 —— 用户点开别处触发 onBlur，
+                        旧文与新 ep.content 不一致，于是**旧文被存回去**，
+                        优化结果静默丢失。换 key 强制重挂载即可重读。
+                        （保持非受控是有意的：受控会在每次按键都重渲整列。） */}
+                    <AutoTextarea key={`ep${ep.order}:${ep.content}`}
+                      className="fw-script-ta" minHeight={140} maxHeight={400}
                       defaultValue={ep.content}
                       onBlur={(e) => {
                         if (e.target.value.trim() !== ep.content.trim())
