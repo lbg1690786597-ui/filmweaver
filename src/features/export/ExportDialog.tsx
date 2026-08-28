@@ -41,6 +41,11 @@ const BITRATES = [
 
 interface Props {
   shots: ShotInfo[];
+  /** 时间轴上的音频/转场数量。服务端拼接**不处理**这两类，
+   *  有数据时必须明说缺什么 —— 否则用户拿网页导出的成片当验收依据，
+   *  会以为旁白和转场根本没做出来。 */
+  audioCount?: number;
+  transitionCount?: number;
   baseAspect: string;
   projectTitle: string;
   selectedShotIds: string[];
@@ -56,6 +61,8 @@ interface Props {
     clips: ShotInfo[]; width: number; height: number; fps: number;
     vcodec: string; crf: number; withAudio: boolean;
     scope: "generated" | "all" | "selection";
+    /** 用户在对话框里填的文件名（不含扩展名）；缺省时由调用方兜底 */
+    name?: string;
   }) => void;
   localBusy: boolean;
   localProgress: { pct: number; stage: string } | null;
@@ -66,6 +73,16 @@ interface Props {
 
 export default function ExportDialog(p: Props) {
   const [channel, setChannel] = useState<Channel>(IS_TAURI ? "local" : "server");
+
+  // 服务端拼接只做单轨顺序拼接。这里列出它会**丢掉**的内容，
+  // 用于在选中该通道时明确提示 —— 不提示的话，网页端导出的成片
+  // 缺旁白、缺转场、缺叠加层，而任务照样报"完成"。
+  const overlayCount = p.shots.filter((s) => (s.track_index ?? 0) > 0).length;
+  const missingParts: string[] = [];
+  if (p.audioCount) missingParts.push(`${p.audioCount} 段音频（旁白/音乐）`);
+  if (p.transitionCount) missingParts.push(`${p.transitionCount} 处转场`);
+  if (overlayCount) missingParts.push(`${overlayCount} 个叠加层镜头`);
+
   const [range, setRange] = useState<Range>("generated");
   const [resIdx, setResIdx] = useState(0);
   const [fps, setFps] = useState(30);
@@ -99,6 +116,9 @@ export default function ExportDialog(p: Props) {
       p.onLocalExport({
         clips, width: res.w, height: res.h, fps,
         vcodec: codec, crf: crfNum, withAudio, scope: range,
+        // 文件名输入框此前完全没接线：用户改完名字点导出，
+        // 系统保存对话框里仍然是「项目名_日期」的默认值。
+        name: name.trim() || undefined,
       });
     } else {
       p.onServerExport({
@@ -144,6 +164,16 @@ export default function ExportDialog(p: Props) {
               <div className="fw-ex-note">
                 <AlertTriangle size={11} />
                 网页预览环境无法调用本机 ffmpeg，已自动选择服务端拼接
+              </div>
+            )}
+            {/* 服务端拼接只做单轨顺序拼接：不混音频、不渲染转场、不合成叠加层。
+                以前这些是**静默丢弃**的 —— 任务照样报"完成"，用户拿到一条
+                没有旁白也没有转场的片子，却以为是生成环节出了问题。 */}
+            {channel === "server" && missingParts.length > 0 && (
+              <div className="fw-ex-note">
+                <AlertTriangle size={11} />
+                服务端拼接不包含：{missingParts.join(" / ")}。
+                完整成片请用桌面版「本机渲染」。
               </div>
             )}
           </Section>
