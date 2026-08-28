@@ -371,8 +371,14 @@ select {
 .update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text); }
 .update-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .plist { height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); }
-.plist-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 32px; border-bottom: 1px solid var(--border); }
-.plist-head h1 { font-size: 20px; margin: 0; }
+/* 标题栏（兼作 Tauri 拖拽区）。
+   h1 用 flex:1 顶开，把「新建项目」和窗口按钮推到右侧成组；
+   窗口按钮贴最右且不留内边距，与 Windows 原生标题栏观感一致。
+   padding-right 归零由 WindowControls 自己的按钮补上点击热区。 */
+.plist-head { display: flex; align-items: center; gap: 12px; padding: 20px 32px; padding-right: 0; border-bottom: 1px solid var(--border); }
+.plist-head h1 { font-size: 20px; margin: 0; flex: 1; }
+/* 窗口按钮与「新建项目」之间留一点距离，避免误点关闭 */
+.plist-head .fw-wc { margin-left: 8px; }
 .cand-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .cand-grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
 .cand-grid img:hover { border-color: var(--accent); }
