@@ -35,6 +35,14 @@ const PRESETS: SubtitleStyle[] = [
 
 interface Props {
   projectId: string;
+  /** 字幕列表。**由外层单一数据源下发**，本面板不再自己存一份。
+   *
+   *  原来面板内有个 items state，只在挂载和自身增删改后 load()。
+   *  自动字幕（ASR job）跑完是外层 refreshSubtitles() 刷的，
+   *  面板的 items 不会跟着变 —— 时间轴字幕轨已经有字幕了，
+   *  下面的「已添加」列表还是空的，用户以为识别失败。
+   *  与 F1 同一类问题：同一份数据存两处，其中一处不会更新。 */
+  clips: SubtitleClipInfo[];
   hasSelection: boolean;
   /** 播放头所在镜头（字幕锚定镜头 order + 镜内偏移，与后端同构） */
   anchor: { order: number; offsetSec: number } | null;
@@ -47,7 +55,6 @@ interface Props {
 
 export default function TextPanel(p: Props) {
   const [tab, setTab] = useState<"text" | "style">("text");
-  const [items, setItems] = useState<SubtitleClipInfo[]>([]);
   const [styleId, setStyleId] = useState("drama");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -58,21 +65,9 @@ export default function TextPanel(p: Props) {
     api.asrStatus().then((r) => setAsrOk(r.available)).catch(() => setAsrOk(false));
   }, []);
 
-  const load = async () => {
-    try {
-      const r = await api.listSubtitleClips(p.projectId);
-      setItems(r.clips);
-    } catch { /* 无字幕时静默 */ }
-  };
-
-  /** 增删改之后：本面板重拉 + 通知外层刷新时间轴字幕轨。
-   *  不放进 load() 里——load 会在 useEffect 里跑，那样会形成
-   *  onChanged → 外层刷新 → 重渲染 → load → onChanged 的死循环。 */
-  const reloadAll = async () => {
-    await load();
-    p.onChanged();
-  };
-  useEffect(() => { void load(); }, [p.projectId]);
+  /** 增删改之后通知外层刷新 —— 外层刷完，clips prop 自然跟着变。
+   *  不再需要面板自己 load()：那份副本正是 F7 的成因。 */
+  const reloadAll = async () => { p.onChanged(); };
 
   const addText = async () => {
     if (!draft.trim()) { p.onToast("请先输入文字内容"); return; }
@@ -151,11 +146,11 @@ export default function TextPanel(p: Props) {
               {!asrOk && <span className="fw-text-todo">未配置</span>}
             </button>
 
-            {items.length > 0 && (
+            {p.clips.length > 0 && (
               <>
-                <div className="fw-text-sec">已添加（{items.length}）</div>
+                <div className="fw-text-sec">已添加（{p.clips.length}）</div>
                 <div className="fw-text-list">
-                  {items.map((it) => {
+                  {p.clips.map((it) => {
                     const st = (it.style ?? {}) as Partial<SubtitleStyle>;
                     return (
                       <div key={it.id} className="fw-text-row">
