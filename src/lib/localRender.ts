@@ -9,6 +9,8 @@ import { exists, mkdir, writeFile, writeTextFile, remove } from "@tauri-apps/plu
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
+import { srtForceStyle } from "./subtitleStyle";
+import type { SubtitleStyleLike } from "./subtitleStyle";
 
 export interface RenderClip {
   url: string;          // /fw/media/... 或 http 完整地址
@@ -21,6 +23,8 @@ export interface RenderOpts {
   height: number;
   fps: number;
   burnSrt?: string;     // srt 文本；有则烧录
+  /** 字幕样式预设（TextPanel 存的那个结构）；缺省用短剧默认 */
+  subtitleStyle?: SubtitleStyleLike | null;
   onProgress?: (pct: number, stage: string) => void;
 }
 
@@ -105,9 +109,10 @@ export async function localRender(
       await writeTextFile(srt, opts.burnSrt);
       final = await join(work, "final.mp4");
       // Windows 路径给 subtitles 滤镜需转义盘符冒号
-      const srtEsc = srt.replace(/\\/g, "/").replace(":", "\\:");
+      // replace(":") 不带 /g 只换第一个冒号；盘符之外若再出现冒号就漏了
+      const srtEsc = srt.replace(/\\/g, "/").replace(/:/g, "\\:");
       await runFfmpeg(["-y", "-i", merged,
-        "-vf", `subtitles='${srtEsc}':force_style='FontSize=18'`,
+        "-vf", `subtitles='${srtEsc}':force_style='${srtForceStyle(opts.subtitleStyle, opts.height)}'`,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "copy", "-movflags", "+faststart", final]);
     }
