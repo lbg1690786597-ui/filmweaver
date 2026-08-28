@@ -200,7 +200,8 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
     await writeTextFile(listPath,
       segFiles.map((f) => `file '${f.replace(/\\/g, "/")}'`).join("\n") + "\n");
     let final = await join(work, "merged.mp4");
-    await runFfmpeg(compileConcat(listPath, final), signal);
+    await runFfmpeg(
+      compileConcat(listPath, final, plan.output.withAudio), signal);
 
     // 4) 烧字幕（92-97%）——放最后，避免每段各烧一次导致时间码错位
     if (opts.burnSrt?.trim()) {
