@@ -76,13 +76,13 @@ export default function App() {
   // ---- 播放器层（P2-1 播放头 + 连播 + 选中镜头）----
   const {
     videoRef, previewUrl, previewLabel, previewShot, playhead, setPlayhead,
-    pendingSeek, autoNext, setAutoNext, selectedShot, setSelectedShot,
+    pendingSeek, autoNext, setAutoNext, selectedShotId, setSelectedShotId,
     onSelectShot, seekTo, onPreviewEnded, previewMedia, previewShotVersion,
     clearPlayer, cursor, setCursor,
   } = usePlayer();
 
   // ---- 编辑层（P2-2 撤销栈）----
-  const { pushUndo, clearUndo } = useUndo(say);
+  const { pushUndo, doUndo, doRedo, clearUndo } = useUndo(say);
 
   // ---- 音频层（P2-4 音频轨）----
   const { audioClips, ttsAvailable, ttsJobId, refreshAudio, doSynthTts, clearAudio } =
@@ -155,7 +155,7 @@ export default function App() {
   const locateShot = (shotId: string) => {
     const s0 = shots.find((x) => x.id === shotId);
     if (!s0) { say("该镜头已不存在（可能已被删除）"); return; }
-    setSelectedShot(s0);
+    setSelectedShotId(s0.id);
     setTasksOpen(false);
     setLeftTab("ai-shots");
   };
@@ -309,7 +309,7 @@ export default function App() {
       : prodJob.progress < 10 ? "拆解中" : prodJob.progress < 80 ? "逐镜生成" : "拼接成片";
 
   // ---- 素材层（P1-3 素材池落库）----
-  const { libClips, deleteClip, addClips, clearClips } = useLibClips(projectId, say);
+  const { libClips, deleteClip, renameClip, addClips, clearClips } = useLibClips(projectId, say);
 
   // ---- 面板尺寸拖拽已移入 EditorLayout（Phase 1）；此处只留 dock 最大化状态 ----
   // ---- 版块最大化（⛶ / Esc 还原）----
@@ -354,6 +354,7 @@ export default function App() {
     clips: ShotInfo[]; width: number; height: number; fps: number;
     vcodec: string; crf: number; withAudio: boolean;
     scope: "generated" | "all" | "selection";
+    name?: string;
   }) => {
     if (!projectId || !detail) return;
     if (!o.clips.some((s) => s.video_url)) { say("没有已生成的镜头可导出"); return; }
@@ -390,7 +391,10 @@ export default function App() {
         plan,
         preferEncoder: "auto",       // 有硬件编码器就用，否则回落 libx264
         burnSrt,
-        defaultName: `${detail.title || "film"}_${new Date().toISOString().slice(0, 10)}`,
+        // 用对话框里填的文件名；为空才回落到「项目名_日期」。
+        // 此前这里写死了默认值，输入框改了也没用。
+        defaultName: o.name
+          || `${detail.title || "film"}_${new Date().toISOString().slice(0, 10)}`,
         onProgress: (p2) => setLocalProgress({ pct: p2.pct, stage: p2.stage }),
         signal: ctl.signal,
       });
@@ -452,26 +456,45 @@ export default function App() {
       const old = detail?.shots.find((s) => s.id === shotId);
       await api.patchShotTimeline(shotId, patch);
       if (old) {
+        // 三类各自独立入栈。redo = 再做一遍原操作，与 undo 精确互逆。
         if (patch.durationSec !== undefined && old.duration_sec != null) {
           const prev = old.duration_sec;
-          pushUndo(`镜头 #${old.order} 时长 → ${patch.durationSec}s`, async () => {
-            await api.patchShotTimeline(shotId, { durationSec: prev });
-            await refreshDetail();
-          });
+          const next = patch.durationSec;
+          pushUndo(`镜头 #${old.order} 时长 → ${next}s`,
+            async () => {
+              await api.patchShotTimeline(shotId, { durationSec: prev });
+              await refreshDetail();
+            },
+            async () => {
+              await api.patchShotTimeline(shotId, { durationSec: next });
+              await refreshDetail();
+            });
         }
         if (patch.toOrder !== undefined) {
           const prev = old.order;
-          pushUndo(`镜头 #${prev} 移到 #${patch.toOrder}`, async () => {
-            await api.patchShotTimeline(shotId, { toOrder: prev });
-            await refreshDetail();
-          });
+          const next = patch.toOrder;
+          pushUndo(`镜头 #${prev} 移到 #${next}`,
+            async () => {
+              await api.patchShotTimeline(shotId, { toOrder: prev });
+              await refreshDetail();
+            },
+            async () => {
+              await api.patchShotTimeline(shotId, { toOrder: next });
+              await refreshDetail();
+            });
         }
         if (patch.disabled !== undefined) {
           const prev = old.disabled;
-          pushUndo(`镜头 #${old.order} ${patch.disabled ? "停用" : "恢复启用"}`, async () => {
-            await api.patchShotTimeline(shotId, { disabled: prev });
-            await refreshDetail();
-          });
+          const next = patch.disabled;
+          pushUndo(`镜头 #${old.order} ${next ? "停用" : "恢复启用"}`,
+            async () => {
+              await api.patchShotTimeline(shotId, { disabled: prev });
+              await refreshDetail();
+            },
+            async () => {
+              await api.patchShotTimeline(shotId, { disabled: next });
+              await refreshDetail();
+            });
         }
       }
       await refreshDetail();
@@ -480,7 +503,7 @@ export default function App() {
   const deleteSpecialShot = async (shotId: string) => {
     try {
       await api.deleteShot(shotId);
-      if (selectedShot?.id === shotId) setSelectedShot(null);
+      if (selectedShotId === shotId) setSelectedShotId(null);
       await refreshDetail();
       say("已从镜头轨移除");
     } catch (e) { say(String(e)); }
@@ -555,9 +578,10 @@ export default function App() {
   const tlStore = () => useTimelineStore.getState();
   // 订阅栈长度（而非整个栈）：只有可撤销/可重做的**有无**变化时才重渲顶栏按钮。
   // 用 getState() 拿不到更新——它不建立订阅，按钮会一直停在初始的禁用态。
-  // 顶栏撤销/重做接的就是这个栈（与时间轴工具条同一套）。此前顶栏写死
-  // canUndo={false}，按钮永远灰着、点了没反应，而时间轴上的同名按钮是活的——
-  // 同一功能两个入口，一个是死的。
+  // 顶栏、时间轴工具条、Ctrl+Z 现在都走这**同一个** store 栈。
+  // 此前 useUndo 自己另有一个 ref 栈，所有 pushUndo 实际进的是那个，
+  // 而按钮读的是 store 栈（从未被 push）—— 于是两个按钮永远置灰，
+  // 只有 useUndo 自挂的键盘监听能用，重做则完全没实现。
   const tlUndoCount = useTimelineStore((s) => s.undoStack.length);
   const tlRedoCount = useTimelineStore((s) => s.redoStack.length);
   useCommands({
@@ -632,6 +656,11 @@ export default function App() {
     clearTransitions();     // Render V2：转场同理
     clearJobs();            // P2-3：停掉上一项目的 job 轮询（新项目从服务端重新接回）
     clearDetail();          // P2-5：合并刷新定时器一并清 + 旧 detail 立即失效
+    // 两个 zustand store 不在上面任何 clearXxx 的覆盖范围内（F16）。
+    // timeline 数据本身会因 detail=null → shots=[] 被重建 effect 清空，
+    // 但播放头/定位线/选中/剪贴板/工具不走那条链路，会原样留给下一个项目。
+    useTimelineStore.getState().resetForProjectSwitch();
+    useEditorStore.getState().setSelectedClipId(null);
   }
 
   // ---- 后端不可达：给出可诊断的错误页 + 重试入口 ----
@@ -669,6 +698,13 @@ export default function App() {
   // ---- 派生值：给 Inspector / TopBar 用 ----
   // totalSec / exportClips 来自 useCompose（与「快速导出」同口径，不另算一套）
   const shots = detail?.shots ?? [];
+  // ⚠️ 从最新的 shots 里**派生**，不要存对象快照。
+  // usePlayer 只持有 id —— 存整个对象的话，refreshDetail() 换掉 detail.shots
+  // 之后它仍指向旧对象，多个面板会长期显示/使用陈旧数据
+  // （特效面板开关关不掉、Inspector 切 tab 回退、版本徽标不更新，全是这一个根因）。
+  const selectedShot = selectedShotId
+    ? shots.find((s) => s.id === selectedShotId) ?? null
+    : null;
   const doneCount = shots.filter((s) => s.video_url && !s.disabled).length;
   const inspectorShot = selectedShot;
 
@@ -851,8 +887,8 @@ export default function App() {
           productionMode={detail?.production_mode}
           backendOk={backendOk}
           onBack={closeProject}
-          canUndo={tlUndoCount > 0} onUndo={() => { void useTimelineStore.getState().undo(); }}
-          canRedo={tlRedoCount > 0} onRedo={() => { void useTimelineStore.getState().redo(); }}
+          canUndo={tlUndoCount > 0} onUndo={() => { void doUndo(); }}
+          canRedo={tlRedoCount > 0} onRedo={() => { void doRedo(); }}
           generating={generating}
           progress={prodJob?.progress ?? 0}
           stageLabel={oneClickStage}
@@ -891,6 +927,7 @@ export default function App() {
                 onAddToTimeline={addToTimeline}
                 onPreview={(c) => previewMedia(c.url, c.name)}
                 onDeleteClip={deleteClip}
+                onRenameClip={renameClip}
                 onToast={say} />
             ),
             audio: audioPanel,
@@ -903,11 +940,13 @@ export default function App() {
                 // 字幕锚定"第几镜 + 镜内第几秒"，与后端同构；没有播放头就落到第 1 镜
                 anchor={playhead ?? (cursor ?? null)}
                 onAutoSubtitles={doAutoSubtitles}
+                clips={subtitles}
                 onChanged={() => { void refreshSubtitles(); }}
                 onToast={say} />
             ),
             transition: (
               <EffectsPanel kind="transition" hasSelection={!!selectedShot}
+                shotId={selectedShot?.id ?? null}
                 projectId={projectId}
                 transform={selectedShot?.transform_meta ?? null}
                 onPatchTransform={(tm) => { if (selectedShot) void doPatchTransform(selectedShot.id, tm); }}
@@ -916,6 +955,7 @@ export default function App() {
             ),
             effect: (
               <EffectsPanel kind="effect" hasSelection={!!selectedShot}
+                shotId={selectedShot?.id ?? null}
                 projectId={projectId}
                 transform={selectedShot?.transform_meta ?? null}
                 onPatchTransform={(tm) => { if (selectedShot) void doPatchTransform(selectedShot.id, tm); }}
@@ -923,6 +963,7 @@ export default function App() {
             ),
             filter: (
               <EffectsPanel kind="filter" hasSelection={!!selectedShot}
+                shotId={selectedShot?.id ?? null}
                 projectId={projectId}
                 transform={selectedShot?.transform_meta ?? null}
                 onPatchTransform={(tm) => { if (selectedShot) void doPatchTransform(selectedShot.id, tm); }}
@@ -986,6 +1027,10 @@ export default function App() {
           setAutoNext={setAutoNext}
           baseAspect={detail?.base_aspect}
           playing={isPlaying}
+          // 取**正在预览**那个镜头的调色参数，不是 selectedShot ——
+          // 两者可能不同（点了 A 镜预览、又在列表里选中 B 镜），
+          // 用 selectedShot 会把 B 的调色套到 A 的画面上。
+          transform={shots.find((s) => s.id === previewShot?.id)?.transform_meta ?? null}
           emptyHint={`${shots.filter((s) => !s.disabled).length} 段可导出 · ${fmtTime(totalSec)}`}
           onLoadedMetadata={(e) => {
             if (pendingSeek.current != null) {
@@ -1063,9 +1108,10 @@ export default function App() {
           onRegenerate={doGenerate}
           onUpgrade={(sh) => { void doUpgrade(sh); }}
           /* 版本历史常驻 Inspector 的「版本」区，选中该镜即可见，不另开弹窗 */
-          onShowVersions={setSelectedShot}
+          onShowVersions={(s: ShotInfo) => setSelectedShotId(s.id)}
           onPatchTransform={(sid, patch) => { void doPatchTransform(sid, patch); }}
           onSplit={doSplit}
+          onDropClip={(c) => { void addToTimeline(c as LibClip); }}
           onMoveTrack={(id, idx, st) => { void doMoveTrack(id, idx, st); }}
           onPushUndo={pushUndo}
           onToast={say}
@@ -1132,6 +1178,8 @@ export default function App() {
           {exportOpen && detail && (
             <ExportDialog
               shots={shots}
+              audioCount={audioClips.length}
+              transitionCount={transitions.length}
               baseAspect={detail.base_aspect}
               projectTitle={detail.title}
               selectedShotIds={selectedShot ? [selectedShot.id] : []}
