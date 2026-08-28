@@ -13,6 +13,8 @@
  */
 
 import type { RenderClip, RenderEffect } from "./model";
+import { srtForceStyle } from "../lib/subtitleStyle";
+import type { SubtitleStyleLike } from "../lib/subtitleStyle";
 import type { RenderPlan } from "./model";
 import type { RenderSegment } from "./segment";
 import type { Capabilities } from "./capabilities";
@@ -364,19 +366,36 @@ export function compileSegment(
   return { args, inputCount: seg.clips.length };
 }
 
-/** 段产物 concat 成最终文件（各段编码参数一致，-c copy 安全） */
-export function compileConcat(listPath: string, outPath: string): string[] {
+/** 段产物 concat 成最终文件（各段编码参数一致，-c copy 安全）。
+ *
+ *  withAudio=false 时在这里加 -an 剥掉音轨，而不是在分段阶段跳过音频：
+ *  concat 要求各段流结构一致，中途缺音轨会拼接失败。
+ *  放在 -c copy 这一步也不需要重编码，几乎零成本。
+ *
+ *  ⚠️ 这个参数此前**整个 compiler 都没读过** —— model.ts 声明了
+ *  withAudio、导出对话框也有开关，但本机渲染这条路完全忽略它，
+ *  用户取消勾选「包含音轨」导出后仍然有声音。 */
+export function compileConcat(
+  listPath: string, outPath: string, withAudio = true,
+): string[] {
   return ["-y", "-f", "concat", "-safe", "0", "-i", listPath,
-          "-fflags", "+genpts", "-c", "copy", "-movflags", "+faststart", outPath];
+          "-fflags", "+genpts", "-c", "copy",
+          ...(withAudio ? [] : ["-an"]),
+          "-movflags", "+faststart", outPath];
 }
 
 /** 烧字幕（最后一道，避免每段各烧一次导致时间码错位） */
 export function compileBurnSubtitles(
   inPath: string, srtPath: string, outPath: string, encoder: string, crf: number,
+  /** 字幕样式预设。缺省时用短剧默认（48px 白字黑描边底部居中）。
+   *  此前这里写死 FontSize=18 —— TextPanel 的 6 个预设从未生效，
+   *  而 18px 在 1080×1920 上小到几乎看不见。 */
+  style?: SubtitleStyleLike | null,
+  videoH = 1920,
 ): string[] {
   const esc = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
   return ["-y", "-i", inPath,
-          "-vf", `subtitles='${esc}':force_style='FontSize=18'`,
+          "-vf", `subtitles='${esc}':force_style='${srtForceStyle(style, videoH)}'`,
           "-c:v", encoder, "-crf", String(crf), "-c:a", "copy",
           "-movflags", "+faststart", outPath];
 }
