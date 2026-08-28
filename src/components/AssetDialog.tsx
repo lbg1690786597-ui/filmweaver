@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, SceneGroup, ShotInfo, StageInfo } from "../api";
+import { parseEpisodeInput } from "../lib/formState";
 import AutoTextarea from "./AutoTextarea";
 
 /** 统一资产详情弹窗的目标描述：
@@ -111,6 +112,33 @@ export default function AssetDialog(p: Props) {
   const [uploading, setUploading] = useState(false);
   const [curVoice, setCurVoice] = useState(t.voiceUrl ?? null);
 
+  // R1 资产改名。后端 rename_asset_everywhere 会在同一事务里把镜头、造型阶段、
+  // 别名表里的引用一并改掉，所以改完不会断链（这正是它与只改一行的区别）。
+  // 改完把后端报的影响面告诉用户——"动了 208 个镜头"这种信息，用户有权知道。
+  const [renaming, setRenaming] = useState(false);
+  const doRename = async () => {
+    if (!t.assetId) return;
+    const next = window.prompt(
+      `重命名「${t.name}」\n\n镜头、造型阶段等所有引用会一并更新，不会断链。`,
+      t.name);
+    if (next == null) return;                 // 用户取消
+    const name = next.trim();
+    if (!name || name === t.name) return;     // 空名或没改
+    setRenaming(true);
+    try {
+      const r = await api.patchAsset(t.assetId, { name });
+      const moved = (r as { renamed?: Record<string, number> }).renamed;
+      const total = moved ? Object.values(moved).reduce((a, b) => a + b, 0) : 0;
+      p.onChanged();
+      p.onToast(total
+        ? `✅ 已改名为「${name}」，同步更新 ${total} 处引用`
+        : `✅ 已改名为「${name}」`);
+    } catch (e) {
+      p.onToast(`改名失败：${String((e as Error)?.message ?? e).slice(0, 120)}`);
+    }
+    setRenaming(false);
+  };
+
   /** 上传图片 → 直接作为资产图（替换 AI 生成的）。
    *  预览立即更新（不等落库回包）；落库失败会 toast 并还原。 */
   const doUploadImage = async (f: File) => {
@@ -177,6 +205,22 @@ export default function AssetDialog(p: Props) {
       await api.patchStage(t.stage.id, patch);
       p.onChanged();
     } catch (e) { p.onToast(String(e)); }
+  };
+
+  /** 起止集输入框失焦保存（F18）。
+   *  判定逻辑与三种踩坑（空值→0、非数字→静默忽略、无变化也发请求）
+   *  见 lib/formState.ts parseEpisodeInput()。 */
+  const saveStageEp = (el: HTMLInputElement, key: "ep_from" | "ep_to") => {
+    if (!t.stage) return;
+    const cur = t.stage[key];
+    const r = parseEpisodeInput(el.value, cur);
+    if (r.kind === "noop") return;
+    if (r.kind === "reject") {
+      el.value = String(cur);        // 回填库里的值，不留一个无效的显示
+      p.onToast(r.message);
+      return;
+    }
+    void saveStage({ [key]: r.value });
   };
 
   /** 造型描述落库：真实阶段写 AssetStage.description，其余写 Asset.prompt
@@ -276,6 +320,19 @@ export default function AssetDialog(p: Props) {
             : <div className="adlg-img ph">尚无图</div>}
           <div className="adlg-meta">
             <div><b>类型</b>{kindLabel}{t.stage ? (curImg ? " · ✅当前使用中" : " · 待生成") : ""}</div>
+            {/* R1 资产改名：后端会连带迁移所有引用（镜头/造型阶段/别名表），
+                所以这里不需要额外提醒用户"改名会断链"——它不会断。
+                custom 类型没有镜头引用，也一并支持改名。 */}
+            {t.assetId && (
+              <div><b>名称</b>
+                <span>{t.name} </span>
+                <button className="btn ghost adlg-mini" disabled={renaming}
+                  title="重命名该资产（镜头、造型阶段等所有引用会一并更新）"
+                  onClick={() => { void doRename(); }}>
+                  {renaming ? "⏳" : "✏️ 改名"}
+                </button>
+              </div>
+            )}
             {t.stage && <div><b>阶段区间</b>第{t.stage.ep_from}-{t.stage.ep_to}集</div>}
             <div><b>实际用在</b>{t.kind === "custom" ? "拖到轨道/镜头槽后生效" : usage}</div>
             {t.kind === "character" && (
@@ -316,12 +373,12 @@ export default function AssetDialog(p: Props) {
                 onBlur={(e) => e.target.value !== t.stage!.stage_name && saveStage({ stage_name: e.target.value })} />
             </label>
             <label style={{ flex: 1 }}>起始集
-              <input type="number" min={1} defaultValue={t.stage.ep_from}
-                onBlur={(e) => saveStage({ ep_from: Number(e.target.value) })} />
+              <input type="number" min={1} step={1} defaultValue={t.stage.ep_from}
+                onBlur={(e) => saveStageEp(e.target, "ep_from")} />
             </label>
             <label style={{ flex: 1 }}>结束集
-              <input type="number" min={1} defaultValue={t.stage.ep_to}
-                onBlur={(e) => saveStage({ ep_to: Number(e.target.value) })} />
+              <input type="number" min={1} step={1} defaultValue={t.stage.ep_to}
+                onBlur={(e) => saveStageEp(e.target, "ep_to")} />
             </label>
           </div>
         )}
