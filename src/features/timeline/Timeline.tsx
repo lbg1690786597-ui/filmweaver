@@ -19,7 +19,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { Clip } from "../../types/timeline";
 import { ZOOM_MIN, ZOOM_MAX } from "../../types/timeline";
 import type { ShotInfo, AudioClipInfo, StageInfo, LocationInfo, AssetInfo, SubtitleClipInfo } from "../../api";
-import { buildTimeline, buildOrderOffsetMap } from "../../adapters/shotToClip";
+import { buildTimeline, buildOrderOffsetMap, secToPosition } from "../../adapters/shotToClip";
 import { useTimelineStore } from "../../stores/timelineStore";
 import { useEditorStore } from "../../stores/editorStore";
 import TimelineRuler from "./TimelineRuler";
@@ -71,6 +71,12 @@ interface Props {
   onPatchTransform: (shotId: string, patch: Record<string, unknown>) => void;
   /** TB-01：在镜内 atSec 秒分割（时间轴 Ctrl+B / 右键） */
   onSplit: (shotId: string, atSec: number) => void;
+  /** 素材面板拖进来的片段（MediaPanel 设的 application/x-fw-clip）。
+   *  此前 MediaPanel 的 tooltip 写着「拖到时间轴插入」，但没有任何落点
+   *  接收这个 MIME —— 旧的 TimelineDock 被删时把 onDrop 一起带走了，
+   *  用户按提示拖过去什么都不会发生。 */
+  onDropClip?: (clip: { id: string; name: string; url: string;
+                        kind: string; duration: number }) => void;
   /** Render V2：主轨 ↔ 叠加层互移（trackIndex=0 回主轨） */
   onMoveTrack: (shotId: string, trackIndex: number, startSec?: number) => void;
   onPushUndo: (label: string, undo: () => Promise<void>) => void;
@@ -105,6 +111,8 @@ export default function Timeline(p: Props) {
   /** 叠加层拖动预览（按绝对秒，与主轨的 order 拖动是两套语义） */
   const [overlayDrag, setOverlayDrag] = useState<
     { clipId: string; startSec: number } | null>(null);
+  /** 素材拖到轨道上方时的高亮反馈（没有它用户不知道能不能放） */
+  const [dropHot, setDropHot] = useState(false);
 
   // 当前缩放（多处使用，提前取出——下方多个 effect 依赖它）
   const pxPerSec = store.pxPerSec;
@@ -377,25 +385,24 @@ export default function Timeline(p: Props) {
     ? ((offsetMap.get(p.cursor.order) ?? 0) + p.cursor.offsetSec) * pxPerSec
     : null;
 
-  // ---- ruler scrub → seek ----
+  // ---- ruler scrub / cursor → 定位 ----
+  //
+  // 两者都走 secToPosition —— 它是 buildOrderOffsetMap（画线用的那套）的
+  // 逆运算。此前这里各写了一套累加循环，与画线口径三方不一致：
+  // scrub 过滤停用镜头、cursor 让停用镜头参与累加，两者又都把叠加层
+  // 算进主轨累加，而画线是"停用占位不累加 + 跳过叠加层"。
+  // 于是同一个 x 坐标，竖线画在一处、跳到的却是另一镜。
   const onRulerScrub = (sec: number) => {
-    let acc = 0;
-    const sorted = [...p.shots].filter((s) => !s.disabled).sort((a, b) => a.order - b.order);
-    for (const s of sorted) {
-      const dur = s.duration_sec ?? 5;
-      if (sec <= acc + dur) { p.onSeek(s, sec - acc); return; }
-      acc += dur;
-    }
-    if (sorted.length) p.onSeek(sorted[sorted.length - 1], 0);
+    const pos = secToPosition(p.shots, sec);
+    if (!pos) return;
+    const shot = p.shots.find(
+      (s) => s.order === pos.order && (s.track_index ?? 0) === 0);
+    if (shot) p.onSeek(shot, pos.offsetSec);
   };
 
   const onRulerCursor = (sec: number) => {
-    let acc = 0;
-    for (const s of [...p.shots].sort((a, b) => a.order - b.order)) {
-      const dur = s.duration_sec ?? 5;
-      if (sec <= acc + dur) { p.onSetCursor({ order: s.order, offsetSec: sec - acc }); return; }
-      acc += dur;
-    }
+    const pos = secToPosition(p.shots, sec);
+    if (pos) p.onSetCursor(pos);
   };
 
   // ---- context menu items ----
@@ -422,8 +429,10 @@ export default function Timeline(p: Props) {
       // 它属于"这一镜怎么渲染"，和 speed/volume/调色同层
       { id: "mute", label: shot?.transform_meta?.muted ? "取消静音" : "静音",
         icon: <VolumeX size={12} />, disabled: !clip.shotId,
+        // 必须在已有 transform_meta 上合并再提交 —— 后端是整体替换，
+        // 只发 {muted} 会把该镜的缩放/变速/调色/LUT/特效全部抹掉。
         onClick: () => clip.shotId && p.onPatchTransform(clip.shotId,
-          { muted: !shot?.transform_meta?.muted }) },
+          { ...(shot?.transform_meta ?? {}), muted: !shot?.transform_meta?.muted }) },
       { id: "locate", label: "在镜头列表中定位", icon: <Crosshair size={12} />,
         disabled: !shot, onClick: () => shot && p.onSelectShot(shot) },
       { id: "split", label: "在播放头处分割", icon: <ScissorsIcon size={12} />, keys: "Ctrl+B",
@@ -611,7 +620,29 @@ export default function Timeline(p: Props) {
 
               {/* 普通轨：Clip 内容区 */}
               {!track.collapsed && !assetKind && (
-                <div className="fw-tl-lane" style={{ width: totalWidth }}
+                <div className={`fw-tl-lane${dropHot ? " drop-hot" : ""}`}
+                  style={{ width: totalWidth }}
+                  onDragOver={(e) => {
+                    // 必须 preventDefault，否则浏览器默认拒绝放置、onDrop 不触发
+                    if (!p.onDropClip) return;
+                    if (!e.dataTransfer.types.includes("application/x-fw-clip")) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "copy";
+                    if (!dropHot) setDropHot(true);
+                  }}
+                  onDragLeave={() => setDropHot(false)}
+                  onDrop={(e) => {
+                    setDropHot(false);
+                    if (!p.onDropClip) return;
+                    const raw = e.dataTransfer.getData("application/x-fw-clip");
+                    if (!raw) return;
+                    e.preventDefault();
+                    try {
+                      p.onDropClip(JSON.parse(raw));
+                    } catch {
+                      /* 数据损坏就当没拖过，不该因此报错打断用户 */
+                    }
+                  }}
                   onMouseDown={(e) => {
                     // 空白处按下 = 框选起手（点在 Clip 上则交给 Clip 处理）
                     if (e.button !== 0) return;
