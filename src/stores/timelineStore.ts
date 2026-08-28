@@ -90,6 +90,18 @@ interface TimelineState {
   redo: () => Promise<void>;
   clearUndo: () => void;
 
+  /** 切/关项目时的清场：把**跟项目绑死**的状态复位。
+   *
+   *  timeline 本身会因 detail=null → shots=[] 被重建 effect 清空，
+   *  但播放头/定位线/选中/剪贴板不在那条链路上，会原样留给下一个项目。
+   *  最难发现的后果是播放头：「移到叠加层」拿它当 overlay_start_sec，
+   *  于是从一个 400s 的项目切到 40s 的项目后，这一镜被放到 320s ——
+   *  远在片尾之外，时间轴上看不见、导出也不会出现。
+   *
+   *  刻意**不复位**的：pxPerSec（缩放）与 snapping —— 那是用户的操作习惯，
+   *  不属于某个项目，每次切项目都重置回默认反而讨人嫌。 */
+  resetForProjectSwitch: () => void;
+
   // ---- 查询辅助 ----
   findClip: (id: string) => Clip | undefined;
   findTrack: (id: string) => Track | undefined;
@@ -240,6 +252,18 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     set((s) => ({ undoStack: [...s.undoStack, entry] }));
   },
   clearUndo: () => set({ undoStack: [], redoStack: [] }),
+
+  resetForProjectSwitch: () => set({
+    timeline: EMPTY_TIMELINE,       // 不等重建 effect，立即失效
+    playheadSec: 0,
+    cursorSec: null,
+    selection: { clipIds: [], assetSegmentIds: [] },
+    clipboard: [],                 // 跨项目粘贴 clip 没有意义（shotId 属于旧项目）
+    snapGuideSec: null,
+    tool: "select",                // 停在 split 上切项目，一点就切开新项目的镜头
+    undoStack: [],
+    redoStack: [],
+  }),
 
   findClip: (id) => get().allClips().find((c) => c.id === id),
   findTrack: (id) => get().timeline.tracks.find((t) => t.id === id),
