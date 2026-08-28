@@ -113,20 +113,28 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path ffmpeg-cache | Out-Null
-          Write-Host "下载 FFmpeg $env:FFMPEG_VERSION ..."
-          Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg-cache/ffmpeg.zip
-
-          $actual = (Get-FileHash ffmpeg-cache/ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
-          $expect = $env:FFMPEG_SHA256.ToLower()
-          if ($actual -ne $expect) {
-            Write-Host "::error::FFmpeg 校验和不匹配"
-            Write-Host "  期望: $expect"
-            Write-Host "  实际: $actual"
-            Write-Host "  下载可能被截断，或上游重新发布了同名文件。"
-            Write-Host "  请核对 $env:FFMPEG_URL.sha256 后更新 workflow 里的 FFMPEG_SHA256。"
-            exit 1
+          # gyan.dev 是个人站，高峰时会 503。加最多 5 次重试，每次退避 15s。
+          $maxAttempts = 5
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+            Write-Host "下载 FFmpeg $env:FFMPEG_VERSION（尝试 $i/$maxAttempts）..."
+            try {
+              Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg-cache/ffmpeg.zip -ErrorAction Stop
+              $actual = (Get-FileHash ffmpeg-cache/ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+              $expect = $env:FFMPEG_SHA256.ToLower()
+              if ($actual -ne $expect) {
+                Write-Host "::warning::校验和不匹配（尝试 $i）: 期望=$expect 实际=$actual"
+                Remove-Item ffmpeg-cache/ffmpeg.zip -Force
+                if ($i -lt $maxAttempts) { Start-Sleep 15; continue }
+                Write-Host "::error::FFmpeg 校验和在 $maxAttempts 次尝试后仍不匹配"; exit 1
+              }
+              Write-Host "✅ 校验通过: $actual"
+              break
+            } catch {
+              Write-Host "::warning::下载失败（尝试 $i）: $_"
+              if (Test-Path ffmpeg-cache/ffmpeg.zip) { Remove-Item ffmpeg-cache/ffmpeg.zip -Force }
+              if ($i -lt $maxAttempts) { Start-Sleep 15 } else { Write-Host "::error::下载 FFmpeg 失败，已重试 $maxAttempts 次"; exit 1 }
+            }
           }
-          Write-Host "✅ 校验通过: $actual"
 
       - name: 解出 sidecar 二进制
         shell: pwsh
