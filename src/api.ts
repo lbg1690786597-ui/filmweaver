@@ -484,10 +484,14 @@ export interface ShotGenerateOpts {
 export const api = {
   health: () => get<{ status: string; auth?: string; login?: boolean }>("/health"),
 
-  // ---- 登录（复用主平台用户；后端 FW_AUTH_UPSTREAM 启用时生效）----
-  login: (username: string, password: string) =>
-    post<{ token: string; expires_at: string; user: { id: number; username: string; display_name: string | null; role: string } }>(
-      "/v2/auth/login", { username, password }),
+  // ---- 登录（飞书扫码，2026-08 起账号密码已移除）----
+  // mode 决定回调怎么收尾：desktop 显示落地页等轮询，web 直接 302 回应用
+  feishuStart: (mode: "desktop" | "web" = "desktop") =>
+    post<{ ticket: string; authorize_url: string }>(
+      `/v2/auth/feishu/start?mode=${mode}`, {}),
+  feishuPoll: (ticket: string) =>
+    get<{ status: "pending" | "ok" | "expired"; token?: string; expires_at?: string; user?: { id: number; username: string; display_name: string | null; role: string } }>(
+      `/v2/auth/feishu/poll?ticket=${encodeURIComponent(ticket)}`),
 
   logout: (token: string) => post<{ ok: boolean }>("/v2/auth/logout", { token }),
 
