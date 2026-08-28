@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import { api, ApiError, JobPhase, Readiness, ShotInfo } from "../api";
+import { effectiveUrl, type Override } from "../lib/formState";
 import PreflightDialog from "./PreflightDialog";
 
 interface Props {
@@ -81,13 +82,18 @@ const ShotCard = memo(function ShotCard(props: {
   const { s } = props;
   const meta = STATUS_META[s.status];
   const [versions, setVersions] = useState<{ version_no: number; video_url: string | null; created_at: string | null }[] | null>(null);
-  // 首帧图：本地态覆盖 props（重生后立即反映，不等整树刷新）
-  const [firstFrame, setFirstFrame] = useState<string | null>(null);
+  // 首帧图的乐观覆盖：单镜重生后立即显示新图，不等整树 refreshDetail。
+  // 覆盖必须能自愈 —— 判定逻辑与踩坑记录见 lib/formState.ts effectiveUrl()（F17）。
+  const [ffOverride, setFfOverride] = useState<Override>(null);
   const [ffBusy, setFfBusy] = useState(false);
   const [ffErr, setFfErr] = useState("");
   // 失败原因分类：moderation=内容审核拒绝（重试无效，要改词/换模型）；其余=渠道故障（可重试）
   const [ffErrReason, setFfErrReason] = useState<string | undefined>();
-  const ff = firstFrame ?? s.first_frame_url;
+  const ff = effectiveUrl(ffOverride, s.first_frame_url);
+
+  // 服务端首帧一变，上一次的失败提示就过期了 —— 否则一张刚成功生成的图
+  // 底下会一直挂着上次的红字报错，用户以为还是失败的。
+  useEffect(() => { setFfErr(""); setFfErrReason(undefined); }, [s.first_frame_url]);
 
   const loadVersions = async () => {
     try {
@@ -103,7 +109,10 @@ const ShotCard = memo(function ShotCard(props: {
     setFfBusy(true); setFfErr(""); setFfErrReason(undefined);
     try {
       const r = await api.regenFirstFrame(s.id, { regenAnchor, imageModel });
-      setFirstFrame(r.first_frame_url);
+      // 记下当时的服务端值：props 追上来（或被别的任务改掉）后自动弃用覆盖
+      if (r.first_frame_url) {
+        setFfOverride({ base: s.first_frame_url, url: r.first_frame_url });
+      }
     } catch (e) {
       const err = e as ApiError;
       setFfErr(err?.message ?? String(e));
