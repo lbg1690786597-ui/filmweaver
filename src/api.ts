@@ -36,11 +36,15 @@ export class ApiError extends Error {
   status: number;
   reason?: string;
   categories?: string[];
-  constructor(status: number, message: string, reason?: string, categories?: string[]) {
+  /** B23：删除素材被引用挡下时，后端回的引用清单（用于给用户看清删了会坏什么） */
+  references?: { type: string; id: string; label: string }[];
+  constructor(status: number, message: string, reason?: string, categories?: string[],
+              references?: { type: string; id: string; label: string }[]) {
     super(message);
     this.status = status;
     this.reason = reason;
     this.categories = categories;
+    this.references = references;
   }
 }
 
@@ -48,7 +52,8 @@ function toApiError(status: number, raw: string): ApiError {
   try {
     const d = JSON.parse(raw)?.detail;
     if (d && typeof d === "object") {
-      return new ApiError(status, d.message ?? raw.slice(0, 300), d.reason, d.categories);
+      return new ApiError(status, d.message ?? raw.slice(0, 300), d.reason, d.categories,
+                          d.references);
     }
     if (typeof d === "string") return new ApiError(status, d.slice(0, 300));
   } catch { /* 非 JSON：按原样透出 */ }
@@ -486,9 +491,12 @@ export const api = {
 
   logout: (token: string) => post<{ ok: boolean }>("/v2/auth/logout", { token }),
 
-  authMe: (token: string) =>
+  authMe: () =>
     get<{ user: { id: number; username: string; display_name: string | null; role: string } }>(
-      `/v2/auth/me?token=${encodeURIComponent(token)}`),
+      // 不再把 token 放进 query：它会进 nginx access log 和浏览器历史。
+      // authHeaders() 读的是同一个 fw_session key，Authorization header
+      // 会自动带上，后端已优先读 header。
+      "/v2/auth/me"),
 
   appLatest: () => get<AppLatest>("/v2/app/latest"),
 
@@ -976,10 +984,26 @@ export const api = {
     get<{ clips: { id: string; name: string; url: string; size: number; kind: string; duration: number }[] }>(
       `/v2/projects/${projectId}/clips`),
 
-  /** P1-3 从素材池删除（连文件本体一起删） */
-  deleteClip: (clipId: string) =>
-    fetch(`${BASE}/v2/clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
-      .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
+  /** P1-3 从素材池删除（连文件本体一起删）。
+   *  force=false 时若素材仍被镜头/旁白/资产引用，后端回 409 + 引用清单（B23）。 */
+  deleteClip: (clipId: string, force = false) =>
+    fetch(`${BASE}/v2/clips/${clipId}${force ? "?force=true" : ""}`,
+          { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => {
+        if (!r.ok) throw toApiError(r.status, await r.text());
+        return r.json() as Promise<{ ok: boolean; broken_references?: number }>;
+      }),
+
+  /** R2 重命名素材池里的素材（改 name，不影响 url / 镜头关联）。 */
+  renameClip: (clipId: string, name: string) =>
+    fetch(`${BASE}/v2/clips/${clipId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ name }),
+    }).then(async (r) => {
+      if (!r.ok) throw toApiError(r.status, await r.text());
+      return r.json() as Promise<{ ok: boolean; id: string; name: string }>;
+    }),
 
   /** 提交时间轴自动拼接（服务器 ffmpeg 归一化+concat+可选烧字幕） */
   /** 拼接导出。clips 每项可为 URL，或 {url,in,dur}（TB-01 分割后的取片窗口）。 */
