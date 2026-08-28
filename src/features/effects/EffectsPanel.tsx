@@ -121,6 +121,10 @@ const HINT: Record<EffectKind, string> = {
 interface Props {
   kind: EffectKind;
   hasSelection: boolean;
+  /** 当前选中镜头的 id。回显 effect 必须依赖它 —— 只依赖 transform 的话，
+   *  两个都没有调色的镜头之间切换时 prop 恒为 null、effect 不触发，
+   *  在 A 镜拖了但没应用的值会原样带到 B 镜。 */
+  shotId?: string | null;
   projectId: string;
   /** 当前选中镜头已保存的调整（滤镜面板据此回显） */
   transform: TransformMeta | null;
@@ -146,7 +150,7 @@ const FILTER_PRESET_VALUES: Record<string, Partial<TransformMeta>> = {
 };
 
 export default function EffectsPanel({
-  kind, hasSelection, projectId, transform, onPatchTransform,
+  kind, hasSelection, shotId, projectId, transform, onPatchTransform,
   onApplyTransition, onToast,
 }: Props) {
   const items = DATA[kind];
@@ -165,12 +169,35 @@ export default function EffectsPanel({
   const lutRef = useRef<HTMLInputElement | null>(null);
   const groups = [...new Set(items.map((i) => i.group))];
 
+  // 拖动中标记：拖的时候不能被下面的回显 effect 覆盖，
+  // 否则每次 onPatchTransform 引起父组件刷新，滑块会被拉回旧值、手感发飘。
+  const dragging = useRef(false);
+
   // 选中镜头变化 → 回显它已保存的调色参数
   useEffect(() => {
+    if (dragging.current) return;   // 见上
     const t = transform ?? {};
     setAdj(Object.fromEntries(ADJUSTMENTS.map(
       (a) => [a.id, (t as Record<string, number>)[a.id] ?? a.def])));
-  }, [transform]);
+    // applied 是"刚点过哪张卡"的一次性视觉反馈，属于**上一个镜头**的状态。
+    // 不清的话切到别的镜头，那张卡还挂着 ✓，看起来像这一镜也应用了。
+    setApplied(null);
+  }, [transform, shotId]);
+
+  /** 把当前滑块值合并进 transform_meta 并落库。
+   *
+   *  必须在**已有** transform_meta 上合并：这个面板只管调色那几项，
+   *  从零重建会把 Inspector 写的位置/变速/音量全抹掉（后端是整体替换）。
+   *  默认值要显式 delete，否则清不掉旧值。 */
+  const pushAdj = (vals: Record<string, number>) => {
+    if (!hasSelection) return;
+    const next = { ...(transform ?? {}) } as Record<string, unknown>;
+    for (const a of ADJUSTMENTS) {
+      if (vals[a.id] !== a.def) next[a.id] = vals[a.id];
+      else delete next[a.id];
+    }
+    onPatchTransform(next as TransformMeta);
+  };
 
   const apply = (it: Item) => {
     if (!hasSelection) { onToast("请先在时间轴选中镜头"); return; }
@@ -245,33 +272,36 @@ export default function EffectsPanel({
             {ADJUSTMENTS.map((a) => (
               <div key={a.id} className="fw-fx-slider-row">
                 <span className="fw-fx-slider-label">{a.label}</span>
+                {/* 拖动即预览：onChange 立刻把新值送出去，画面跟着动
+                    （预览器读的是同一份 transform_meta）。
+                    落库放在 onPointerUp/onKeyUp —— 拖一次滑块会触发几十次
+                    onChange，每次都 PATCH 会把后端刷爆，也会让撤销栈塞满噪声。 */}
                 <input type="range" min={a.min} max={a.max} value={adj[a.id]}
-                  onChange={(e) => setAdj((s) => ({ ...s, [a.id]: Number(e.target.value) }))} />
+                  onPointerDown={() => { dragging.current = true; }}
+                  onChange={(e) => {
+                    const next = { ...adj, [a.id]: Number(e.target.value) };
+                    setAdj(next);
+                    pushAdj(next);          // 实时预览
+                  }}
+                  onPointerUp={() => { dragging.current = false; }}
+                  onPointerCancel={() => { dragging.current = false; }}
+                  // 键盘调节（←→）没有 pointer 事件，靠 blur 收尾
+                  onBlur={() => { dragging.current = false; }} />
                 <span className="fw-fx-slider-val">{adj[a.id]}</span>
               </div>
             ))}
             <div className="fw-fx-adjust-acts">
-              <button onClick={() => {
+              {/* 「应用到选中镜头」已移除：拖动滑块即时生效并落库，
+                  留着那个按钮反而误导（让人以为不点就没保存）。 */}
+              <button disabled={!hasSelection} onClick={() => {
                 const d = Object.fromEntries(ADJUSTMENTS.map((a) => [a.id, a.def]));
                 setAdj(d);
-                if (hasSelection) {
-                  const next = { ...(transform ?? {}) };
-                  for (const a of ADJUSTMENTS) delete (next as Record<string, unknown>)[a.id];
-                  onPatchTransform(next);
-                }
-              }}>重置</button>
-              <button className="primary" disabled={!hasSelection}
-                onClick={() => {
-                  // 只把非默认值写进去，全默认时后端会存 NULL、导出走快路径
-                  const vals: Record<string, number> = {};
-                  for (const a of ADJUSTMENTS) {
-                    if (adj[a.id] !== a.def) vals[a.id] = adj[a.id];
-                  }
-                  onPatchTransform({ ...(transform ?? {}), ...vals });
-                  onToast("调节已保存，导出即生效");
-                }}>
-                应用到选中镜头
-              </button>
+                pushAdj(d);
+                onToast("已重置本镜调色");
+              }}>重置本镜调色</button>
+              {!hasSelection && (
+                <span className="fw-fx-hint">先在镜头轨选中一个镜头</span>
+              )}
             </div>
           </div>
           <div className="fw-fx-group-title">LUT</div>
