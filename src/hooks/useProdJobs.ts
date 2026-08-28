@@ -56,7 +56,14 @@ export function useProdJobs(opts: {
     if (j[jobId]) { delete j[jobId]; localStorage.setItem("fw_jobs", JSON.stringify(j)); }
     setProdJobs((prev) => {
       if (!(jobId in prev)) return prev;   // 已收尾过（SSE 与轮询竞态去重）
-      say(status === "done" ? "✅ 一批生产完成" : `❌ 有任务失败: ${(error || "").slice(0, 100)}`);
+      // done 也可能带 error —— 那是"部分成功"：整批没全崩，但有若干条失败了
+      // （如自动字幕 3/10 段识别失败）。原来只按 status 二分，这类 job 弹的是
+      // 绿色的"✅ 一批生产完成"，然后从列表里出列，用户没有任何渠道知道缺了几条。
+      if (status === "done") {
+        say(error ? `⚠️ 部分完成: ${error.slice(0, 120)}` : "✅ 一批生产完成");
+      } else {
+        say(`❌ 有任务失败: ${(error || "").slice(0, 100)}`);
+      }
       const next = { ...prev };
       delete next[jobId];
       return next;
@@ -159,6 +166,13 @@ export function useProdJobs(opts: {
         refreshSoon();          // 镜头状态流转 → 看板/轨道合并刷新
       } else if (ev === "audio") {
         void refreshAudio();    // 旁白段逐段点亮
+      } else if (ev === "resync") {
+        // B20：后端事件缓冲溢出，中间有状态变更被挤掉了。
+        // 增量已不可信，全量拉一遍（detail + 旁白 + 字幕）把状态对齐。
+        // 不弹 toast：这是内部自愈，用户只需要看到状态正确，不需要知道原因。
+        refreshSoon();
+        void refreshAudio();
+        void refreshSubtitles?.();
       }
     }, {
       onUp: () => { sseUp.current = true; },
@@ -178,6 +192,15 @@ export function useProdJobs(opts: {
     Object.values(prodTimers.current).forEach((t) => clearInterval(t));
     prodTimers.current = {};
     setProdJobs({});
+  }, []);
+
+  // 卸载兜底：clearJobs 只在切项目时被调用，组件卸载（退到项目列表、
+  // 热重载）时这些 setInterval 仍在跑 —— 每个 job 每隔几秒发一次请求，
+  // 而且回调里的 setState 会对已卸载组件报警告。
+  // 这里只清定时器、不 setState，避免卸载后再触发更新。
+  useEffect(() => () => {
+    Object.values(prodTimers.current).forEach((t) => clearInterval(t));
+    prodTimers.current = {};
   }, []);
 
   //: 是否有任一 job 在跑（用于展示进度条、互斥一键成片，以及禁用批量提交按钮
