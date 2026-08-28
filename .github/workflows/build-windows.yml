@@ -46,6 +46,54 @@ jobs:
       - name: 安装前端依赖
         run: npm install
 
+      # ---- 按 tag 决定构建哪一个软件（beta / 正式）----
+      # 同一份源码出两个**互相独立**的应用：
+      #   tag 含 -beta → FilmWeaver Beta，identifier .beta，连 dev 后端(/fw)
+      #   其余 tag     → FilmWeaver，     identifier 原样，连 prod 后端(/fwp)
+      #
+      # identifier 必须不同：Windows 用它认"是不是同一个应用"。
+      # 相同的话两者会互相覆盖安装、更新器也会把 beta 用户拉到正式版上去，
+      # 而"两个能同时装、各自更新"正是 beta 存在的意义。
+      - name: 按 tag 设定应用身份与后端地址
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $isBeta = $tag -match '-beta'
+          $conf = "src-tauri/tauri.conf.json"
+          $c = Get-Content $conf -Raw | ConvertFrom-Json
+
+          # tauri 的 version 字段不接受 -beta.1 这类预发布后缀（要求纯 x.y.z），
+          # 故版本号取 tag 里的数字部分，beta 身份由 productName/identifier 承载。
+          $ver = ($tag -replace '^v','') -replace '-beta.*$',''
+          $c.version = $ver
+
+          if ($isBeta) {
+            $c.productName = "FilmWeaver Beta"
+            $c.identifier  = "com.filmweaver.desktop.beta"
+            $apiBase   = "http://118.196.33.51:9080/fw"
+            $appcast   = "http://118.196.33.51:9080/fw/media/appcast/latest.json"
+          } else {
+            $c.productName = "FilmWeaver"
+            $c.identifier  = "com.filmweaver.desktop"
+            $apiBase   = "http://118.196.33.51:9080/fwp"
+            $appcast   = "http://118.196.33.51:9080/fwp/media/appcast/latest.json"
+          }
+
+          # 更新端点：两个软件各读各的 appcast，否则 beta 会被正式版的更新覆盖
+          $c.plugins.updater.endpoints = @($appcast)
+          $c | ConvertTo-Json -Depth 32 | Set-Content $conf -Encoding UTF8
+
+          # 前端后端地址（vite 构建时注入）
+          "VITE_FW_API_BASE=$apiBase" | Set-Content ".env.production" -Encoding UTF8
+
+          Write-Host "=== 本次构建 ==="
+          Write-Host "  tag        : $tag"
+          Write-Host "  productName: $($c.productName)"
+          Write-Host "  identifier : $($c.identifier)"
+          Write-Host "  version    : $ver"
+          Write-Host "  API base   : $apiBase"
+          Write-Host "  appcast    : $appcast"
+
       # ---- 类型检查（含 scripts/，见 tsconfig.scripts.json）----
       # 放在编译前：类型错误在这里 5 秒暴露，比 tauri build 十几分钟后失败便宜得多
       - name: 类型检查
@@ -207,8 +255,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "FilmWeaver 织影 ${{ github.ref_name }}"
+          releaseName: >-
+            ${{ contains(github.ref_name, '-beta') && 'FilmWeaver Beta 织影' || 'FilmWeaver 织影' }}
+            ${{ github.ref_name }}
           releaseBody: |
+            ${{ contains(github.ref_name, '-beta') && '> ⚠️ **测试版** — 连接开发后端，功能尚在验证中，请勿用于正式生产。' || '' }}
+
             本版聚焦**人设与资产生成质量**（12 项修复）。
 
             ### 修正了会产出错误内容的问题
@@ -223,26 +275,23 @@ jobs:
             - **画风不统一**（真人剧出动漫风场景）：资产图此前没有任何画风约束，
               现已统一为真人实拍写实风格。
             - **同一件衣服长出十几个样子**：识别是逐集进行的，同一件白大褂每集起一个
-              不同名字（「医生白大褂」「笔挺白大褂」「整洁白大褂医生服」…共 17 种写法），
-              系统认不出是同一件。现按服装主体词归一，剧情要求的真变体（如「湿透的白大褂」）
-              仍单独保留。
+              不同名字，系统认不出是同一件。现按服装主体词归一。
             - **同一个人被当成两个人**：「少年陆明」与「陆明」此前各画各的。现已归一，
-              同一角色的不同人生阶段用年龄段区分而非当作两人。
-              （父子、上下级这类"名字相似但不是同一人"的情况不会被误合并。）
+              同一角色的不同人生阶段用年龄段区分。
 
             ### 场景图质量
-            - **描述过于简单**：场景图此前只拿到一个场景名。新增场景描述生成，
-              从剧本提取空间、陈设、材质、光线等要素。
-            - **要求空镜头却出现人物**：改为正向描述「空镜头，画面中空无一人」
-              + 保留否定约束双保险。
+            - **描述过于简单**：新增场景描述生成，从剧本提取空间、陈设、材质、光线等要素。
+            - **要求空镜头却出现人物**：改为正向描述「空镜头，画面中空无一人」+ 否定约束双保险。
 
             ### 新增能力
-            - 资产可以**重命名**了。改名会自动同步更新所有引用（镜头、造型阶段等），
-              不会导致参考图失效。
-            - 上传的素材也可以重命名（不再只能用原始文件名）。
+            - 资产可以**重命名**，改名会自动同步更新所有引用。
+            - 上传的素材也可以重命名。
+
+            ### 登录
+            - 移除账号密码，改用**飞书扫码登录**（与剧本平台看齐）。
 
             ---
             应用内点「⟳ 检查更新」即可静默升级。
             内置 FFmpeg ${{ env.FFMPEG_VERSION }}（无需用户另行安装）。
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-beta') }}
