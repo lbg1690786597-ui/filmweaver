@@ -19,6 +19,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* 暗角/角标是 position:absolute，需要这里做定位上下文，
+     否则会相对更外层定位、跑到页面角落去 */
+  position: relative;
 }
 
 .fw-pl-video {
@@ -134,4 +137,63 @@
   color: var(--c-muted);
   padding: 0 var(--sp-2);
   border-left: 1px solid var(--c-border);
+}
+
+/* ---- 调色实时预览的叠加层（见 render/previewCss.ts）---- */
+
+/* 暗角：CSS filter 无法表达，只能叠一层径向渐变。
+   pointer-events:none 是关键 —— 否则会挡住 <video> 自带的播控条，
+   用户点不到播放/进度条。 */
+.fw-pl-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* "预览为近似效果" / "xx 仅渲染时生效" 的角标。
+   放右上角，避开 <video> 底部的原生控制条。 */
+.fw-pl-approx {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: oklch(0% 0 0 / 0.62);
+  color: var(--c-warning);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  pointer-events: none;
+  white-space: nowrap;
+}
+/* 第二条角标往下排，避免与第一条重叠 */
+.fw-pl-approx.alt {
+  top: 34px;
+  color: var(--c-muted);
+}
+
+/* 变速标记：与分辨率标签同排，但用强调色区分 —— 它表示"画面正在非原速播放"，
+   属于需要用户注意的状态，不是静态元信息。 */
+.fw-pl-meta.speed {
+  color: var(--c-warning);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- WebGL 调色输出层 ---- */
+
+/* GPU 路径下 <video> 仍然存在（解码源 + 音频 + 原生播控），
+   但画面交给上面的 canvas。这里让视频像素不可见、控件仍可用：
+   opacity:0 会连控件一起透明，所以只能靠 canvas 盖住，
+   video 保持原样但被 canvas 遮挡。z-index 决定层序。 */
+.fw-pl-video.gpu { position: relative; z-index: 0; }
+
+.fw-pl-canvas {
+  position: absolute;
+  /* 与 <video> 的 object-fit:contain 表现一致：等比缩放居中 */
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  z-index: 1;
+  /* 点击穿透到下层 <video> 的原生播控条，否则播放/进度条点不动 */
+  pointer-events: none;
 }
