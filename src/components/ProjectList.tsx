@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ProjectInfo } from "../api";
 import ProjectCards from "../features/projects/ProjectCards";
+import WindowControls from "../features/editor/WindowControls";
 
 interface Props {
   onOpen: (id: string) => void;
@@ -179,9 +180,17 @@ export default function ProjectList(p: Props) {
 
   return (
     <div className="plist">
-      <header className="plist-head">
-        <h1>🎬 FilmWeaver 织影</h1>
-        <button className="btn primary" onClick={() => setCreating(true)}>＋ 新建项目</button>
+      {/* 标题栏：decorations:false 关掉了系统标题栏，这一层要自己补。
+          之前只有编辑器页有（EditorLayout → TopBar），项目列表页漏了 ——
+          进入软件的第一个页面反而没法最小化/关闭/拖动窗口。
+
+          drag region 加在 header 上，内部按钮逐个 data-tauri-drag-region="false"
+          排除，否则点按钮会被当成拖窗口。 */}
+      <header className="plist-head" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>🎬 FilmWeaver 织影</h1>
+        <button className="btn primary" data-tauri-drag-region="false"
+          onClick={() => setCreating(true)}>＋ 新建项目</button>
+        <WindowControls />
       </header>
       {err && <div className="err">{err}</div>}
 
