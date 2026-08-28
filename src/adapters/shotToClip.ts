@@ -292,3 +292,38 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
 
   return { tracks, totalDurationSec };
 }
+
+/**
+ * buildOrderOffsetMap 的**逆运算**：绝对秒 → {order, offsetSec}。
+ *
+ * 为什么要有这个函数：时间轴上"点一下定位到哪一镜"曾有**三套**互不相同的
+ * 算法 —— 画线用 buildOrderOffsetMap（停用镜头占位但不累加、跳过叠加层、
+ * 时长走 shotDuration），而刻度尺 scrub 把停用镜头过滤掉、
+ * 刻度尺 cursor 让停用镜头参与累加，两者还都把叠加层算进主轨累加。
+ * 结果是同一个 x 坐标，画出来的线和跳到的镜头不是一个 —— 项目里
+ * 只要有一个停用镜头或一个叠加层，定位就开始偏，越往后偏得越多。
+ *
+ * 直接由 buildOrderOffsetMap 派生，保证与画线口径**永远一致**。
+ */
+export function secToPosition(
+  shots: ShotInfo[], sec: number,
+): { order: number; offsetSec: number } | null {
+  const map = buildOrderOffsetMap(shots);
+  if (!map.size) return null;
+  const main = [...shots]
+    .filter((s) => (s.track_index ?? 0) === 0)
+    .sort((a, b) => a.order - b.order);
+
+  let best: { order: number; offsetSec: number } | null = null;
+  for (const s of main) {
+    const start = map.get(s.order);
+    if (start === undefined) continue;
+    // 停用镜头在 map 里占位但不推进时间轴，落点不该停在它上面
+    if (s.disabled) continue;
+    const end = start + shotDuration(s);
+    if (sec < end) return { order: s.order, offsetSec: Math.max(0, sec - start) };
+    best = { order: s.order, offsetSec: shotDuration(s) };
+  }
+  // 超出末尾：吸附到最后一个启用镜头的结尾
+  return best;
+}
