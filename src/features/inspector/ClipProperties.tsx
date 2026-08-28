@@ -4,11 +4,13 @@
  * TB-03/TB-10 已落地：变换（位置/缩放/旋转/不透明度/镜像）、变速、音量与淡化
  * 全部落库到 Shot.transform_meta，导出时由 media.py 翻译成 ffmpeg filter 链。
  *
- * 保存时机：拖动滑块只更新本地 state（不然拖一次发几十个 PATCH），
- * 松手（onPointerUp）与开关类点击才提交。
+ * 保存时机：拖动滑块**即时**提交（预览器读的是落库后的 transform_meta，
+ * 不实时提交就看不到画面变化 —— 主流剪辑软件都是拖到哪儿画面就到哪儿）。
+ * 松手再补一次收尾提交。拖动期间用 dragging 标记跳过回显，
+ * 否则父组件刷新回来会把滑块拉回旧值。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
 import type { TransformMeta } from "../../api";
 import "./ClipProperties.css";
@@ -59,12 +61,20 @@ export default function ClipProperties(p: Props) {
   const [durDraft, setDurDraft] = useState(p.durationSec);
 
   // 切镜头 → 载入该镜已保存的参数（没有就回默认值）
+  //
+  // ⚠️ 依赖里有 p.transform，而滑块拖动会 commit → 父组件刷新 → p.transform 变化
+  // → 又回来重置本地 state。拖动中这条链会和用户抢滑块，手感发飘、数值回跳。
+  // 用 dragging 标记跳过拖动期间的回显（松手后仍以服务端值为准）。
+  const dragging = useRef(false);
   useEffect(() => {
+    if (dragging.current) return;
     const t = p.transform ?? {};
     setTf({
       x: t.x ?? 0, y: t.y ?? 0, scale: t.scale ?? 100, rotate: t.rotate ?? 0,
       opacity: t.opacity ?? 100, mirrorH: !!t.mirrorH, mirrorV: !!t.mirrorV,
-      blend: "normal",
+      // 混合模式此前硬编码 "normal"，导致重新选中镜头后已保存的
+      // blendMode 显示不出来，之后任何一次 commit 都会把它丢掉
+      blend: t.blendMode ?? "normal",
     });
     setTm({ speed: t.speed ?? 1, freeze: false });
     setAu({
@@ -80,22 +90,36 @@ export default function ClipProperties(p: Props) {
     tf: TransformState; tm: TimeState; au: AudioState;
   }>) => {
     const T = over?.tf ?? tf, M = over?.tm ?? tm, A = over?.au ?? au;
-    const out: TransformMeta = {};
-    if (T.x) out.x = T.x;
-    if (T.y) out.y = T.y;
-    if (T.scale !== 100) out.scale = T.scale;
-    if (T.rotate) out.rotate = T.rotate;
-    if (T.opacity !== 100) out.opacity = T.opacity;
-    if (T.mirrorH) out.mirrorH = true;
-    if (T.mirrorV) out.mirrorV = true;
-    if (T.blend && T.blend !== "normal") {
-      out.blendMode = T.blend as NonNullable<TransformMeta["blendMode"]>;
-    }
-    if (M.speed !== 1) out.speed = M.speed;
-    if (A.volume !== 100) out.volume = A.volume;
-    if (A.muted) out.muted = true;
-    if (A.fadeIn) out.fadeIn = A.fadeIn;
-    if (A.fadeOut) out.fadeOut = A.fadeOut;
+
+    // ⚠️ 必须在**已有** transform_meta 上合并，不能从 {} 重建。
+    //
+    // 后端是整体替换（routes_v2.py: shot.transform_meta = json.dumps(...)），
+    // 而本面板只持有位置/变换/速度/音量这几组键。从零重建再提交，
+    // 等于把滤镜面板写的调色、LUT、逐帧特效全部抹掉 ——
+    // 用户在滤镜面板调好色，回来拖一下音量，画面就回到原始色。
+    //
+    // 本面板拥有的键要显式 delete（值为默认时），否则清不掉旧值；
+    // 不属于本面板的键（exposure/contrast/lut/vignette…）原样保留。
+    const out: TransformMeta = { ...(p.transform ?? {}) };
+    const set = <K extends keyof TransformMeta>(k: K, v: TransformMeta[K], keep: boolean) => {
+      if (keep) out[k] = v; else delete out[k];
+    };
+
+    set("x", T.x, !!T.x);
+    set("y", T.y, !!T.y);
+    set("scale", T.scale, T.scale !== 100);
+    set("rotate", T.rotate, !!T.rotate);
+    set("opacity", T.opacity, T.opacity !== 100);
+    set("mirrorH", true, !!T.mirrorH);
+    set("mirrorV", true, !!T.mirrorV);
+    set("blendMode", T.blend as NonNullable<TransformMeta["blendMode"]>,
+        !!T.blend && T.blend !== "normal");
+    set("speed", M.speed, M.speed !== 1);
+    set("volume", A.volume, A.volume !== 100);
+    set("muted", true, !!A.muted);
+    set("fadeIn", A.fadeIn, !!A.fadeIn);
+    set("fadeOut", A.fadeOut, !!A.fadeOut);
+
     p.onPatchTransform(Object.keys(out).length ? out : {});
   };
 
@@ -104,17 +128,17 @@ export default function ClipProperties(p: Props) {
       <div className="fw-cp">
         <Group title="位置">
           <Slider label="X" v={tf.x} min={-500} max={500} unit="px"
-            onChange={(v) => setTf((s) => ({ ...s, x: v }))} onCommit={() => commit()} />
+            onChange={(v) => { setTf((s) => ({ ...s, x: v })); commit({ tf: { ...tf, x: v } }); }} onCommit={() => commit()} dragRef={dragging} />
           <Slider label="Y" v={tf.y} min={-500} max={500} unit="px"
-            onChange={(v) => setTf((s) => ({ ...s, y: v }))} onCommit={() => commit()} />
+            onChange={(v) => { setTf((s) => ({ ...s, y: v })); commit({ tf: { ...tf, y: v } }); }} onCommit={() => commit()} dragRef={dragging} />
         </Group>
         <Group title="变换">
           <Slider label="缩放" v={tf.scale} min={10} max={400} unit="%"
-            onChange={(v) => setTf((s) => ({ ...s, scale: v }))} onCommit={() => commit()} />
+            onChange={(v) => { setTf((s) => ({ ...s, scale: v })); commit({ tf: { ...tf, scale: v } }); }} onCommit={() => commit()} dragRef={dragging} />
           <Slider label="旋转" v={tf.rotate} min={-180} max={180} unit="°"
-            onChange={(v) => setTf((s) => ({ ...s, rotate: v }))} onCommit={() => commit()} />
+            onChange={(v) => { setTf((s) => ({ ...s, rotate: v })); commit({ tf: { ...tf, rotate: v } }); }} onCommit={() => commit()} dragRef={dragging} />
           <Slider label="不透明度" v={tf.opacity} min={0} max={100} unit="%"
-            onChange={(v) => setTf((s) => ({ ...s, opacity: v }))} onCommit={() => commit()} />
+            onChange={(v) => { setTf((s) => ({ ...s, opacity: v })); commit({ tf: { ...tf, opacity: v } }); }} onCommit={() => commit()} dragRef={dragging} />
         </Group>
         <Group title="混合与镜像">
           <div className="fw-cp-row">
@@ -192,7 +216,7 @@ export default function ClipProperties(p: Props) {
     <div className="fw-cp">
       <Group title="音量">
         <Slider label="音量" v={au.volume} min={0} max={200} unit="%"
-          onChange={(v) => setAu((s) => ({ ...s, volume: v }))} onCommit={() => commit()} />
+          onChange={(v) => { setAu((s) => ({ ...s, volume: v })); commit({ au: { ...au, volume: v } }); }} onCommit={() => commit()} dragRef={dragging} />
         <div className="fw-cp-row">
           <span className="fw-cp-k">静音</span>
           <button className={`fw-cp-switch ${au.muted ? "on" : ""}`}
@@ -203,9 +227,9 @@ export default function ClipProperties(p: Props) {
       </Group>
       <Group title="淡化">
         <Slider label="淡入" v={au.fadeIn} min={0} max={50} unit="×0.1s"
-          onChange={(v) => setAu((s) => ({ ...s, fadeIn: v }))} onCommit={() => commit()} />
+          onChange={(v) => { setAu((s) => ({ ...s, fadeIn: v })); commit({ au: { ...au, fadeIn: v } }); }} onCommit={() => commit()} dragRef={dragging} />
         <Slider label="淡出" v={au.fadeOut} min={0} max={50} unit="×0.1s"
-          onChange={(v) => setAu((s) => ({ ...s, fadeOut: v }))} onCommit={() => commit()} />
+          onChange={(v) => { setAu((s) => ({ ...s, fadeOut: v })); commit({ au: { ...au, fadeOut: v } }); }} onCommit={() => commit()} dragRef={dragging} />
       </Group>
       <ResetBtn onClick={() => { setAu(DEF_AUDIO); commit({ au: DEF_AUDIO }); }} />
     </div>
@@ -223,18 +247,24 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-function Slider({ label, v, min, max, unit, onChange, onCommit }: {
+function Slider({ label, v, min, max, unit, onChange, onCommit, dragRef }: {
   label: string; v: number; min: number; max: number; unit: string;
   onChange: (v: number) => void;
-  /** 松手才落库：拖动中每帧发一次 PATCH 会把后端打满 */
+  /** 松手时的收尾提交（拖动中 onChange 已经在实时提交了） */
   onCommit?: () => void;
+  /** 拖动标记，交给父组件用来跳过回显（见 useEffect 里的说明） */
+  dragRef?: React.MutableRefObject<boolean>;
 }) {
   return (
     <div className="fw-cp-slider">
       <span className="fw-cp-k">{label}</span>
       <input type="range" min={min} max={max} value={v}
+        onPointerDown={() => { if (dragRef) dragRef.current = true; }}
         onChange={(e) => onChange(Number(e.target.value))}
-        onPointerUp={onCommit} onKeyUp={onCommit} />
+        onPointerUp={() => { if (dragRef) dragRef.current = false; onCommit?.(); }}
+        onPointerCancel={() => { if (dragRef) dragRef.current = false; }}
+        onKeyUp={onCommit}
+        onBlur={() => { if (dragRef) dragRef.current = false; }} />
       <span className="fw-cp-v">{v}<em>{unit}</em></span>
     </div>
   );
