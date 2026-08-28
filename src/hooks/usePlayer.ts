@@ -13,13 +13,21 @@ export function usePlayer() {
   const [playhead, setPlayhead] = useState<{ order: number; offsetSec: number } | null>(null);
   const pendingSeek = useRef<number | null>(null);
   const [autoNext, setAutoNext] = useState(false);  // 连播：本镜播完自动切下一镜
-  const [selectedShot, setSelectedShot] = useState<ShotInfo | null>(null);
+  /** ⚠️ 只存 id，**不要**存整个 ShotInfo 对象。
+   *
+   *  存对象的话它就是一份快照：refreshDetail() 换掉 detail.shots 里的对象后，
+   *  这里仍指向旧的那个，于是多个面板长期拿着陈旧数据 ——
+   *    · 特效面板「再点一次关闭」永远关不掉（读到的 vignette 还是旧值）
+   *    · Inspector 切个 tab 就"回退"到保存前的数值
+   *    · 保存提示词后状态徽标、版本列表的「当前」标记都不更新
+   *  真实对象由调用方用这个 id 从最新的 shots 里派生（见 App.tsx）。 */
+  const [selectedShotId, setSelectedShotId] = useState<string | null>(null);
   /** 定位线（editing cursor）：用户主动放置的工作锚点，独立于播放头。
    *  单击刻度尺放置、拖把手移动；「从定位线播放」等按钮消费此状态。 */
   const [cursor, setCursor] = useState<{ order: number; offsetSec: number } | null>(null);
 
   const onSelectShot = (s: ShotInfo) => {
-    setSelectedShot(s);
+    setSelectedShotId(s.id);
     if (s.video_url) {
       setPreviewUrl(api.mediaUrl(s.video_url));
       setPreviewLabel(`镜头 #${s.order}`);
@@ -63,7 +71,7 @@ export function usePlayer() {
   const clearPlayer = useCallback(() => {
     setPreviewUrl(null);
     setPreviewLabel("");
-    setSelectedShot(null);
+    setSelectedShotId(null);
     setPreviewShot(null);
     setPlayhead(null);
     setCursor(null);
@@ -71,7 +79,7 @@ export function usePlayer() {
 
   return {
     videoRef, previewUrl, previewLabel, previewShot, playhead, setPlayhead,
-    pendingSeek, autoNext, setAutoNext, selectedShot, setSelectedShot,
+    pendingSeek, autoNext, setAutoNext, selectedShotId, setSelectedShotId,
     onSelectShot, seekTo, onPreviewEnded, previewMedia, previewShotVersion,
     clearPlayer, cursor, setCursor,
   };
