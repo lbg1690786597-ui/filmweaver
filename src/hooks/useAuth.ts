@@ -24,7 +24,9 @@ export function useAuth() {
       const saved = localStorage.getItem("fw_session");
       if (saved) {
         try {
-          const me = await api.authMe(saved);
+          // token 不再作参数传：authHeaders() 从同一个 fw_session key 读，
+          // 走 Authorization header（避免 token 进日志/浏览器历史）
+          const me = await api.authMe();
           setUser(me.user);
           setLoginRequired(false);
           return;
