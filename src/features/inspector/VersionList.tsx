@@ -60,7 +60,10 @@ export default function VersionList({ shot, onSwitchVersion, onToast }: Props) {
       .then((r) => { if (alive) setVersions(r.versions); })
       .catch(() => { if (alive) setVersions([]); });
     return () => { alive = false; };
-  }, [shot.id]);
+    // 依赖里必须带上会随生成变化的字段：只依赖 shot.id 的话，
+    // 「生成变体」「精品升级」完成后版本列表不刷新，得切走再切回来才看得到。
+    // （shot 现在是从最新 shots 派生的对象，这些字段会真实变化）
+  }, [shot.id, shot.video_url, shot.status]);
 
   if (versions === null) {
     return <div className="fw-vl-loading"><Loader2 size={13} className="fw-spin" /> 加载版本…</div>;
