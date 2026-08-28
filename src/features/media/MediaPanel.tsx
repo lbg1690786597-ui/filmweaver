@@ -11,7 +11,7 @@
 import { useMemo, useRef, useState } from "react";
 import {
   Upload, Search, Grid3x3, List, Film, Music, Image as ImageIcon,
-  File, Plus, Trash2, Play, Check, FolderOpen,
+  File, Plus, Trash2, Play, Check, FolderOpen, Pencil,
 } from "lucide-react";
 import { api } from "../../api";
 import type { ShotInfo } from "../../api";
@@ -38,6 +38,8 @@ interface Props {
   onAddToTimeline: (c: LibClip) => void;
   onPreview: (c: LibClip) => void;
   onDeleteClip: (id: string) => void;
+  /** R2 重命名素材（只改展示名，不影响 url 与镜头关联） */
+  onRenameClip: (id: string, name: string) => void;
   onToast: (m: string) => void;
 }
 
@@ -184,6 +186,16 @@ export default function MediaPanel(p: Props) {
                         <Plus size={11} />
                       </button>
                     )}
+                    <button title="重命名" onClick={(e) => {
+                      e.stopPropagation();
+                      const next = window.prompt("素材名称", c.name);
+                      // null = 用户取消；与原名相同则不必发请求
+                      if (next != null && next.trim() && next.trim() !== c.name) {
+                        p.onRenameClip(c.id, next.trim());
+                      }
+                    }}>
+                      <Pencil size={11} />
+                    </button>
                     <button title="从素材池删除" className="danger"
                       onClick={(e) => { e.stopPropagation(); p.onDeleteClip(c.id); }}>
                       <Trash2 size={11} />
