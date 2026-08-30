@@ -6,16 +6,18 @@
  * 已在工具条上留位，逐帧步进需要知道 fps——Phase 2 接入 Timeline 后再实装。
  */
 
-import { RefObject, useEffect } from "react";
+import { RefObject, useEffect, useRef, useState } from "react";
 import {
   SkipBack, Play, Pause, Rewind, Crosshair, Maximize2, Repeat,
 } from "lucide-react";
 import { fmtSec } from "../../types/timeline";
 import "./Player.css";
-import type { TransformMeta } from "../../api";
+import type { TransformMeta, SubtitleClipInfo } from "../../api";
 import { transformToFilter, transformToTransform, vignetteOverlay,
          unpreviewableEffects } from "../../render/previewCss";
 import { useGradePreview } from "../../hooks/useGradePreview";
+import { styleToCss } from "../../lib/subtitleStyle";
+import type { SubtitleStyleLike } from "../../lib/subtitleStyle";
 
 export interface PlayerProps {
   videoRef: RefObject<HTMLVideoElement>;
@@ -43,7 +45,17 @@ export interface PlayerProps {
   playing: boolean;
   /** 当前镜头的调色/变换参数，用于实时预览（CSS 近似） */
   transform?: TransformMeta | null;
+
+  /** 字幕轨。按播放头时间取当前 cue 叠在画面上（所见即所得）。 */
+  subtitles?: SubtitleClipInfo[];
+  /** 项目级默认字幕样式。单条 clip 的 style 优先，为空时继承这里。 */
+  subtitleStyle?: SubtitleStyleLike | null;
 }
+
+/** 画面在播放器里的实际矩形（letterbox 之外的那块）。
+ *  .fw-pl-video 是 width/height:auto + max-*:100%，元素盒**就是**画面盒，
+ *  所以直接读 offsetLeft/Top/Width/Height 即可，不用自己按宽高比反算。 */
+interface VideoRect { left: number; top: number; width: number; height: number }
 
 export default function Player(p: PlayerProps) {
   // 调色实时预览。优先 WebGL —— CSS filter **表达不了 LUT**（能力缺失，
@@ -68,11 +80,53 @@ export default function Player(p: PlayerProps) {
     if (v) v.playbackRate = speed;
   }, [speed, p.previewUrl, p.videoRef]);
 
+  // ---- 字幕叠加层 ----
+  // 字号是按 1920 基准存的，预览要按**画面实际高度**缩放；而画面盒
+  // ≠ 播放器盒（竖屏片子在宽播放器里两侧是黑边）。所以必须实测 <video>
+  // 元素的矩形，用播放器盒的高度去缩会让字幕明显偏大。
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [vrect, setVrect] = useState<VideoRect | null>(null);
+  useEffect(() => {
+    const v = p.videoRef.current;
+    if (!v || !p.previewUrl) { setVrect(null); return; }
+    const measure = () => setVrect({
+      left: v.offsetLeft, top: v.offsetTop,
+      width: v.offsetWidth, height: v.offsetHeight,
+    });
+    measure();
+    // 元素盒随片源宽高比、面板拖拽、最大化而变，三者都只能靠观察拿到
+    const ro = new ResizeObserver(measure);
+    ro.observe(v);
+    if (boxRef.current) ro.observe(boxRef.current);
+    v.addEventListener("loadedmetadata", measure);
+    return () => { ro.disconnect(); v.removeEventListener("loadedmetadata", measure); };
+  }, [p.previewUrl, p.videoRef]);
+
+  // 当前 cue：锚点是 (start_shot_order, start_offset_sec)，播放头同构，
+  // 直接比即可，不需要把整条时间轴换算成绝对秒。
+  //
+  // ⚠️ 只认锚在**当前预览镜头**上的 cue。一条 cue 的时长若溢出到下一镜，
+  // 预览里不会跟着延续——烧录走的是后端换算好的 SRT，那边是连续的。
+  // 解说剧的 cue 由旁白拆条而来（单条 ≤5s），实际几乎不会溢出。
+  const order = p.previewShot?.order;
+  const t = p.playhead && p.playhead.order === order ? p.playhead.offsetSec : null;
+  const cue = (t === null || order === undefined) ? null
+    : (p.subtitles ?? []).find(
+        (c) => c.start_shot_order === order
+            && t >= c.start_offset_sec
+            && t < c.start_offset_sec + (c.duration || 0));
+  // 单条覆写优先于项目级默认（剪映/PR 都是这个两层模型）。
+  // 空对象 {} 算"没有覆写"——「应用到全部」正是把覆写清成 {} 来让整轨
+  // 回到跟随项目样式，这里若把它当成一套真样式，预览就会掉回硬编码默认值。
+  const ovr = cue?.style && Object.keys(cue.style).length
+    ? (cue.style as SubtitleStyleLike) : null;
+  const cueStyle = ovr ?? p.subtitleStyle ?? null;
+
   return (
     <>
       <div className="fw-pl-stage">
         {p.previewUrl ? (
-          <div className="fw-pl-box">
+          <div className="fw-pl-box" ref={boxRef}>
             <video key={p.previewUrl} src={p.previewUrl} controls autoPlay
               className={`fw-pl-video${gpuActive ? " gpu" : ""}`}
               style={{
@@ -94,6 +148,18 @@ export default function Player(p: PlayerProps) {
                 pointer-events:none 保证不挡住 <video> 自带的播控条 */}
             {vignette && (
               <div className="fw-pl-vignette" style={{ background: vignette }} />
+            )}
+            {/* 字幕层。定位到画面矩形内（不是播放器矩形），字号按画面高度
+                从 1920 基准缩下来，与 srtForceStyle 同一套语义。
+                pointer-events:none —— 不能挡住 <video> 的原生播控条。 */}
+            {cue && vrect && (
+              <div className="fw-pl-subtitle"
+                style={{
+                  left: vrect.left, top: vrect.top,
+                  width: vrect.width, height: vrect.height,
+                }}>
+                <div style={styleToCss(cueStyle, vrect.height)}>{cue.text}</div>
+              </div>
             )}
             {/* 预览体现不出来的效果要明说，否则用户会以为没生效 */}
             {unpreviewable.length > 0 && (
