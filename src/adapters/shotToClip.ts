@@ -259,11 +259,17 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   // ---- 音频轨 ----
   const voiceTrack = emptyTrack("track-voice", "voice", "旁白", 40);
   const musicTrack = emptyTrack("track-music", "music", "配乐", 36);
+  const audioTrack = emptyTrack("track-audio", "audio", "音效", 32);
   for (const a of input.audioClips ?? []) {
-    const t = a.kind === "music" ? musicTrack : voiceTrack;
+    // kind="shot"（从镜头视频剥出的原声）归「音效」轨：
+    // 它既不是旁白也不是配乐，且与视频一一对应，单独一轨才看得清对位关系。
+    // kind="narration"（解说剧的剧本旁白）归「旁白」轨——它就是旁白，
+    // 和手工 TTS 同性质，混在一起看反而清楚（都是"人在说话"那一层）。
+    const t = a.kind === "music" ? musicTrack
+      : a.kind === "shot" ? audioTrack
+        : voiceTrack;
     t.clips.push(audioToClip(a, offsetMap, t.id));
   }
-  const audioTrack = emptyTrack("track-audio", "audio", "音效", 32);
 
   // 成片总时长 = 主轨顺序累加。**不含叠加层**——它盖在主轨之上，
   // 不延长成片（与 render/normalize.ts 的 totalSec 必须同口径，
