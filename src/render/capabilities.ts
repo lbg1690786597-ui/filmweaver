@@ -57,6 +57,9 @@ const NEEDED_FILTERS = [
   "atempo", "afade", "amix", "volume", "anull", "anullsrc",
   // 字幕
   "subtitles",
+  // 字幕对齐（features/subtitles/probeSilence.ts）——探测不到时对齐会退化成
+  // 纯字符比例分配，不失败，但用户该被告知精度下降。
+  "silencedetect",
 ];
 
 let cache: Capabilities | null = null;
