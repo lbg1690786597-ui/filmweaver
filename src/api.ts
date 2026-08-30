@@ -250,6 +250,8 @@ export interface ProjectDetail {
   title: string;
   base_aspect: string;
   production_mode: string | null;
+  /** 解说音色（解说剧整片共用的参考音频） */
+  narration_voice_url?: string | null;
   episodes: EpisodeInfo[];
   raw_script: string | null;
   optimized_script: string | null;
@@ -421,13 +423,17 @@ export interface AssetDragData {
 /** P2-4 音频轨段：TTS 旁白 / 配乐，锚定镜头 order + 镜内偏移 */
 export interface AudioClipInfo {
   id: string;
-  kind: "tts" | "music";
+  /** shot = 从镜头视频里剥出来的原声；narration = 解说剧按剧本切出的旁白 */
+  kind: "tts" | "music" | "shot" | "narration";
   text: string | null;
   url: string | null;
   duration: number;
   start_shot_order: number;
   start_offset_sec: number;
   voice_ref_url: string | null;
+  /** kind="shot" 时指向来源镜头。导出时据此静音该镜头的原音轨，
+   *  避免同一段声音响两遍（视频自带一遍 + 音频轨一遍）。 */
+  source_shot_id?: string | null;
   status: "pending" | "generating" | "done" | "failed";
   error: string | null;
 }
@@ -598,6 +604,42 @@ export const api = {
   deleteSubtitleClip: (clipId: string) =>
     fetch(`${BASE}/v2/subtitle-clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
+
+  /** 批量写入字幕段（本地对齐产物的落库入口）。
+   *
+   *  逐条 POST 是不可行的：一段 205 字旁白按 15 字拆条 ≈ 14 条 cue，
+   *  21 段旁白 ≈ 300 条 —— 300 次往返用户要等半分钟，中途失败还会留下半套字幕。
+   *
+   *  replaceKind 传 "subtitle" 表示先清掉自动生成的那一类再写，
+   *  用户手工加的 normal / title 不动。 */
+  bulkSubtitleClips: (body: {
+    project_id: string;
+    replace_kind?: string | null;
+    clips: {
+      project_id: string; text: string; kind?: string;
+      start_shot_order?: number; start_offset_sec?: number;
+      duration?: number; style?: Record<string, unknown>;
+    }[];
+  }) => post<{ ok: boolean; created: number; deleted: number; skipped_empty: number }>(
+    "/v2/subtitle-clips/bulk", body),
+
+  /** 项目级默认字幕样式（存在 Project.default_profile.subtitle_style）。
+   *
+   *  烧录是把**一个** SRT 用**一套** force_style 烧进画面，
+   *  所以导出时必须有一个确定的"这个项目的字幕长什么样"。 */
+  getSubtitleStyle: (projectId: string) =>
+    get<{ style: Record<string, unknown> | null }>(
+      `/v2/projects/${projectId}/subtitle-style`),
+
+  setSubtitleStyle: (projectId: string, style: Record<string, unknown> | null) =>
+    fetch(`${BASE}/v2/projects/${projectId}/subtitle-style`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ style }),
+    }).then(async (r) => {
+      if (!r.ok) throw toApiError(r.status, await r.text());
+      return r.json() as Promise<{ ok: boolean; style: Record<string, unknown> | null }>;
+    }),
 
   /** 导出用 SRT（时间码已按镜头顺序换算为绝对时间） */
   subtitlesSrt: (projectId: string) =>
@@ -1009,31 +1051,9 @@ export const api = {
       return r.json() as Promise<{ ok: boolean; id: string; name: string }>;
     }),
 
-  /** 提交时间轴自动拼接（服务器 ffmpeg 归一化+concat+可选烧字幕） */
-  /** 拼接导出。clips 每项可为 URL，或 {url,in,dur}（TB-01 分割后的取片窗口）。 */
-  submitCompose: (
-    clips: (string | {
-      url: string; in?: number; dur?: number;
-      /** TB-03/TB-10 画面与音频调整 */
-      tm?: TransformMeta;
-    })[],
-    opts?: {
-      width?: number; height?: number; fps?: number; burn_srt?: string;
-      /** TB-12 编码参数 */
-      vcodec?: string; crf?: number; with_audio?: boolean;
-    },
-  ) =>
-    post<JobOut>("/v2/jobs", {
-      kind: "compose",
-      payload: {
-        clips,
-        width: opts?.width ?? 1080, height: opts?.height ?? 1920,
-        fps: opts?.fps ?? 30, burn_srt: opts?.burn_srt,
-        vcodec: opts?.vcodec ?? "libx264",
-        crf: opts?.crf ?? 20,
-        with_audio: opts?.with_audio ?? true,
-      },
-    }),
+  // ⚠️ 这里原有 submitCompose（kind:"compose"）。云端合成已于 2026-08-30 下线：
+  // 后端 RUNNERS 里已无 "compose"，再提交只会得到一个立刻失败的 job。
+  // 合成统一走桌面端本机 ffmpeg（render/renderer.ts）。
 
   /** 批量补齐镜头视频（异步 job；默认只生成尚未出片的镜头） */
   submitShotVideos: (projectId: string, opts?: { orders?: number[]; modelId?: string; promptPrefix?: string }) =>
@@ -1090,6 +1110,44 @@ export const api = {
   // ---- P2-4 音频轨（TTS 旁白 / 配乐）----
   listAudioClips: (projectId: string) =>
     get<{ clips: AudioClipInfo[]; tts_available: boolean }>(`/v2/projects/${projectId}/audio-clips`),
+
+  /** 设置/清除解说音色（整片共用一个解说声，挂项目而非角色）。 */
+  setNarrationVoice: (projectId: string, voiceUrl: string | null) =>
+    fetch(`${BASE}/v2/projects/${projectId}/narration-voice`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ voice_url: voiceUrl }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{ ok: boolean; voice_url: string | null }>;
+    }),
+
+  /** 解说剧：把剧本正文按句子边界切分到各镜头，建成待合成的旁白段。
+   *  只建段不合成——合成仍走 synthTts（用户可先校对文案再花钱合成）。 */
+  generateNarration: (projectId: string, opts?: {
+    episodes?: number[]; replace?: boolean; voiceRefUrl?: string;
+  }) =>
+    post<{
+      created: number; skipped_existing: number;
+      shots_without_text: number; episodes: number[];
+    }>(`/v2/projects/${projectId}/narration/generate`, {
+      project_id: projectId,
+      episodes: opts?.episodes ?? null,
+      replace: opts?.replace ?? false,
+      voice_ref_url: opts?.voiceRefUrl ?? null,
+    }),
+
+  /** 把镜头视频里的原声剥成独立音频段（落在「音效」轨上，可单独编辑）。
+   *  幂等：已剥过的镜头会被跳过，不会生成重复音频段。
+   *  剥离后该镜头视频的原音轨在导出时自动静音，声音不会响两遍。 */
+  detachShotAudio: (projectId: string, shotIds?: string[]) =>
+    post<{
+      created: AudioClipInfo[]; created_count: number;
+      skipped_existing: number; no_audio: number;
+    }>("/v2/shots/detach-audio", {
+      project_id: projectId,
+      shot_ids: shotIds && shotIds.length ? shotIds : null,
+    }),
 
   createAudioClip: (body: {
     projectId: string; kind: "tts" | "music"; text?: string; url?: string;
