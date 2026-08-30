@@ -1,17 +1,19 @@
 /**
  * ExportDialog — 导出对话框（PLAN §20，Phase 6）
  *
- * 两条渲染通道：
- *   本机 ffmpeg（Tauri sidecar）—— 桌面端优先，不占服务器、不上传、可自选参数
- *   服务端 compose        —— 网页预览下的唯一选择，参数固定
+ * **只有一条渲染通道：本机 ffmpeg（Tauri sidecar）。**
  *
- * 网页预览（浏览器）里没有 Tauri API，本机渲染必须**先探测再启用**，
- * 否则点下去直接抛 "Command not found"。
+ * 服务端 compose 于 2026-08-30 整体下线。它只做单轨顺序拼接——不混音频轨、
+ * 不渲染转场、不合成叠加层、字幕烧录写死 FontSize=18。产物与本机渲染差得
+ * 不是一点半点，却同样叫"成片"，用户拿它当验收依据就会误判生成环节坏了。
+ *
+ * 网页预览（浏览器）里没有 Tauri API，因此**不提供导出**——网页版只给
+ * 技术人员开发测试用，不是用户入口。
  */
 
 import { useMemo, useState } from "react";
 import {
-  Download, FolderOpen, Monitor, Cloud, Loader2, Check, AlertTriangle,
+  Download, FolderOpen, Monitor, Loader2, Check, AlertTriangle,
 } from "lucide-react";
 import type { ShotInfo } from "../../api";
 import { fmtSec } from "../../types/timeline";
@@ -25,7 +27,6 @@ import "./ExportDialog.css";
 export const IS_TAURI = typeof window !== "undefined"
   && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
 
-type Channel = "local" | "server";
 type Range = "all" | "generated" | "selection";
 
 const FPS_OPTIONS = [24, 25, 30, 60];
@@ -41,21 +42,9 @@ const BITRATES = [
 
 interface Props {
   shots: ShotInfo[];
-  /** 时间轴上的音频/转场数量。服务端拼接**不处理**这两类，
-   *  有数据时必须明说缺什么 —— 否则用户拿网页导出的成片当验收依据，
-   *  会以为旁白和转场根本没做出来。 */
-  audioCount?: number;
-  transitionCount?: number;
   baseAspect: string;
   projectTitle: string;
   selectedShotIds: string[];
-  /** 服务端拼接。TB-12：编码参数由对话框决定 */
-  onServerExport: (opts: {
-    width: number; height: number; fps: number;
-    vcodec: string; crf: number; withAudio: boolean;
-  }) => void;
-  serverBusy: boolean;
-  serverProgress: number;
   /** 本机渲染 */
   onLocalExport: (opts: {
     clips: ShotInfo[]; width: number; height: number; fps: number;
@@ -66,23 +55,12 @@ interface Props {
   }) => void;
   localBusy: boolean;
   localProgress: { pct: number; stage: string } | null;
-  /** 中断本机渲染（服务端 job 不支持中断，故仅本机通道显示） */
+  /** 中断本机渲染——大项目要跑几十分钟，没有取消等于卡死软件 */
   onCancel?: () => void;
   onClose: () => void;
 }
 
 export default function ExportDialog(p: Props) {
-  const [channel, setChannel] = useState<Channel>(IS_TAURI ? "local" : "server");
-
-  // 服务端拼接只做单轨顺序拼接。这里列出它会**丢掉**的内容，
-  // 用于在选中该通道时明确提示 —— 不提示的话，网页端导出的成片
-  // 缺旁白、缺转场、缺叠加层，而任务照样报"完成"。
-  const overlayCount = p.shots.filter((s) => (s.track_index ?? 0) > 0).length;
-  const missingParts: string[] = [];
-  if (p.audioCount) missingParts.push(`${p.audioCount} 段音频（旁白/音乐）`);
-  if (p.transitionCount) missingParts.push(`${p.transitionCount} 处转场`);
-  if (overlayCount) missingParts.push(`${overlayCount} 个叠加层镜头`);
-
   const [range, setRange] = useState<Range>("generated");
   const [resIdx, setResIdx] = useState(0);
   const [fps, setFps] = useState(30);
@@ -106,26 +84,18 @@ export default function ExportDialog(p: Props) {
 
   const totalSec = clips.reduce((a, s) => a + (s.duration_sec ?? 5), 0);
   const missing = clips.filter((s) => !s.video_url).length;
-  const busy = p.serverBusy || p.localBusy;
+  const busy = p.localBusy;
 
   const doExport = () => {
-    if (!clips.length) return;
+    if (!clips.length || !IS_TAURI) return;
     const crfNum = { crf20: 20, crf23: 23, crf28: 28 }[bitrate] ?? 20;
-    if (channel === "local") {
-      // Render V2：编码参数与服务端通道对齐（分段器已让大项目可行）
-      p.onLocalExport({
-        clips, width: res.w, height: res.h, fps,
-        vcodec: codec, crf: crfNum, withAudio, scope: range,
-        // 文件名输入框此前完全没接线：用户改完名字点导出，
-        // 系统保存对话框里仍然是「项目名_日期」的默认值。
-        name: name.trim() || undefined,
-      });
-    } else {
-      p.onServerExport({
-        width: res.w, height: res.h, fps,
-        vcodec: codec, crf: crfNum, withAudio,
-      });
-    }
+    p.onLocalExport({
+      clips, width: res.w, height: res.h, fps,
+      vcodec: codec, crf: crfNum, withAudio, scope: range,
+      // 文件名输入框此前完全没接线：用户改完名字点导出，
+      // 系统保存对话框里仍然是「项目名_日期」的默认值。
+      name: name.trim() || undefined,
+    });
   };
 
   return (
@@ -138,42 +108,19 @@ export default function ExportDialog(p: Props) {
         </header>
 
         <div className="fw-ex-body">
-          {/* ---- 渲染通道 ---- */}
+          {/* ---- 渲染方式（只剩本机一条）---- */}
           <Section title="渲染方式">
             <div className="fw-ex-channels">
-              <button className={`fw-ex-channel ${channel === "local" ? "on" : ""}`}
-                disabled={!IS_TAURI || busy}
-                onClick={() => setChannel("local")}
-                title={IS_TAURI ? "用本机 ffmpeg 渲染，不占服务器"
-                  : "网页预览下不可用，请使用桌面版"}>
+              <button className="fw-ex-channel on" disabled>
                 <Monitor size={15} />
                 <span className="fw-ex-channel-name">本机渲染</span>
-                <span className="fw-ex-channel-desc">
-                  {IS_TAURI ? "多轨合成 · 转场 · 硬件编码" : "需桌面版"}
-                </span>
-              </button>
-              <button className={`fw-ex-channel ${channel === "server" ? "on" : ""}`}
-                disabled={busy}
-                onClick={() => setChannel("server")}>
-                <Cloud size={15} />
-                <span className="fw-ex-channel-name">服务端拼接</span>
-                <span className="fw-ex-channel-desc">快速输出，单轨顺序拼接</span>
+                <span className="fw-ex-channel-desc">多轨合成 · 转场 · 字幕 · 硬件编码</span>
               </button>
             </div>
             {!IS_TAURI && (
               <div className="fw-ex-note">
                 <AlertTriangle size={11} />
-                网页预览环境无法调用本机 ffmpeg，已自动选择服务端拼接
-              </div>
-            )}
-            {/* 服务端拼接只做单轨顺序拼接：不混音频、不渲染转场、不合成叠加层。
-                以前这些是**静默丢弃**的 —— 任务照样报"完成"，用户拿到一条
-                没有旁白也没有转场的片子，却以为是生成环节出了问题。 */}
-            {channel === "server" && missingParts.length > 0 && (
-              <div className="fw-ex-note">
-                <AlertTriangle size={11} />
-                服务端拼接不包含：{missingParts.join(" / ")}。
-                完整成片请用桌面版「本机渲染」。
+                网页预览环境无法调用本机 ffmpeg，导出请使用桌面版
               </div>
             )}
           </Section>
@@ -210,12 +157,12 @@ export default function ExportDialog(p: Props) {
             <Field label="保存位置">
               <span className="fw-ex-path">
                 <FolderOpen size={11} />
-                {channel === "local" ? "导出时选择" : "服务器生成后下载"}
+                导出时选择
               </span>
             </Field>
           </Section>
 
-          {/* ---- 编码参数（本机渲染才可调）---- */}
+          {/* ---- 编码参数 ---- */}
           <Section title="编码参数">
             <Field label="分辨率">
               <select className="fw-ex-select" value={resIdx}
@@ -247,12 +194,10 @@ export default function ExportDialog(p: Props) {
                 {withAudio ? "开" : "关"}
               </button>
             </Field>
-            {channel === "local" && (
-              <div className="fw-ex-note">
-                本机渲染使用 Render Engine V2（分段合成），支持多轨、转场与画面调整；
-                有可用硬件编码器时自动启用
-              </div>
-            )}
+            <div className="fw-ex-note">
+              本机渲染使用 Render Engine V2（分段合成），支持多轨、转场、字幕烧录
+              与画面调整；有可用硬件编码器时自动启用
+            </div>
           </Section>
         </div>
 
@@ -264,13 +209,12 @@ export default function ExportDialog(p: Props) {
               <span className="fw-ex-progress-label">
                 {p.localProgress
                   ? `${p.localProgress.stage} ${p.localProgress.pct}%`
-                  : `服务端拼接中 ${p.serverProgress}%`}
+                  : "准备中"}
               </span>
               <div className="fw-ex-progress-bar">
-                <div style={{ width: `${p.localProgress?.pct ?? p.serverProgress}%` }} />
+                <div style={{ width: `${p.localProgress?.pct ?? 0}%` }} />
               </div>
-              {/* 本机渲染可中断——大项目要跑几十分钟，没有取消等于卡死软件 */}
-              {p.localBusy && p.onCancel && (
+              {p.onCancel && (
                 <button className="fw-ex-btn" onClick={p.onCancel}>取消</button>
               )}
             </div>
@@ -280,8 +224,11 @@ export default function ExportDialog(p: Props) {
                 {clips.length ? `将导出 ${clips.length} 段 · ${fmtSec(totalSec)}` : "没有可导出的镜头"}
               </span>
               <button className="fw-ex-btn" onClick={p.onClose}>取消</button>
-              <button className="fw-ex-btn primary" disabled={!clips.length} onClick={doExport}>
-                <Check size={13} /> 开始导出
+              <button className="fw-ex-btn primary"
+                disabled={!clips.length || !IS_TAURI}
+                title={IS_TAURI ? undefined : "导出需使用桌面版"}
+                onClick={doExport}>
+                <Check size={13} /> {IS_TAURI ? "开始导出" : "需桌面版"}
               </button>
             </>
           )}
