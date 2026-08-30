@@ -13,6 +13,7 @@ import { Search, Film, Clock } from "lucide-react";
 import { api } from "../../api";
 import type { ProjectInfo } from "../../api";
 import { fmtSec } from "../../types/timeline";
+import { productionModeLabel } from "../../lib/modelLabels";
 import "./ProjectCards.css";
 
 interface Props {
@@ -81,7 +82,7 @@ export default function ProjectCards({ projects, onOpen }: Props) {
                   </>
                 )}
 
-                <div className="fw-pc-mode">{proj.production_mode ?? "未定模式"}</div>
+                <div className="fw-pc-mode">{productionModeLabel(proj.production_mode)}</div>
               </div>
             </button>
           );
