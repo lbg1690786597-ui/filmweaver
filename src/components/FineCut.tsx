@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ShotInfo } from "../api";
 import { localRender, RenderClip } from "../lib/localRender";
+import type { SubtitleStyleLike } from "../lib/subtitleStyle";
 
 interface Props {
   projectId: string;
@@ -14,15 +15,21 @@ interface Props {
 interface CutState { inSec: number; durSec?: number }
 
 /** R2-2 精编器 v1（与生产看板分离的精编视图）：
- *  连续预览+播放头 / 入出点裁剪 / srt 字幕编辑 / 版本历史回退 / 回云端重生成 / 本机导出。 */
+ *  连续预览+播放头 / 入出点裁剪 / 字幕预览 / 版本历史回退 / 回云端重生成 / 本机导出。
+ *
+ *  字幕不在这里编辑：它原来自带一个裸 SRT textarea 和一个「按镜头生成初稿」
+ *  按钮（每镜写死 8 秒、正文取 script_ref 前 30 字），与字幕轨 subtitle_clips
+ *  完全不通——同一个项目会有两套互相不认识的字幕，导出走哪条全看用户点了哪个
+ *  按钮。现在统一读字幕轨生成的 SRT，编辑入口只有「文本」面板一处。 */
 export default function FineCut(p: Props) {
   const clips = p.shots.filter((s) => s.video_url);
   const [idx, setIdx] = useState(0);                       // 当前播放的镜头序号
   const [cuts, setCuts] = useState<Record<string, CutState>>({});
   const [srt, setSrt] = useState("");
+  const [srtCount, setSrtCount] = useState(0);
+  const [subStyle, setSubStyle] = useState<SubtitleStyleLike | null>(null);
   const [versions, setVersions] = useState<Record<string, { version_no: number; video_url: string | null; created_at: string | null }[]>>({});
   const [rendering, setRendering] = useState<string>("");  // 渲染进度文案
-  const [cloudMode, setCloudMode] = useState(false);       // 云端导出兜底
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const cur = clips[idx];
@@ -31,24 +38,22 @@ export default function FineCut(p: Props) {
   const onEnded = () => { if (idx < clips.length - 1) setIdx(idx + 1); };
   useEffect(() => { videoRef.current?.play().catch(() => {}); }, [idx]);
 
-  // 初始 srt：按镜头时长档生成模板（可手改）
-  const genSrtDraft = () => {
-    let t = 0;
-    const fmt = (s: number) => {
-      const h = String(Math.floor(s / 3600)).padStart(2, "0");
-      const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
-      const sec = String(Math.floor(s % 60)).padStart(2, "0");
-      const ms = String(Math.round((s % 1) * 1000)).padStart(3, "0");
-      return `${h}:${m}:${sec},${ms}`;
-    };
-    const rows = clips.map((s, i) => {
-      const dur = cuts[s.id]?.durSec ?? 8;  // 无实测时长按 8s 档
-      const row = `${i + 1}\n${fmt(t)} --> ${fmt(t + dur)}\n${s.script_ref.slice(0, 30)}\n`;
-      t += dur;
-      return row;
-    });
-    setSrt(rows.join("\n"));
-  };
+  // 字幕轨 → SRT（时间码由后端按镜头顺序换算），以及项目级字幕样式。
+  // 拉不到不该挡住精编：只是导出时不烧字幕。
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const r = await api.subtitlesSrt(p.projectId);
+        if (alive) { setSrt(r.srt); setSrtCount(r.count); }
+      } catch { if (alive) { setSrt(""); setSrtCount(0); } }
+      try {
+        const r = await api.getSubtitleStyle(p.projectId);
+        if (alive) setSubStyle((r.style as SubtitleStyleLike | null) ?? null);
+      } catch { /* 用 srtForceStyle 的短剧默认值 */ }
+    })();
+    return () => { alive = false; };
+  }, [p.projectId]);
 
   const loadVersions = async (shotId: string) => {
     try {
@@ -72,27 +77,18 @@ export default function FineCut(p: Props) {
     }));
     const [w, h] = p.baseAspect === "16:9" ? [1920, 1080]
       : p.baseAspect === "1:1" ? [1080, 1080] : [1080, 1920];
-    if (cloudMode) {
-      // 云端兜底：无裁剪支持，仅整段 + burn_srt
-      if (Object.keys(cuts).length) p.onToast("⚠️ 云端导出不支持裁剪，将按整段拼接");
-      try {
-        await api.submitCompose(clips.map((s) => s.video_url!), {
-          width: w, height: h, burn_srt: srt.trim() || undefined,
-        });
-        p.onToast("已提交云端导出（顶部进度条跟踪）");
-      } catch (e) { p.onToast(String(e)); }
-      return;
-    }
     try {
       const out = await localRender(p.projectId, renderClips, {
-        width: w, height: h, fps: 30, burnSrt: srt.trim() || undefined,
+        width: w, height: h, fps: 30,
+        burnSrt: srt.trim() || undefined,
+        subtitleStyle: subStyle,
         onProgress: (pct, stage) => setRendering(`${stage} ${pct}%`),
       });
       setRendering("");
       p.onToast(out ? `✅ 已导出: ${out}` : "已取消导出");
     } catch (e) {
       setRendering("");
-      p.onToast(`本机渲染失败（可切云端导出兜底）: ${String(e).slice(0, 150)}`);
+      p.onToast(`本机渲染失败: ${String(e).slice(0, 150)}`);
     }
   };
 
@@ -104,12 +100,8 @@ export default function FineCut(p: Props) {
           <span className="tl-title">🎞 精编器</span>
           <span className="muted">{clips.length} 镜 · 画幅 {p.baseAspect}</span>
           <span style={{ flex: 1 }} />
-          <label className="row" style={{ alignItems: "center", gap: 4 }}>
-            <input type="checkbox" checked={cloudMode} onChange={(e) => setCloudMode(e.target.checked)} />
-            <span className="muted">云端导出（低配兜底）</span>
-          </label>
           <button className="btn primary" disabled={!!rendering || !clips.length} onClick={doExport}>
-            {rendering || (cloudMode ? "☁ 云端导出" : "💻 本机导出")}
+            {rendering || "💻 本机导出"}
           </button>
           <button className="btn ghost" onClick={p.onClose}>✕</button>
         </div>
@@ -156,16 +148,17 @@ export default function FineCut(p: Props) {
             )}
           </div>
 
-          {/* 右：srt 字幕编辑器 */}
+          {/* 右：字幕轨预览（只读，编辑在「文本」面板） */}
           <div className="finecut-right">
             <div className="row">
-              <span className="tl-title">字幕（srt）</span>
+              <span className="tl-title">字幕（{srtCount} 条）</span>
               <span style={{ flex: 1 }} />
-              <button className="btn tiny" onClick={genSrtDraft}>按镜头生成初稿</button>
+              <span className="muted">编辑请到「文本」面板</span>
             </div>
-            <textarea className="drawer-ta fill" style={{ fontFamily: "monospace", fontSize: 12 }}
-              placeholder={"1\n00:00:00,000 --> 00:00:03,000\n第一句字幕…\n\n留空=不烧字幕"}
-              value={srt} onChange={(e) => setSrt(e.target.value)} />
+            <textarea className="drawer-ta fill" readOnly
+              style={{ fontFamily: "monospace", fontSize: 12 }}
+              placeholder="字幕轨为空 —— 导出时不烧字幕。可在「文本」面板从旁白生成字幕。"
+              value={srt} />
           </div>
         </div>
       </div>
