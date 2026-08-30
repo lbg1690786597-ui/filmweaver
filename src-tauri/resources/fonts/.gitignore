@@ -1,0 +1,7 @@
+# 字体二进制**不进 git**：两个 .ttc 合计 46MB，而整个仓库的 .git 只有 20MB，
+# 提交进去等于让每个 clone 永久多背 46MB（git 里删不掉历史）。
+# 需要时用 scripts/fetch-fonts.sh 取回；缺失时 renderer 的
+# resolveResource 会拿不到目录 → fontsDir 传 null → 回落系统字体，不会崩。
+*.ttc
+*.otf
+*.ttf
