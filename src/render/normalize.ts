@@ -116,6 +116,22 @@ export function normalize(input: NormalizeInput): RenderPlan {
     return id;
   };
 
+  // ---- 已剥离原声的镜头集合 ----
+  // 这些镜头的声音已经作为独立音频段存在于音频轨上，视频自带的那一份
+  // **必须静音**，否则同一段声音会响两遍（视频一遍 + 音频轨一遍）。
+  // 用"存在性"判定而不是给镜头存 muted 标记：删掉音频段静音自动解除，
+  // 不会出现"音频段没了但画面还是哑的"这种两处状态不同步的坑。
+  //
+  // 两种来源都算：
+  //   kind="shot"      —— 用户手动点「提取镜头原声」剥出来的
+  //   kind="narration" —— 解说剧按剧本切出来的旁白（画面原声本就不该出声）
+  const detachedShotIds = new Set(
+    (input.audioClips ?? [])
+      .filter((a) => (a.kind === "shot" || a.kind === "narration")
+        && a.source_shot_id && a.status === "done")
+      .map((a) => a.source_shot_id as string),
+  );
+
   // ---- 视频轨：主轨顺序累加，Overlay 层按显式起点定位 ----
   // 分流的理由：叠加层若也参与顺序累加，它就变成"插队"而不是"叠在上面"了。
   const videoClips: RenderClip[] = [];
@@ -143,7 +159,9 @@ export function normalize(input: NormalizeInput): RenderPlan {
         speed: spd0,
         transform: toTransform(tm0),
         effects: toEffects(tm0),
-        audio: toAudio(tm0),
+        audio: detachedShotIds.has(s.id)
+          ? { ...toAudio(tm0), muted: true }   // 原声已剥离到音频轨
+          : toAudio(tm0),
         blendMode: tm0?.blendMode ?? "normal",
       };
       const list = overlayByTrack.get(trackIdx) ?? [];
@@ -172,7 +190,9 @@ export function normalize(input: NormalizeInput): RenderPlan {
         speed,
         transform: toTransform(tm),
         effects: toEffects(tm),
-        audio: toAudio(tm),
+        audio: detachedShotIds.has(s.id)
+          ? { ...toAudio(tm), muted: true }    // 原声已剥离到音频轨
+          : toAudio(tm),
       });
       cursor += srcDur / speed;
     } else {
