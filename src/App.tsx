@@ -23,11 +23,12 @@ import { usePlayer } from "./hooks/usePlayer";
 import { useUndo } from "./hooks/useUndo";
 import { useAudioTrack } from "./hooks/useAudioTrack";
 import { useSubtitles } from "./hooks/useSubtitles";
+import { useSubtitleStyle } from "./hooks/useSubtitleStyle";
 import { useTransitions } from "./hooks/useTransitions";
 import { useProdJobs } from "./hooks/useProdJobs";
 import { useStages } from "./hooks/useStages";
 import { useLibClips } from "./hooks/useLibClips";
-import { useCompose } from "./hooks/useCompose";
+import { useBreakdown } from "./hooks/useBreakdown";
 // ---- Phase 1 重构：编辑器 Shell ----
 import EditorLayout from "./features/editor/EditorLayout";
 import TopBar from "./features/editor/TopBar";
@@ -90,6 +91,9 @@ export default function App() {
 
   // ---- 字幕层（TB-02）：时间轴字幕轨与文本面板共用同一份数据 ----
   const { subtitles, refreshSubtitles, clearSubtitles } = useSubtitles(projectId);
+  // 项目级默认字幕样式：播放器预览 / 文本面板 / 导出烧录三方读同一份
+  const { subtitleStyle, saveSubtitleStyle, clearSubtitleStyle } =
+    useSubtitleStyle(projectId);
 
   // ---- 转场层（Render V2）：挂在相邻镜头接缝上 ----
   const { transitions, refreshTransitions, clearTransitions } = useTransitions(projectId);
@@ -383,6 +387,10 @@ export default function App() {
       if (r.count > 0) burnSrt = r.srt;
     } catch { /* 拉不到字幕不该挡住导出 */ }
 
+    // 项目级字幕样式（useSubtitleStyle 已随项目拉好）。烧录是一个 SRT 配
+    // 一套 force_style，必须有个确定的"这个项目的字幕长什么样"，不能随便
+    // 挑一条 cue 的 style 代表全体。为 null 时由 srtForceStyle 兜底默认值。
+
     const ctl = new AbortController();
     setRenderAbort(ctl);
     setLocalProgress({ pct: 0, stage: "准备" });
@@ -391,6 +399,7 @@ export default function App() {
         plan,
         preferEncoder: "auto",       // 有硬件编码器就用，否则回落 libx264
         burnSrt,
+        subtitleStyle,
         // 用对话框里填的文件名；为空才回落到「项目名_日期」。
         // 此前这里写死了默认值，输入框改了也没用。
         defaultName: o.name
@@ -418,14 +427,11 @@ export default function App() {
   // ---- 应用内进度看板（用户要求：进度在 web 预览里可见）----
 
 
-  // ---- 导出层（快速导出 compose + 拆解 job；成片就绪即入预览器）----
+  // ---- 导出层（拆解 job 追踪 + 导出口径）----
+  // 云端合成已下线，成片一律由 doLocalExport 走本机 ffmpeg 收尾。
   const {
-    composeJob, composing, filmUrl, exportClips, totalSec, doExport,
-    bdProgress, doBreakdown: doBreakdownRaw, clearCompose,
-  } = useCompose({
-    detail, say, refreshDetail,
-    onFilmReady: (url) => previewMedia(url, "🎬 成片预览"),
-  });
+    exportClips, totalSec, bdProgress, doBreakdown: doBreakdownRaw, clearBreakdown,
+  } = useBreakdown({ detail, say, refreshDetail });
   const doBreakdown = (episodes?: number[]) => doBreakdownRaw(projectId, episodes);
 
 
@@ -649,10 +655,11 @@ export default function App() {
     setFineCutOpen(false);
     clearClips();           // 素材池内存态
     clearStages();          // 人物/场景轨
-    clearCompose();         // 成片地址
+    clearBreakdown();       // 拆解 job 轮询
     clearUndo();            // P2-2：撤销栈按项目隔离，切项目即清空
     clearAudio();           // P2-4：音频轨状态与合成轮询一并清
     clearSubtitles();       // TB-02：字幕轨按项目隔离，切项目即清
+    clearSubtitleStyle();   // 字幕样式同理，否则上个项目的字号会串过来
     clearTransitions();     // Render V2：转场同理
     clearJobs();            // P2-3：停掉上一项目的 job 轮询（新项目从服务端重新接回）
     clearDetail();          // P2-5：合并刷新定时器一并清 + 旧 detail 立即失效
@@ -871,9 +878,12 @@ export default function App() {
       assets={detail?.assets ?? []}
       ttsAvailable={ttsAvailable}
       synthBusy={ttsJobId !== null}
+      productionMode={detail?.production_mode}
+      narrationVoiceUrl={detail?.narration_voice_url}
       onSynthTts={doSynthTts}
       onPreview={previewAudio}
       onAudioChanged={() => refreshAudio()}
+      onProjectChanged={() => refreshDetail(projectId)}
       onToast={say} />
   );
 
@@ -897,10 +907,9 @@ export default function App() {
           onOpenTasks={() => setTasksOpen(true)}
           fineCutEnabled={shots.some((s) => s.video_url)}
           onFineCut={() => setFineCutOpen(true)}
-          exporting={composing}
-          exportProgress={composeJob?.progress ?? 0}
+          exporting={localProgress !== null}
+          exportProgress={localProgress?.pct ?? 0}
           onExport={() => setExportOpen(true)}
-          filmUrl={filmUrl}
           theme={theme}
           onToggleTheme={toggleTheme}
           userName={user ? (user.display_name ?? user.username) : null}
@@ -941,6 +950,8 @@ export default function App() {
                 anchor={playhead ?? (cursor ?? null)}
                 onAutoSubtitles={doAutoSubtitles}
                 clips={subtitles}
+                style={subtitleStyle}
+                onSaveStyle={saveSubtitleStyle}
                 onChanged={() => { void refreshSubtitles(); }}
                 onToast={say} />
             ),
@@ -1031,6 +1042,8 @@ export default function App() {
           // 两者可能不同（点了 A 镜预览、又在列表里选中 B 镜），
           // 用 selectedShot 会把 B 的调色套到 A 的画面上。
           transform={shots.find((s) => s.id === previewShot?.id)?.transform_meta ?? null}
+          subtitles={subtitles}
+          subtitleStyle={subtitleStyle}
           emptyHint={`${shots.filter((s) => !s.disabled).length} 段可导出 · ${fmtTime(totalSec)}`}
           onLoadedMetadata={(e) => {
             if (pendingSeek.current != null) {
@@ -1145,8 +1158,8 @@ export default function App() {
               <div style={{ width: `${Math.round(jobList.reduce((s, j) => s + j.progress, 0) / jobList.length)}%` }} />
             </div>
           )}
-          {composing && composeJob && (
-            <div className="export-bar"><div style={{ width: `${composeJob.progress}%` }} /></div>
+          {localProgress && (
+            <div className="export-bar"><div style={{ width: `${localProgress.pct}%` }} /></div>
           )}
         </>
       }
@@ -1155,6 +1168,9 @@ export default function App() {
           {preflight && detail && (
             <PreflightDialog projectId={projectId} mode="film"
               hasScript={!!(detail.raw_script || detail.optimized_script)}
+              productionMode={detail.production_mode}
+              narrationVoiceUrl={detail.narration_voice_url}
+              onNarrationVoiceChanged={() => refreshDetail(projectId)}
               running={!!prodJob} progress={prodJob?.progress} phase={jobPhase}
               onToast={say} onClose={() => setPreflight(false)} onFilm={doOneClick}
               onStop={stopOneClick}
@@ -1174,18 +1190,13 @@ export default function App() {
               onRegenerate={doGenerate} onToast={say} />
           )}
 
-          {/* Phase 6：导出对话框（本机 ffmpeg / 服务端 compose 双通道） */}
+          {/* Phase 6：导出对话框（只有本机 ffmpeg 一条通道，云端合成已下线） */}
           {exportOpen && detail && (
             <ExportDialog
               shots={shots}
-              audioCount={audioClips.length}
-              transitionCount={transitions.length}
               baseAspect={detail.base_aspect}
               projectTitle={detail.title}
               selectedShotIds={selectedShot ? [selectedShot.id] : []}
-              onServerExport={(o) => { void doExport(o); }}
-              serverBusy={composing}
-              serverProgress={composeJob?.progress ?? 0}
               onLocalExport={doLocalExport}
               localBusy={localProgress !== null}
               localProgress={localProgress}
