@@ -22,6 +22,7 @@ import { TIERS } from "../../lib/qualityTiers";
 import "./VideoPanel.css";
 
 import type { QualityTier as Tier } from "../../lib/qualityTiers";
+import { productionModeLabel } from "../../lib/modelLabels";
 
 interface Props {
   shots: ShotInfo[];
@@ -238,7 +239,7 @@ export default function VideoPanel(p: Props) {
       </button>
       {advOpen && (
         <div className="fw-vp-adv">
-          <Row k="生成模式" v={p.productionMode ?? "跟随项目默认"} />
+          <Row k="生成模式" v={productionModeLabel(p.productionMode)} />
           <Row k="视频模型" v={p.videoModel ?? "跟随项目默认"} />
           <Row k="当前质量档" v={tier === "final" ? "◆ 精品" : "⚡ 快速验证"} />
           <div className="fw-vp-adv-note">
