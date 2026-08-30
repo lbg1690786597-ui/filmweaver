@@ -197,3 +197,15 @@
   /* 点击穿透到下层 <video> 的原生播控条，否则播放/进度条点不动 */
   pointer-events: none;
 }
+
+/* 字幕叠加层。
+   外层只负责"框住画面矩形"——内层的定位/字号/描边全部由
+   lib/subtitleStyle.ts 的 styleToCss 生成，与烧录用的 force_style 同源，
+   这里写死任何字号或边距都会让预览和成片对不上。
+   z-index 要高于 .fw-pl-canvas（GPU 调色输出），否则被盖住。 */
+.fw-pl-subtitle {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
