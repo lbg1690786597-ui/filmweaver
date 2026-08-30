@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, CostumeReport, Readiness } from "../api";
-import { videoModelLabel, imageModelLabel, genModeLabel } from "../lib/modelLabels";
+import { videoModelLabel, imageModelLabel, genModeLabel, productionModeLabel } from "../lib/modelLabels";
 import { ASPECTS, resListOf } from "../lib/resolutions";
 
 /** 出片前二次确认弹窗（「▷ 一键成片」「▶ 全部生成视频」「🎬 批量首帧」共用）。
@@ -24,6 +24,12 @@ interface Props {
   mode: "film" | "videos" | "frames";
   /** 项目是否已有剧本（film 模式下没剧本无法开跑） */
   hasScript?: boolean;
+  /** 剧型（drama/narration）。解说剧要在这里显示并可直接设解说音色—— */
+  productionMode?: string | null;
+  /** 解说音色 URL；解说剧缺它会在配音阶段中止，所以开跑前就要能看到并补上 */
+  narrationVoiceUrl?: string | null;
+  /** 解说音色变更后通知外层刷新项目详情 */
+  onNarrationVoiceChanged?: () => void;
   onClose: () => void;
   /** 直接出片（缺首帧交给后端自动补）。shotIds 为本轮待生成镜头 */
   onProceed: () => void;
@@ -62,6 +68,10 @@ const STAGES: { key: string; label: string; pct: number; hint?: string }[] = [
   { key: "costume", label: "识别服装造型", pct: 12, hint: "纯文本 · 不花钱" },
   { key: "assets", label: "补齐资产图", pct: 30, hint: "会产生费用" },
   { key: "frames", label: "生成首帧", pct: 60 },
+  // 解说剧专属：旁白必须在出视频**之前**合成——旁白时长决定镜头时长，
+  // 顺序反了这批视频就作废了。真人剧不经过这两步（后端按模式跳过）。
+  { key: "narration", label: "切分解说旁白", pct: 63, hint: "仅解说剧 · 不花钱" },
+  { key: "narration_tts", label: "合成解说配音", pct: 70, hint: "仅解说剧" },
   { key: "videos", label: "生成片段", pct: 85, hint: "最耗时" },
   { key: "compose", label: "拼接成片", pct: 100 },
 ];
@@ -87,6 +97,21 @@ export default function PreflightDialog(p: Props) {
   const [ovResIdx, setOvResIdx] = useState(0);
   const [paramOpen, setParamOpen] = useState(false);
   const [videoModels, setVideoModels] = useState<{ key: string; label: string }[]>([]);
+
+  // ---- 解说音色（仅解说剧）----
+  // 放在开跑前的体检弹窗里：缺音色会让配音阶段中止，等跑到一半才发现太晚。
+  const voiceRef = useRef<HTMLInputElement | null>(null);
+  const [upVoice, setUpVoice] = useState(false);
+  const [voicePreview, setVoicePreview] = useState<string | null>(null);
+  const doUploadVoice = async (f: File) => {
+    setUpVoice(true);
+    try {
+      const up = await api.uploadMedia(f, p.projectId);
+      await api.setNarrationVoice(p.projectId, up.url);
+      p.onNarrationVoiceChanged?.();
+    } catch (e) { setErr(`音色上传失败: ${String(e).slice(0, 140)}`); }
+    finally { setUpVoice(false); }
+  };
 
   const load = async () => {
     setErr("");
@@ -215,6 +240,55 @@ export default function PreflightDialog(p: Props) {
         {rd && !p.running && (
           <>
             <table className="preflight-table"><tbody>
+              {/* 剧型（配音策略）与下面的"生成模式"（技术路线）是两回事，
+                  必须分两行——改版后它们不再是同一个字段，混在一行会让用户
+                  以为选了解说剧就换了生成路线。 */}
+              <tr>
+                <td>剧型</td>
+                <td>
+                  {productionModeLabel(p.productionMode)}
+                  <span className="muted">
+                    　{p.productionMode === "narration"
+                      ? "剧本全文作旁白，画面原声静音"
+                      : "人物按剧本台词配音"}
+                  </span>
+                  {p.productionMode === "narration" && (
+                    <div style={{ marginTop: 4, display: "flex",
+                                  alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span className={p.narrationVoiceUrl ? "" : "err"}
+                        style={{ fontSize: 11 }}>
+                        {p.narrationVoiceUrl
+                          ? "✓ 解说音色已设置"
+                          : "⚠️ 未设解说音色 — 配音阶段会中止"}
+                      </span>
+                      <button className="link-btn" disabled={upVoice}
+                        style={{ fontSize: 11 }}
+                        onClick={() => voiceRef.current?.click()}>
+                        {upVoice ? "上传中…"
+                          : p.narrationVoiceUrl ? "更换音色" : "上传音色"}
+                      </button>
+                      {p.narrationVoiceUrl && (
+                        <button className="link-btn" style={{ fontSize: 11 }}
+                          onClick={() => setVoicePreview(
+                            api.mediaUrl(p.narrationVoiceUrl!))}>
+                          试听
+                        </button>
+                      )}
+                      <input ref={voiceRef} type="file" accept="audio/*,video/*" hidden
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = "";
+                          if (f) void doUploadVoice(f);
+                        }} />
+                    </div>
+                  )}
+                  {voicePreview && (
+                    <audio src={voicePreview} controls autoPlay
+                      style={{ width: "100%", height: 28, marginTop: 4 }}
+                      onEnded={() => setVoicePreview(null)} />
+                  )}
+                </td>
+              </tr>
               <tr>
                 <td>生成模式</td>
                 <td>
