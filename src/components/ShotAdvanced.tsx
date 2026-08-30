@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ShotInfo, VideoProviderInfo } from "../api";
 import AutoTextarea from "./AutoTextarea";
+import { productionModeLabel } from "../lib/modelLabels";
 
 interface Props {
   shot: ShotInfo;
@@ -70,7 +71,7 @@ export default function ShotAdvanced(p: Props) {
       <div className="wizard" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
         <h2>镜头 #{p.shot.order} · 高级设置</h2>
         <div className="muted">
-          继承：项目·{p.productionMode ?? "默认"} 模式{Object.keys(ov).length ? "（本镜已有覆盖）" : ""}
+          继承：项目·{productionModeLabel(p.productionMode)} 模式{Object.keys(ov).length ? "（本镜已有覆盖）" : ""}
         </div>
 
         <label>模型（留空=继承项目模式）
@@ -137,8 +138,9 @@ export default function ShotAdvanced(p: Props) {
           <label style={{ flex: 1 }}>画质（MP）
             <select value={mp} onChange={(e) => setMp(e.target.value)}>
               <option value="">（自动）</option>
-              <option value="1">标准 1MP</option>
-              <option value="2">高 2MP（≤3s 安全）</option>
+              <option value="0.5">省 0.5MP（单镜可到 38s）</option>
+              <option value="1">标准 1MP（单镜可到 18s）</option>
+              <option value="2">高 2MP（单镜仅 7.5s）</option>
             </select>
           </label>
         </div>
