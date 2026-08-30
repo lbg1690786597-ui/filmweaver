@@ -19,6 +19,7 @@ import { ZOOM_DEFAULT } from "../../types/timeline";
 import { IS_TAURI } from "../export/ExportDialog";
 import { readPref, writePref, clearPrefs } from "../../lib/prefs";
 import "./SettingsDialog.css";
+import { productionModeLabel } from "../../lib/modelLabels";
 
 type Tab = "editor" | "ai" | "cache";
 
@@ -167,7 +168,7 @@ export default function SettingsDialog(p: Props) {
 
                 <Group title="当前项目">
                   <Field label="生成模式">
-                    <span className="fw-set-ro">{p.productionMode ?? "跟随默认"}</span>
+                    <span className="fw-set-ro">{productionModeLabel(p.productionMode)}</span>
                   </Field>
                   <div className="fw-set-note">
                     项目级模型与生成模式在新建项目时选择，之后可在项目设置中调整
