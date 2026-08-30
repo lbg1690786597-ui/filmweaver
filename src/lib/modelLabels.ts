@@ -31,13 +31,20 @@ export const GEN_MODE_LABELS: Record<string, string> = {
   l2va: "🏁 尾帧",
 };
 
-/** 生产模式（预设）→ 展示名，与后端 PRODUCTION_MODES.label 对齐 */
+/** 生产模式 → 展示名，与后端 PRODUCTION_MODES.label 对齐。
+ *
+ *  2026-08 改版：生产模式从"技术参数预设"改为"配音策略"，只剩两种。
+ *  旧值保留在表里——历史项目的 production_mode 已由迁移改写为 drama，
+ *  但正在跑的旧客户端/缓存数据可能仍带旧值，映射上比显示原始 id 友好。 */
 export const PRODUCTION_MODE_LABELS: Record<string, string> = {
-  fast: "⚡ 快速验证",
-  consistent: "🎭 角色一致",
-  premium: "💎 精品制作",
-  first_frame: "🎬 首帧精控",
-  custom: "🛠 自定义",
+  drama: "🎭 真人剧",
+  narration: "📖 解说剧",
+  // ---- 以下为已废弃的旧预设，仅供历史数据显示 ----
+  fast: "🎭 真人剧（原快速验证）",
+  consistent: "🎭 真人剧（原角色一致）",
+  premium: "🎭 真人剧（原精品制作）",
+  first_frame: "🎭 真人剧（原首帧精控）",
+  custom: "🎭 真人剧（原自定义）",
 };
 
 export const videoModelLabel = (id?: string | null): string =>
