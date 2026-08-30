@@ -25,6 +25,13 @@ export interface CompileCtx {
   caps: Capabilities;
   /** mediaId → 本地绝对路径（由调用方缓存/下载后提供） */
   localPath: (mediaId: string) => string;
+  /** mediaId → 该素材是否含音轨（由调用方在缓存后探测一次）。
+   *
+   *  必须由外部提供：编译器只拼参数、不执行 ffmpeg，无法自行探测。
+   *  缺省视为**有音轨**——AI 生成的视频绝大多数带声音，猜错的代价也不对称：
+   *  当作没有 → 静音成片（用户以为生成环节坏了）；
+   *  当作有   → 该输入缺音轨时 `0:a:0?` 的 `?` 会让映射为空，由 amix/-shortest 兜住。 */
+  hasAudio?: (mediaId: string) => boolean;
   encoder: string;
   crf: number;
 }
@@ -218,12 +225,29 @@ export function compileSegment(
   if (seg.kind === "passthrough") {
     const c = seg.clips[0];
     args.push(...inputArgs(c, ctx.localPath(c.mediaId)));
+    // 素材自带音轨时**必须**用它（输入 0），只有确实没有音轨的素材
+    // 才回落到 anullsrc（输入 1）补静音。
+    //
+    // ⚠️ 这里原本无条件写死 `-map 1:a:0?` —— 即永远取 anullsrc 那路静音，
+    // 把素材自己的声音整个丢掉。AI 生成的视频基本都带音轨（实测 -14 dB），
+    // 而绝大多数镜头都走 passthrough（单 clip、无转场无叠加），
+    // 于是"导出的视频没有声音"。composite 分支映射的是 [i:a]，一直是对的，
+    // 这也是为什么加了转场/叠加的片段反而有声（实测 2026-08-29）。
+    //
+    // anullsrc 不能省：concat 要求各段流结构一致，
+    // 真无音轨的素材若不补静音轨，拼接会失败。
+    const useOwnAudio = ctx.hasAudio ? ctx.hasAudio(c.mediaId) : true;
     args.push(
       "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
-      "-map", "0:v:0", "-map", "1:a:0?",
+      "-map", "0:v:0", "-map", useOwnAudio ? "0:a:0?" : "1:a:0?",
       "-vf", `scale=${width}:${height}:force_original_aspect_ratio=decrease,`
            + `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${fps}`,
     );
+    // 音量/静音/淡入淡出：passthrough 此前完全没应用这条链，
+    // 用户把某个镜头调成静音或降了音量，导出后依然原样播放。
+    // 用 -af（单输入，无需 filter_complex）即可，代价可忽略。
+    const paChain = clipAudioChain(c);
+    if (useOwnAudio && paChain.length) args.push("-af", paChain.join(","));
     // 跨段转场补偿（同 composite 分支；透传段也可能是段边界）
     if (seg.boundaryOverlapSec > 0) {
       const keep = Math.max(0.04, (seg.endSec - seg.startSec) - seg.boundaryOverlapSec);
@@ -375,6 +399,54 @@ export function compileSegment(
  *  ⚠️ 这个参数此前**整个 compiler 都没读过** —— model.ts 声明了
  *  withAudio、导出对话框也有开关，但本机渲染这条路完全忽略它，
  *  用户取消勾选「包含音轨」导出后仍然有声音。 */
+/** 把音频轨（旁白 / 配乐 / 镜头原声）混进已拼好的成片。
+ *
+ *  ⚠️ 为什么需要这一步：buildSegments 只收 `kind === "video"` 的轨，
+ *  音频轨的 clip **从来没有进过分段渲染**。也就是说在此之前，
+ *  本机渲染的产物里根本不含旁白和配乐——尽管导出对话框写着
+ *  "完整成片请用桌面版本机渲染"。这是个一直存在的缺口。
+ *
+ *  实现：每条音频 adelay 到自己的绝对起点，再与成片原音轨 amix。
+ *    · normalize=0 是必须的：amix 默认会按输入数等比缩小各路音量，
+ *      加一条旁白就能让画面原声直接减半，听感上像"声音变小了"。
+ *    · duration=first 让输出跟随视频长度，避免尾部多出一段静音。
+ *
+ *  audioClips 为空时返回 null —— 调用方据此跳过这一趟重编码。 */
+export function compileAudioMix(
+  inPath: string,
+  clips: { path: string; startSec: number; volume: number; muted: boolean }[],
+  outPath: string,
+): string[] | null {
+  const usable = clips.filter((c) => !c.muted && c.volume > 0 && c.path);
+  if (!usable.length) return null;
+
+  const args: string[] = ["-y", "-i", inPath];
+  const parts: string[] = [];
+  const labels: string[] = [];
+  usable.forEach((c, i) => {
+    args.push("-i", c.path);
+    const ms = Math.max(0, Math.round(c.startSec * 1000));
+    // adelay 要给每个声道各写一个延迟值；all=1 省去声道数判断
+    const chain = [`adelay=${ms}:all=1`];
+    if (c.volume !== 1) chain.push(`volume=${c.volume.toFixed(3)}`);
+    parts.push(`[${i + 1}:a]${chain.join(",")}[ma${i}]`);
+    labels.push(`ma${i}`);
+  });
+  // [0:a] 是成片自身的音轨（各段归一化时已保证一定存在）
+  parts.push(`[0:a][${labels.join("][")}]amix=inputs=${labels.length + 1}`
+    + `:duration=first:dropout_transition=0:normalize=0[aout]`);
+
+  args.push(
+    "-filter_complex", parts.join(";"),
+    "-map", "0:v", "-map", "[aout]",
+    "-c:v", "copy",              // 画面不动，只重编音频
+    "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
+    "-movflags", "+faststart", outPath,
+  );
+  return args;
+}
+
+
 export function compileConcat(
   listPath: string, outPath: string, withAudio = true,
 ): string[] {
@@ -392,10 +464,18 @@ export function compileBurnSubtitles(
    *  而 18px 在 1080×1920 上小到几乎看不见。 */
   style?: SubtitleStyleLike | null,
   videoH = 1920,
+  /** 内置字体目录。传了就把随包字体加进 fontconfig 的搜索路径 ——
+   *  用户机器上没装思源黑体也照样能用，成片字形不受本机字体影响。
+   *  实测 fontsdir 是**追加**而非限定路径；只在 fontSource==="bundled"
+   *  时传，免得 libass 去挨个打开目录里的 README/LICENSE 报错刷屏。 */
+  fontsDir?: string | null,
 ): string[] {
-  const esc = srtPath.replace(/\\/g, "/").replace(/:/g, "\\:");
+  const esc = (p: string) => p.replace(/\\/g, "/").replace(/:/g, "\\:");
+  const opts = [`subtitles='${esc(srtPath)}'`];
+  if (fontsDir) opts.push(`fontsdir='${esc(fontsDir)}'`);
+  opts.push(`force_style='${srtForceStyle(style, videoH)}'`);
   return ["-y", "-i", inPath,
-          "-vf", `subtitles='${esc}':force_style='${srtForceStyle(style, videoH)}'`,
+          "-vf", opts.join(":"),
           "-c:v", encoder, "-crf", String(crf), "-c:a", "copy",
           "-movflags", "+faststart", outPath];
 }
