@@ -248,3 +248,108 @@
   border: 1px solid var(--c-border);
   vertical-align: middle;
 }
+
+/* ---- 主入口按钮（从旁白生成字幕）----
+   与「语音识别」用同一个 .fw-text-auto 骨架，只是实心高亮：
+   两者的**推荐程度**差得远（有原文时本地对齐逐字准确、不花钱），
+   长得一样会让用户随手点错那个更贵更差的。 */
+.fw-text-auto.primary {
+  border: 1px solid transparent;
+  background: var(--c-accent);
+  color: #fff;
+  font-weight: 600;
+}
+.fw-text-auto.primary:hover:not(:disabled) { background: var(--c-accent-hi); }
+
+.fw-text-hint {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.5;
+  padding: 0 2px;
+}
+
+.fw-text-saved {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--c-success, #3fb950);
+  font-weight: 400;
+}
+
+/* ---- 逐条编辑行 ---- */
+.fw-text-row.editing { background: var(--c-surface); border-color: var(--c-accent-dim); }
+
+.fw-text-row.editing label {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+
+.fw-text-row.editing input {
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  height: 20px;
+  padding: 0 3px;
+  /* 数字框窄一点，否则四个输入把文本框挤没了 */
+  width: 46px;
+}
+
+.fw-text-row.editing input.fw-text-edit-text {
+  flex: 1;
+  min-width: 60px;
+  width: auto;
+  font-size: var(--fs-sm);
+}
+
+/* ---- 样式表单 ---- */
+.fw-text-form { display: flex; flex-direction: column; gap: 4px; }
+
+.fw-text-frow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+}
+/* 标签定宽：字号/边距的数值会跟着滑块变，不定宽的话滑块左右横跳 */
+.fw-text-frow > span:first-child { width: 74px; flex-shrink: 0; }
+.fw-text-frow > input[type="range"] { flex: 1; min-width: 0; }
+.fw-text-frow > select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: var(--c-raised);
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+}
+.fw-text-frow > input[type="color"] {
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+/* ---- 样式预览 ----
+   固定 220px 高度当作"1920 的替身"，styleToCss 按这个高度把字号缩下来，
+   于是这里看到的字号/位置比例与成片一致（字体渲染引擎不同，做不到像素级）。 */
+.fw-text-preview {
+  position: relative;
+  height: 220px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, #2b3140 0%, #4a5568 50%, #2b3140 100%);
+}
