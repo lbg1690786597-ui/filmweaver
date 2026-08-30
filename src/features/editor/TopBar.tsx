@@ -17,6 +17,7 @@ import {
 import { IS_TAURI } from "../export/ExportDialog";
 import WindowControls from "./WindowControls";
 import "./TopBar.css";
+import { productionModeLabel } from "../../lib/modelLabels";
 
 export interface TopBarProps {
   projectTitle: string;
@@ -46,10 +47,10 @@ export interface TopBarProps {
   // 精编 / 导出
   fineCutEnabled: boolean;
   onFineCut: () => void;
+  /** 本机渲染进行中（云端合成已下线，导出只有本机一条路） */
   exporting: boolean;
   exportProgress: number;
   onExport: () => void;
-  filmUrl: string | null;
 
   // 系统
   theme: string;
@@ -133,7 +134,7 @@ export default function TopBar(p: TopBarProps) {
         <span className={`fw-tb-dot ${p.backendOk === null ? "" : p.backendOk ? "ok" : "bad"}`}
           title={p.backendOk ? "后端已连接" : "后端未连接"} />
         <span className="fw-tb-meta">
-          {p.baseAspect ?? "-"} · {p.productionMode ?? "-"}
+          {p.baseAspect ?? "-"} · {productionModeLabel(p.productionMode)}
         </span>
 
         <button className="fw-tb-btn" disabled={!p.fineCutEnabled}
@@ -147,11 +148,9 @@ export default function TopBar(p: TopBarProps) {
             : <><Download size={13} /> 导出</>}
         </button>
 
-        {p.filmUrl && (
-          <a className="fw-tb-btn ok" href={p.filmUrl} download title="下载成片">
-            <Download size={14} />
-          </a>
-        )}
+        {/* 这里原有一个「下载成片」链接，指向服务端 compose 产出的文件。
+            云端合成已下线：本机渲染的成片由系统保存对话框直接落到用户选的
+            目录，没有可下载的远端地址，所以这个按钮也一并去掉。 */}
 
         <button className="fw-tb-icon" title="设置" onClick={p.onOpenSettings}>
           <Settings size={15} />
