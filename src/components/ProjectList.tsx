@@ -64,17 +64,34 @@ const RESOLUTIONS = [
   { key: "2k", label: "2K", icon: "⬜", hint: "超清 · 显存要求最高" },
 ];
 
-/** 预设 → 各选项定位（点预设联动；用户再改任一项 → 归入 custom） */
-const PRESETS: Record<string, { video: string; image: string; gen: string; res: string }> = {
-  // 快速验证 = 海螺 H3 全能参考：资产图直接作身份参考，不经首帧那一跳，链路短、成功率高
-  fast: { video: "minimax-h3-ref2v", image: "gpt-image-2", gen: "full_reference", res: "720p" },
-  // 角色一致 = 同 H3 全参考链路，1080p 档位偏成片质量
-  consistent: { video: "minimax-h3-ref2v", image: "gpt-image-2", gen: "full_reference", res: "1080p" },
-  premium: { video: "seedance-2.0", image: "gpt-image-2", gen: "full_reference", res: "1080p" },
-  first_frame: { video: "seedance-2.0", image: "nano-banana-pro", gen: "i2va", res: "1080p" },
+/** 生产模式 = **配音策略**（2026-08 改版）。
+ *
+ *  改版前这里是 5 个技术参数预设（快速验证/角色一致/精品制作/首帧精控/自定义），
+ *  但随着视频模型能力拉齐，"用哪个模型/什么分辨率"已经不再构成生产模式的区别 ——
+ *  两种剧型都会按需混用各种模型。真正的分野只有一个：**台词怎么配音**。
+ *
+ *  所以模型/分辨率/生成方式降级为并列的独立选项（不再有预设联动），
+ *  生产模式只保留下面两种。 */
+const PRODUCTION_MODES = [
+  {
+    key: "drama", icon: "🎭", label: "真人剧",
+    hint: "剧本里人物说什么，人物就配什么台词",
+  },
+  {
+    key: "narration", icon: "📖", label: "解说剧",
+    hint: "整段剧本作为旁白解说，画面原声不出声",
+  },
+];
+
+/** 各选项的默认值（新建项目时的起手式，不是"预设"——用户可自由改任意一项）。 */
+const DEFAULTS = {
+  video: "minimax-h3-ref2v",
+  image: "gpt-image-2",
+  gen: "full_reference",
+  res: "720p",
 };
 
-/** 项目列表 + 新建向导（画幅图标化 / 生产模式展开可视化 / 预设联动）。 */
+/** 项目列表 + 新建向导（画幅图标化 / 生产模式 / 技术参数独立可选）。 */
 export default function ProjectList(p: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [creating, setCreating] = useState(false);
@@ -82,11 +99,11 @@ export default function ProjectList(p: Props) {
   // 向导表单
   const [title, setTitle] = useState("");
   const [aspect, setAspect] = useState("9:16");        // 默认 9:16
-  const [mode, setMode] = useState("fast");
-  const [videoModel, setVideoModel] = useState(PRESETS.fast.video);
-  const [imageModel, setImageModel] = useState(PRESETS.fast.image);
-  const [genMode, setGenMode] = useState(PRESETS.fast.gen);
-  const [resolution, setResolution] = useState(PRESETS.fast.res);
+  const [mode, setMode] = useState("drama");           // 配音策略，默认真人剧
+  const [videoModel, setVideoModel] = useState(DEFAULTS.video);
+  const [imageModel, setImageModel] = useState(DEFAULTS.image);
+  const [genMode, setGenMode] = useState(DEFAULTS.gen);
+  const [resolution, setResolution] = useState(DEFAULTS.res);
   /** 生图模型清单以后端为准，取不到时用兜底（离线也能建项目） */
   const [imageModels, setImageModels] = useState(IMAGE_MODELS_FALLBACK);
   const [videoModels, setVideoModels] = useState(VIDEO_MODELS_FALLBACK);
@@ -140,40 +157,17 @@ export default function ProjectList(p: Props) {
     api.listProjects().then((r) => setProjects(r.projects)).catch((e) => setErr(String(e)));
   }, []);
 
-  /** 点预设：把所有选项定位到预设值 */
-  const applyPreset = (k: "fast" | "consistent" | "premium" | "first_frame") => {
-    setMode(k);
-    setVideoModel(PRESETS[k].video);
-    setImageModel(PRESETS[k].image);
-    setGenMode(PRESETS[k].gen);
-    setResolution(PRESETS[k].res);
-  };
-  /** 用户改具体选项：若偏离当前预设 → 定位到自定义 */
-  const touch = (patch: { video?: string; image?: string; gen?: string; res?: string }) => {
-    const next = {
-      video: patch.video ?? videoModel,
-      image: patch.image ?? imageModel,
-      gen: patch.gen ?? genMode,
-      res: patch.res ?? resolution,
-    };
-    if (patch.video) setVideoModel(patch.video);
-    if (patch.image) setImageModel(patch.image);
-    if (patch.gen) setGenMode(patch.gen);
-    if (patch.res) setResolution(patch.res);
-    const hit = Object.entries(PRESETS).find(([, v]) =>
-      v.video === next.video && v.image === next.image && v.gen === next.gen && v.res === next.res);
-    setMode(hit ? hit[0] : "custom");
-  };
-
   const doCreate = async () => {
     if (!title.trim()) return;
     setBusy(true); setErr("");
     try {
-      const proj = await api.createProject(title.trim(), aspect, mode,
-        mode === "custom"
-          ? { video_model: videoModel, image_model: imageModel,
-              generation_mode: genMode, resolution }
-          : undefined);
+      // 技术参数**始终**随创建请求发送。
+      // 改版前只有 custom 模式才发，其余靠后端预设推导；现在预设没了，
+      // 不发的话后端拿不到用户的选择，会静默退回全局默认。
+      const proj = await api.createProject(title.trim(), aspect, mode, {
+        video_model: videoModel, image_model: imageModel,
+        generation_mode: genMode, resolution,
+      });
       p.onOpen(proj.id);
     } catch (e) { setErr(String(e)); setBusy(false); }
   };
@@ -216,27 +210,26 @@ export default function ProjectList(p: Props) {
               </div>
             </label>
 
-            <label>生产模式（点预设一键定位下方选项；手动调整则归入自定义）
+            <label>生产模式（决定台词怎么配音；模型与画质在下方独立选择）
               <div className="mode-cards">
-                <button className={`mode-card ${mode === "fast" ? "on" : ""}`}
-                  onClick={() => applyPreset("fast")}>⚡ 快速验证</button>
-                <button className={`mode-card ${mode === "consistent" ? "on" : ""}`}
-                  onClick={() => applyPreset("consistent")}>🎭 角色一致</button>
-                <button className={`mode-card ${mode === "premium" ? "on" : ""}`}
-                  onClick={() => applyPreset("premium")}>💎 精品制作</button>
-                <button className={`mode-card ${mode === "first_frame" ? "on" : ""}`}
-                  title="先出每镜首帧图（图生图喂角色/场景资产 + 场景基准帧），再由首帧生长为视频。可控性最高、最防场景偏移"
-                  onClick={() => applyPreset("first_frame")}>🎬 首帧精控</button>
-                <button className={`mode-card ${mode === "custom" ? "on" : ""}`}
-                  title="修改下方任一选项即进入自定义">🛠 自定义</button>
+                {PRODUCTION_MODES.map((m) => (
+                  <button key={m.key} title={m.hint}
+                    className={`mode-card ${mode === m.key ? "on" : ""}`}
+                    onClick={() => setMode(m.key)}>
+                    {m.icon} {m.label}
+                  </button>
+                ))}
               </div>
+              <span className="muted" style={{ fontSize: 11, display: "block", marginTop: 4 }}>
+                {PRODUCTION_MODES.find((m) => m.key === mode)?.hint}
+              </span>
             </label>
 
             <label>视频模型
               <div className="opt-grid">
                 {videoModels.map((m) => (
                   <button key={m.key} className={`opt-btn ${videoModel === m.key ? "on" : ""}`}
-                    title={m.hint} onClick={() => touch({ video: m.key })}>
+                    title={m.hint} onClick={() => setVideoModel(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
                     <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
@@ -249,7 +242,7 @@ export default function ProjectList(p: Props) {
               <div className="opt-grid">
                 {imageModels.map((m) => (
                   <button key={m.key} className={`opt-btn ${imageModel === m.key ? "on" : ""}`}
-                    title={m.hint} onClick={() => touch({ image: m.key })}>
+                    title={m.hint} onClick={() => setImageModel(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
                     <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
@@ -262,7 +255,7 @@ export default function ProjectList(p: Props) {
               <div className="opt-grid">
                 {RESOLUTIONS.map((m) => (
                   <button key={m.key} className={`opt-btn ${resolution === m.key ? "on" : ""}`}
-                    title={m.hint} onClick={() => touch({ res: m.key })}>
+                    title={m.hint} onClick={() => setResolution(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
                     <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
@@ -284,7 +277,7 @@ export default function ProjectList(p: Props) {
                   <button key={m.key} disabled={!ok}
                     className={`opt-btn ${genMode === m.key ? "on" : ""}`}
                     title={ok ? m.hint : why}
-                    onClick={() => touch({ gen: m.key })}>
+                    onClick={() => setGenMode(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
                     <span className="muted" style={{ fontSize: 10 }}>
