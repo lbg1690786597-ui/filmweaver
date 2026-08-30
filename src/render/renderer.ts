@@ -23,15 +23,16 @@
 
 import { Command } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
-import { appDataDir, join } from "@tauri-apps/api/path";
+import { appDataDir, join, resolveResource } from "@tauri-apps/api/path";
 import { exists, mkdir, writeFile, writeTextFile, remove } from "@tauri-apps/plugin-fs";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
+import type { SubtitleStyleLike } from "../lib/subtitleStyle";
 import type { RenderPlan } from "./model";
 import { buildSegments, segmentStats } from "./segment";
 import { probeCapabilities, pickEncoder, hasFilter } from "./capabilities";
 import {
-  compileSegment, compileConcat, compileBurnSubtitles,
+  compileSegment, compileConcat, compileBurnSubtitles, compileAudioMix,
 } from "./ffmpegCompiler";
 
 export interface RenderProgress {
@@ -49,6 +50,9 @@ export interface RenderOptions {
   preferEncoder?: string;
   /** 字幕 SRT 文本；空则不烧 */
   burnSrt?: string;
+  /** 字幕样式（字号/颜色/描边/底框/位置/字体）。
+   *  不传则用 srtForceStyle 的短剧默认值，**而不是**此前写死的 FontSize=18。 */
+  subtitleStyle?: SubtitleStyleLike | null;
   /** 默认另存文件名（不含扩展名） */
   defaultName?: string;
   onProgress?: (p: RenderProgress) => void;
@@ -112,6 +116,23 @@ async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
 }
 
 /** 把 RenderPlan 里的媒体缓存到本地；返回 mediaId → 本地绝对路径 */
+/** 探测素材是否含音轨。
+ *
+ *  ffprobe 不随包分发（只打了 ffmpeg.exe，见 CI 里"只放 ffmpeg.exe"的取舍），
+ *  所以沿用 localRender.ts 的老办法：`ffmpeg -i` 无输出文件必然返回非 0，
+ *  但 stderr 里有完整的流信息，从中匹配 Audio 流即可。
+ *
+ *  探测失败（异常/超时）一律当作**有音轨**：猜错的代价不对称——
+ *  当作没有会静音成片，当作有则由 `0:a:0?` 的可选映射兜住。 */
+async function probeHasAudio(path: string): Promise<boolean> {
+  try {
+    const out = await Command.sidecar("binaries/ffmpeg", ["-i", path]).execute();
+    return /Stream #\d+:\d+.*Audio/.test(out.stderr || "");
+  } catch {
+    return true;
+  }
+}
+
 async function cacheMedia(
   plan: RenderPlan,
   report: (done: number, total: number) => void,
@@ -169,6 +190,14 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
       report({ pct: Math.round((d / t) * 15), stage: `下载素材 ${d}/${t}` });
     }, signal);
 
+    // 逐个素材探一次音轨（每个素材一次，不是每段一次）。
+    // 这决定 passthrough 段该用素材自己的声音还是补静音。
+    const audioMap = new Map<string, boolean>();
+    for (const m of plan.media) {
+      if (signal?.aborted) throw new Aborted();
+      audioMap.set(m.id, await probeHasAudio(paths.get(m.id) ?? ""));
+    }
+
     const ctx = {
       plan, caps, encoder,
       crf: plan.output.crf,
@@ -177,6 +206,7 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
         if (!p) throw new Error(`素材未缓存: ${id}`);
         return p;
       },
+      hasAudio: (id: string) => audioMap.get(id) ?? true,
     };
 
     // 2) 逐段渲染（15-85%）——内存在这里恒定，是整个方案的关键
@@ -203,6 +233,33 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
     await runFfmpeg(
       compileConcat(listPath, final, plan.output.withAudio), signal);
 
+    // 3.5) 混入音频轨（旁白 / 配乐 / 镜头原声）
+    //
+    // 分段渲染只处理视频轨（buildSegments 按 kind==="video" 过滤），
+    // 音频轨必须在这里单独混一次——否则成片里没有旁白也没有配乐。
+    // 对"镜头原声"尤其关键：normalize.ts 已把被剥离的镜头视频静音，
+    // 这一步不做的话那些镜头会彻底没声音。
+    if (plan.output.withAudio) {
+      const audioClips = plan.tracks
+        .filter((t) => t.kind === "audio" && !t.muted)
+        .flatMap((t) => t.clips)
+        .map((c) => ({
+          path: paths.get(c.mediaId) ?? "",
+          startSec: c.timelineStartSec,
+          volume: c.audio.volume,
+          muted: c.audio.muted,
+        }))
+        .filter((c) => c.path);
+      const mixArgs = audioClips.length
+        ? compileAudioMix(final, audioClips, await join(work, "mixed.mp4"))
+        : null;
+      if (mixArgs) {
+        report({ pct: 90, stage: `混音 ${audioClips.length} 段` });
+        await runFfmpeg(mixArgs, signal);
+        final = await join(work, "mixed.mp4");
+      }
+    }
+
     // 4) 烧字幕（92-97%）——放最后，避免每段各烧一次导致时间码错位
     if (opts.burnSrt?.trim()) {
       if (!hasFilter(caps, "subtitles")) {
@@ -213,8 +270,21 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
         const srt = await join(work, "subs.srt");
         await writeTextFile(srt, opts.burnSrt);
         const burned = await join(work, "final.mp4");
+        // 内置字体才传 fontsdir。
+        //
+        // 实测（ffmpeg 6.x + libass）：fontsdir 是**追加**搜索路径，不是限定——
+        // 传了它 fontconfig 仍会去找系统字体。所以"内置字体在没装它的机器上
+        // 也能用"靠的正是这条追加路径；而对系统字体它不起作用，白白让 libass
+        // 去挨个打开目录里的 README/LICENSE 报一串 "Error opening memory font"。
+        // 故只在 bundled 时传。
+        let fontsDir: string | null = null;
+        if (opts.subtitleStyle?.fontSource === "bundled") {
+          fontsDir = await resolveResource("resources/fonts").catch(() => null);
+        }
         await runFfmpeg(
-          compileBurnSubtitles(final, srt, burned, encoder, plan.output.crf), signal);
+          compileBurnSubtitles(final, srt, burned, encoder, plan.output.crf,
+                               opts.subtitleStyle, plan.output.height, fontsDir),
+          signal);
         final = burned;
       }
     }
