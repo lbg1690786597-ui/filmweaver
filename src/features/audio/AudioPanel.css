@@ -191,6 +191,21 @@
 .fw-audio-btn.primary:hover:not(:disabled) { background: var(--c-accent-hi); }
 .fw-audio-btn.primary:disabled { background: var(--c-border); color: var(--c-muted); cursor: default; }
 
+/* 非 primary 的次要按钮（提取镜头原声）：描边样式，不抢 TTS 主按钮的视觉权重 */
+.fw-audio-btn:not(.primary) {
+  background: transparent;
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+}
+.fw-audio-btn:not(.primary):hover:not(:disabled) { background: var(--c-hover); }
+.fw-audio-btn:not(.primary):disabled { color: var(--c-muted); cursor: default; }
+
+/* ---- 提取镜头原声 ---- */
+.fw-audio-detach {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--c-border);
+}
+
 @keyframes fw-spin { to { transform: rotate(360deg); } }
 .fw-spin { animation: fw-spin 0.8s linear infinite; }
 
@@ -248,3 +263,54 @@
   opacity: 0.7;
   padding-top: var(--sp-1);
 }
+
+/* ---- 解说音色卡片 ----
+   做成醒目卡片而非一行小字：没设音色整条解说链路都跑不通，
+   低对比度的提示实测会被用户直接忽略。 */
+.fw-voice-card {
+  border-radius: var(--r-md);
+  padding: 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--c-border);
+  background: var(--c-raised);
+}
+.fw-voice-card.missing {
+  border-color: color-mix(in oklch, var(--c-warning) 55%, transparent);
+  background: color-mix(in oklch, var(--c-warning) 10%, transparent);
+}
+.fw-voice-card.ok {
+  border-color: color-mix(in oklch, var(--c-success) 35%, transparent);
+}
+.fw-voice-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  margin-bottom: 4px;
+}
+.fw-voice-state {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  padding: 1px 7px;
+  border-radius: 8px;
+}
+.fw-voice-state.ok { background: color-mix(in oklch, var(--c-success) 22%, transparent); color: var(--c-success); }
+.fw-voice-state.missing { background: color-mix(in oklch, var(--c-warning) 25%, transparent); color: var(--c-warning); }
+.fw-voice-desc {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.55;
+  margin-bottom: 8px;
+}
+.fw-voice-acts { display: flex; flex-direction: column; gap: 6px; }
+.fw-voice-sub { display: flex; gap: 12px; justify-content: center; }
+.fw-audio-link {
+  background: none;
+  border: none;
+  color: var(--c-accent);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  padding: 0;
+}
+.fw-audio-link:hover:not(:disabled) { text-decoration: underline; }
+.fw-audio-link:disabled { color: var(--c-muted); cursor: default; }
