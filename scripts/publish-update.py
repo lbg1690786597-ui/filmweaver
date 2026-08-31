@@ -11,7 +11,14 @@
 这个脚本只做最后一步，且切之前重新验一遍完整性。
 
 ## 用法
-    python3 publish-update.py 0.7.4 "更新说明"
+    python3 publish-update.py 0.8.0          # 正式版 → /fwp 通道
+    python3 publish-update.py 0.8.1 --beta   # 测试版 → /fw  通道
+
+`--beta` 决定两件事：产物名与**发布到哪个通道**。
+- 产物名：CI 里 tag 含 `-beta` 时 productName 变成 "FilmWeaver Beta"，
+  NSIS 把空格写成点 → `FilmWeaver.Beta_<ver>_x64-setup.exe`。
+- 通道：beta 与正式是两个独立软件，各读各的 appcast（见下方常量）。
+  发错通道 = 对应用户根本收不到更新，且污染另一条通道。
 """
 from __future__ import annotations
 
@@ -21,8 +28,16 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-APPCAST = Path("/root/filmweaver-data/appcast")
-BASE_URL = "http://118.196.33.51:9080/fw/media/appcast"
+# 两个通道各有独立的 appcast 目录与对外路径, **绝不能混**:
+#   beta  → /fw  (dev 后端 8002), 目录 filmweaver-data/appcast
+#   正式  → /fwp (prod 后端 8003), 目录 filmweaver-prod-data/appcast
+# 依据: CI(build-windows.yml)按 tag 是否含 -beta 给两个软件写死了各自的 appcast
+# 端点, 客户端各读各的。此前本脚本只有一组常量, 不带 --beta 发布时会把正式版
+# manifest 写进 beta 目录 —— 正式用户根本读不到, 反而污染了 beta 通道。
+APPCAST_BETA = Path("/root/filmweaver-data/appcast")
+APPCAST_PROD = Path("/root/filmweaver-prod-data/appcast")
+BASE_URL_BETA = "http://118.196.33.51:9080/fw/media/appcast"
+BASE_URL_PROD = "http://118.196.33.51:9080/fwp/media/appcast"
 # CI 产物的实际大小约 30 MB；低于此值说明没下完
 MIN_SIZE = 25 * 1024 * 1024
 
@@ -33,14 +48,22 @@ def die(msg: str) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        die("用法: publish-update.py <版本号> [更新说明]")
-    ver = sys.argv[1]
-    notes = sys.argv[2] if len(sys.argv) > 2 else "自动构建发布。应用内点「⟳ 检查更新」即可静默升级。"
+    argv = [a for a in sys.argv[1:] if a != "--beta"]
+    beta = "--beta" in sys.argv
+    if not argv:
+        die("用法: publish-update.py <版本号> [--beta] [更新说明]")
+    ver = argv[0]
+    notes = argv[1] if len(argv) > 1 else "自动构建发布。应用内点「⟳ 检查更新」即可静默升级。"
 
-    exe = APPCAST / f"FilmWeaver_{ver}_x64-setup.exe"
-    sig = APPCAST / f"FilmWeaver_{ver}_x64-setup.exe.sig"
-    live = APPCAST / "latest.json"
+    # beta 与正式版是**两个软件**（productName / identifier 都不同），
+    # 产物名因此也不同：NSIS 把 "FilmWeaver Beta" 里的空格写成点。
+    # 目录/URL 也必须跟着切，否则会发到对方的通道里。
+    appcast = APPCAST_BETA if beta else APPCAST_PROD
+    base_url = BASE_URL_BETA if beta else BASE_URL_PROD
+    stem = f"FilmWeaver.Beta_{ver}" if beta else f"FilmWeaver_{ver}"
+    exe = appcast / f"{stem}_x64-setup.exe"
+    sig = appcast / f"{stem}_x64-setup.exe.sig"
+    live = appcast / "latest.json"
 
     # ---- 发布前校验：宁可不发，也不能发半截包 ----
     if not exe.exists():
@@ -60,7 +83,7 @@ def main() -> None:
     if not signature.startswith("dW50cnVzdGVk"):  # "untrusted comment:" 的 base64
         die("签名内容格式不对，可能下载到了错误页")
 
-    url = f"{BASE_URL}/{exe.name}"
+    url = f"{base_url}/{exe.name}"
     payload = {
         "version": ver,
         "notes": notes,
@@ -76,12 +99,12 @@ def main() -> None:
     # 留一份旧的，出问题能立刻回滚
     if live.exists():
         prev = json.loads(live.read_text())
-        (APPCAST / f"latest.{prev.get('version', 'unknown')}.json").write_text(
+        (appcast / f"latest.{prev.get('version', 'unknown')}.json").write_text(
             json.dumps(prev, ensure_ascii=False, indent=2))
         print(f"  已备份旧 manifest: {prev.get('version')}")
 
     live.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(f"  ✅ 已发布 {ver}")
+    print(f"  ✅ 已发布 {ver} 到{'测试版(/fw)' if beta else '正式版(/fwp)'}通道")
     print(f"     包大小 {size/1048576:.1f} MB · 签名 {len(signature)} 字符")
     print(f"     {url}")
 
