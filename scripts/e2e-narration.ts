@@ -258,10 +258,30 @@ async function main() {
   ok(abs.length === cues.length, "所有 cue 都能锚到已出片镜头",
      `${abs.length}/${cues.length}`);
 
-  // ⚠️ 字幕与旁白的**同步**判据：字幕时间码这里是自己按镜头起点累加算的，
-  // 旁白的时间码是 normalize 算的。两者若有任何偏差，字幕就会与念的话错开。
-  // 逐段比对同一条旁白在两套算法下的绝对起点——这是"音画同步"唯一能离线证的事。
+  // ⚠️ 这里曾经只有一条断言：「字幕时间码与旁白时间码同源（无漂移）」。
+  // 它比较的是**同一个 duration_sec 派生出来的两个时间**（我这边按镜头起点
+  // 累加、normalize 那边自己算），所以永远是 0.000s —— 只证明了内部自洽。
+  // 项目 930 带着"画面在演第 6 集、声音在念第 5 集"从它下面完整通过了。
+  //
+  // 真正要证的是**内容层**：第 N 镜念的话，是不是第 N 镜画面所依据的那段原文。
+  // 时间同源仍然要查（它拦的是另一类 bug：重排后锚点没搬迁），但不能只有它。
   {
+    const spoken = (s: string) => (s.match(/[一-鿿0-9A-Za-z]/g) || []).join("");
+    const refOf = new Map(shots.map((s: any) => [s.order, s.script_ref || ""]));
+    let mismatch = 0;
+    let sample = "";
+    for (const src of sources) {
+      const ref = spoken(stripScriptMarkup(refOf.get(src.start_shot_order) || ""));
+      const said = spoken(stripScriptMarkup(src.text || ""));
+      if (said !== ref) {
+        mismatch++;
+        if (!sample) sample = `#${src.start_shot_order} 念「${said.slice(0, 12)}…」`
+                            + ` 画面「${ref.slice(0, 12)}…」`;
+      }
+    }
+    ok(mismatch === 0, "每段旁白逐字等于该镜画面所依据的原文（声画对齐）",
+       mismatch ? `${mismatch}/${sources.length} 处不一致：${sample}` : `${sources.length} 段`);
+
     const planAudio = [...aTracks.flatMap((t) => t.clips)]
       .sort((a, b) => a.timelineStartSec - b.timelineStartSec);
     let maxDrift = 0;
@@ -270,7 +290,7 @@ async function main() {
       const theirs = planAudio[i]?.timelineStartSec ?? NaN;
       maxDrift = Math.max(maxDrift, Math.abs(mine - theirs));
     });
-    ok(maxDrift < 0.05, "字幕时间码与旁白时间码同源（无漂移）",
+    ok(maxDrift < 0.05, "字幕时间码与旁白时间码同源（锚点没错位）",
        `最大偏差 ${maxDrift.toFixed(3)}s`);
   }
 
