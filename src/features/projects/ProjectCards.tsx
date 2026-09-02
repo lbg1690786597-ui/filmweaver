@@ -26,12 +26,16 @@ export default function ProjectCards({ projects, onOpen }: Props) {
 
   const shown = useMemo(() => {
     const kw = q.trim().toLowerCase();
-    if (!kw) return projects;
-    return projects.filter((p) => p.title.toLowerCase().includes(kw));
+    const filtered = kw
+      ? projects.filter((p) => p.title.toLowerCase().includes(kw))
+      : [...projects];
+    // 最新项目排最前（id 是 hex 时间戳前缀，字典序即时序）
+    filtered.sort((a, b) => (b.id > a.id ? 1 : b.id < a.id ? -1 : 0));
+    return filtered;
   }, [projects, q]);
 
   return (
-    <>
+    <div className="fw-pc-wrap">
       <div className="fw-pc-bar">
         <div className="fw-pc-search">
           <Search size={13} />
@@ -43,7 +47,8 @@ export default function ProjectCards({ projects, onOpen }: Props) {
         </span>
       </div>
 
-      <div className="fw-pc-grid">
+      <div className="fw-pc-scroll">
+        <div className="fw-pc-grid">
         {shown.map((proj) => {
           const total = proj.shots_total ?? 0;
           const done = proj.shots_done ?? 0;
@@ -95,7 +100,8 @@ export default function ProjectCards({ projects, onOpen }: Props) {
               : "还没有项目，点右上角「新建项目」开始"}
           </div>
         )}
-      </div>
-    </>
+        </div>{/* .fw-pc-grid */}
+      </div>{/* .fw-pc-scroll */}
+    </div>  /* .fw-pc-wrap */
   );
 }
