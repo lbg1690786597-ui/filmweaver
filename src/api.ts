@@ -190,6 +190,10 @@ export interface ShotInfo {
   /** 首帧流水线（i2va）：本镜首帧图；视频由该帧生长而来。
    *  先审首帧再出视频可省废片成本，也是排查场景偏移的抓手。null=未走首帧路线 */
   first_frame_url: string | null;
+  /** 本镜出片后抽的尾帧（供下一个连续镜头当参考图） */
+  tail_frame_url?: string | null;
+  /** 本镜接了上一镜尾帧作为参考图之一时有值（判据由后端统一给，前端不自己拼） */
+  prev_tail_ref?: { url: string; from_order: number; label: string } | null;
   /** 镜头级策略覆盖（三层策略最高优先级）；null=继承项目 */
   profile_override: Record<string, unknown> | null;
   /** TB-01 分割后的取片窗口（秒）。分割不重新转码，前后两段共用同一
@@ -207,6 +211,12 @@ export interface ShotInfo {
 /** TB-03/TB-10：与后端 Shot.transform_meta 同构；缺键 = 该项不处理 */
 export interface TransformMeta {
   scale?: number; rotate?: number; x?: number; y?: number;
+  /**
+   * V2.3：非等比缩放（百分比，缺省跟随 scale）。
+   * 拖边中点做单轴拉伸时才会写入；角点等比缩放只写 scale。
+   * 渲染/预览取值一律用 `scaleX ?? scale`，老数据没有这两个字段也能正常工作。
+   */
+  scaleX?: number; scaleY?: number;
   opacity?: number; mirrorH?: boolean; mirrorV?: boolean;
   speed?: number;
   volume?: number; muted?: boolean; fadeIn?: number; fadeOut?: number;
@@ -219,6 +229,20 @@ export interface TransformMeta {
   /** V2.2 逐帧特效（0..100 强度）；未列出的项 = 不启用 */
   blur?: number; vignette?: number; grain?: number; glitch?: number;
   shake?: number; zoomPulse?: number; flash?: number; glow?: number;
+  /** V2.3 区域马赛克（数组，允许多个区域） */
+  mosaics?: Array<{
+    x: number; y: number; w: number; h: number;
+    style: "pixel" | "gaussblur" | "blackbox";
+    intensity: number;
+    /** 形状；缺省 = rect（老数据兼容） */
+    shape?: "rect" | "ellipse" | "brush";
+    /** brush 形状的笔迹点（比例坐标） */
+    stroke?: { x: number; y: number }[];
+    /** brush 笔刷直径（相对画面宽度比例） */
+    brushSize?: number;
+  }>;
+  /** V2.3 取景框裁切（相对原始画面的比例 0..1）；未设 = 不裁 */
+  crop?: { left: number; top: number; right: number; bottom: number };
   /** V2.2 混合模式（仅叠加层生效） */
   blendMode?: "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
 }
@@ -250,6 +274,10 @@ export interface ProjectDetail {
   title: string;
   base_aspect: string;
   production_mode: string | null;
+  /** 单镜时长上限（秒），由服务端按项目的视频模型算：
+   *  seedance-2.0/veo → 15，seedance-2.5 → 30，H3 随分辨率变。
+   *  时间轴拖拽与时长输入框都用它做上限；缺省（老后端）按 15。 */
+  shot_duration_max?: number;
   /** 解说音色（解说剧整片共用的参考音频） */
   narration_voice_url?: string | null;
   episodes: EpisodeInfo[];
@@ -711,6 +739,12 @@ export const api = {
            head_order: number; tail_order: number;
            head_duration: number; tail_duration: number }>(
       `/v2/shots/${shotId}/split`, { at_sec: atSec }),
+
+  /** 撤销分割：把后半段合回前半段（Ctrl+B 的逆操作，供撤销栈用）。
+   *  后半段被单独重生成/改过时长时后端会 409，此时撤销失败而不是静默丢数据。 */
+  unsplitShot: (headShotId: string, tailShotId: string) =>
+    post<{ ok: boolean; shot_id: string; order: number; duration: number }>(
+      `/v2/shots/${headShotId}/unsplit`, { tail_shot_id: tailShotId }),
 
   /** 版本历史（R2 精编器回退面板，契约 C10） */
   shotVersions: (shotId: string) =>
