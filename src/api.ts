@@ -1311,8 +1311,16 @@ export const api = {
       prompt: prompt ?? null,
     }),
 
-  /** 把 /fw/media/... 相对地址补全为可下载完整地址（host 取自 BASE，不硬编码） */
-  mediaUrl: (u: string) => (u.startsWith("http") ? u : `${new URL(BASE).origin}${u}`),
+  /** 把 /fw/media/... 相对地址补全为可下载完整地址（host 取自 BASE，不硬编码）
+   *
+   * ⚠️ 必须用完整 BASE 而不是 BASE.origin：正式版客户端的 BASE 是
+   * `…:9080/fwp`，只取 origin 会拼出 `…:9080/fw/media/…` —— 那条 nginx
+   * 路由指向 dev 后端(8002)，而正式版的文件在 prod 数据目录，必 404。
+   * 库里的前缀恒为 `/fw`（后端 media.py 写死，与环境无关），故先剥掉再拼。
+   */
+  mediaUrl: (u: string) =>
+    u.startsWith("http") ? u
+      : `${BASE.replace(/\/$/, "")}${u.replace(/^\/fw(?=\/)/, "")}`,
 
   /** P2-5 SSE（修 G3/F2）：订阅项目事件流（job/shot/audio 状态变更实时推送）。
    *
