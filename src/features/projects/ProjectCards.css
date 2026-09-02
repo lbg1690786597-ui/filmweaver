@@ -1,10 +1,28 @@
 /* ProjectCards.css */
 
+/* 外层包装：占满 .plist 剩余空间，固定高度，整体不溢出 */
+.fw-pc-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;   /* 必须：flex 子项默认 min-height:auto 会阻止收缩 */
+  overflow: hidden;
+}
+
 .fw-pc-bar {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   padding: 0 0 var(--sp-3);
+  flex-shrink: 0;   /* 搜索栏不参与收缩，始终可见 */
+}
+
+/* 网格滚动容器：占满 .fw-pc-wrap 的剩余高度，内容多时出现滚动条 */
+.fw-pc-scroll {
+  flex: 1;
+  min-height: 0;   /* flex 子项必须显式允许收缩 */
+  overflow-y: auto;
+  padding-right: var(--sp-1);   /* 给滚动条留一点空隙 */
 }
 
 .fw-pc-search {
