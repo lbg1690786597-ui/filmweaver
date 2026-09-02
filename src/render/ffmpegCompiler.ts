@@ -133,6 +133,152 @@ export function needsDualPath(effects: RenderEffect[]): boolean {
 }
 
 /**
+ * 为一个 clip 的视频流追加区域马赛克滤镜链。
+ *
+ * 每个马赛克区域需要"剪出区域 → 处理 → 叠回原图"的三段式结构，
+ * 这在 ffmpeg filter_complex 里需要 split/crop/overlay，不能用简单的链式滤镜。
+ *
+ * 这里用 ffmpeg 的 [split] → crop → process → [overlay] 方式：
+ *   [src]split=2[bg][fg0];
+ *   [fg0]crop=W:H:X:Y,<处理>,[pad=W:H:X:Y][fgp0];
+ *   [bg][fgp0]overlay=X:Y[out]
+ *
+ * 对多个区域串联 overlay，每个区域一个 crop+process+overlay 三元组。
+ *
+ * 由于 passthrough 路径用 -vf 不支持 split/overlay，
+ * 有马赛克时强制走 composite 路径（在 segment.ts 的 needsComposite 里检测）。
+ *
+ * @param inLabel  当前视频流的输入标签（如 "[v0]"）
+ * @param outLabel 最终输出标签
+ * @param mosaics  马赛克参数数组
+ * @param clipIdx  当前 clip 在段内的序号（用于标签去重）
+ * @param segIdx   当前段序号（用于标签去重）
+ * @returns 追加到 filter_complex 的 filter 片段数组
+ */
+export function compileMosaicFilters(
+  inLabel: string,
+  outLabel: string,
+  mosaics: import("./model").MosaicParams[],
+  clipIdx: number,
+  segIdx: number,
+): string[] {
+  if (!mosaics.length) return [];
+  const parts: string[] = [];
+  let cur = inLabel;
+
+  mosaics.forEach((m, mi) => {
+    const pfx = `ms${segIdx}_${clipIdx}_${mi}`;
+    const isLast = mi === mosaics.length - 1;
+    const next = isLast ? outLabel : `[${pfx}out]`;
+    const shape = m.shape ?? "rect";
+
+    // 区域坐标表达式。
+    // ⚠️ crop / drawbox 用 iw·ih（输入宽高），但 overlay **不认识 iw/ih** ——
+    // 它的变量是 W/H（主输入宽高）、w/h（叠加层宽高）。写成 iw 会报
+    // "Undefined constant or missing '(' in 'iw*0.3)'"，实测 ffmpeg 4.4.2 必现。
+    const xExpr = `(iw*${m.x.toFixed(5)})`;
+    const yExpr = `(ih*${m.y.toFixed(5)})`;
+    const wExpr = `(iw*${m.w.toFixed(5)})`;
+    const hExpr = `(ih*${m.h.toFixed(5)})`;
+    // overlay 专用（主输入宽高用 W/H）
+    const ovX = `(W*${m.x.toFixed(5)})`;
+    const ovY = `(H*${m.y.toFixed(5)})`;
+
+    // ---- 效果滤镜（作用在裁出的区域上）----
+    let processFilter: string;
+    if (m.style === "gaussblur") {
+      const sigma = Math.max(1, Math.round(m.intensity / 100 * 30));
+      processFilter = `gblur=sigma=${sigma}`;
+    } else if (m.style === "blackbox") {
+      // 纯黑：把区域画成黑色（配合形状蒙版可得到圆形/笔迹遮挡）
+      processFilter = `drawbox=x=0:y=0:w=iw:h=ih:color=black@1.0:t=fill`;
+    } else {
+      // pixel（默认）：缩小到方块网格大小，再用 neighbor 插值放大，得到像素块效果。
+      // blockSize 4 = 精细马赛克，32 = 粗犷马赛克；用户滑到 100 时约 28px 方块。
+      const blockSize = Math.max(4, Math.round(m.intensity / 100 * 28) + 4);
+      processFilter = `scale=iw/${blockSize}:-1:flags=fast_bilinear,scale=iw*${blockSize}:-1:flags=neighbor`;
+    }
+
+    // ---- 矩形 + 纯黑：drawbox 一条滤镜就够，最省 ----
+    if (shape === "rect" && m.style === "blackbox") {
+      parts.push(
+        `${cur}drawbox=x=${xExpr}:y=${yExpr}:w=${wExpr}:h=${hExpr}:color=black@1.0:t=fill${next}`,
+      );
+      cur = next;
+      return;
+    }
+
+    // ---- 矩形：裁剪 → 处理 → 贴回 ----
+    if (shape === "rect") {
+      parts.push(
+        `${cur}split=2[${pfx}bg][${pfx}fg]`,
+        `[${pfx}fg]crop=${wExpr}:${hExpr}:${xExpr}:${yExpr},${processFilter}[${pfx}proc]`,
+        `[${pfx}bg][${pfx}proc]overlay=${ovX}:${ovY}${next}`,
+      );
+      cur = next;
+      return;
+    }
+
+    // ---- 椭圆 / 画笔：用 alpha 蒙版把处理结果按形状贴回 ----
+    //
+    // 做法：裁出包围盒 → 施加效果 → geq 生成 alpha 通道（形状内 255，形状外 0）
+    // → overlay 时按 alpha 混合。这样非矩形区域的边界之外保持原图。
+    //
+    // geq 的 alpha 表达式里坐标 X/Y 是**相对裁出小图**的像素坐标，
+    // W/H 是小图宽高，所以形状参数要换算成小图内的相对位置。
+    let alphaExpr: string;
+
+    if (shape === "ellipse") {
+      // 标准椭圆方程：((X-cx)/rx)² + ((Y-cy)/ry)² <= 1
+      // 小图内椭圆正好内切于包围盒，故 cx=W/2, cy=H/2, rx=W/2, ry=H/2
+      alphaExpr = `if(lte(pow((X-W/2)/(W/2)\\,2)+pow((Y-H/2)/(H/2)\\,2)\\,1)\\,255\\,0)`;
+    } else {
+      // brush：笔迹是一串圆点，alpha = 任一圆内即 255。
+      // 把每个点换算成小图内的相对坐标，再拼成 max(...) 链。
+      const stroke = m.stroke ?? [];
+      const bs = m.brushSize ?? 0.08;
+      if (!stroke.length) { cur = next; return; }
+
+      // 圆半径（小图内的像素）：brushSize 是相对**整幅画面宽度**的比例，
+      // 小图宽度 = m.w * 画面宽，所以半径占小图宽度的比例是 (bs/2)/m.w
+      const rRel = (bs / 2) / Math.max(m.w, 1e-6);
+
+      // 点数上限：表达式过长 ffmpeg 会拒绝解析。按需抽稀到 ≤60 个点，
+      // 相邻点间距小于笔刷半径时视觉上仍连续。
+      const MAX_PTS = 60;
+      const step = Math.max(1, Math.ceil(stroke.length / MAX_PTS));
+      const pts = stroke.filter((_, i) => i % step === 0 || i === stroke.length - 1);
+
+      const terms = pts.map((p) => {
+        // 点在小图内的相对位置 0..1
+        const rx = (p.x - m.x) / Math.max(m.w, 1e-6);
+        const ry = (p.y - m.y) / Math.max(m.h, 1e-6);
+        // 圆：((X/W - rx)/rRel)² + ((Y/H - ryRel)/rRelY)² <= 1
+        // Y 方向半径要按小图宽高比换算，否则笔刷会被拉成椭圆
+        const rRelY = rRel * (m.w / Math.max(m.h, 1e-6));
+        return `lte(pow((X/W-${rx.toFixed(4)})/${rRel.toFixed(4)}\\,2)`
+             + `+pow((Y/H-${ry.toFixed(4)})/${rRelY.toFixed(4)}\\,2)\\,1)`;
+      });
+      // 任一圆命中即不透明。
+      // 用 max 链而不是相加：相加在重叠处会得到 2、3…，虽然 gt(…,0) 仍成立，
+      // 但项数一多容易触到 geq 的表达式复杂度上限；max 始终是 0/1，更稳。
+      const anyHit = terms.reduce((acc, t) => acc ? `max(${acc}\\,${t})` : t, "");
+      alphaExpr = `if(gt(${anyHit}\\,0)\\,255\\,0)`;
+    }
+
+    parts.push(
+      `${cur}split=2[${pfx}bg][${pfx}fg]`,
+      `[${pfx}fg]crop=${wExpr}:${hExpr}:${xExpr}:${yExpr},${processFilter},`
+        + `format=yuva420p,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='${alphaExpr}'[${pfx}proc]`,
+      `[${pfx}bg][${pfx}proc]overlay=${ovX}:${ovY}${next}`,
+    );
+    cur = next;
+  });
+
+  return parts;
+}
+
+/**
  * 单个 clip 的视频滤镜链。
  *
  * 顺序有讲究（与后端 build_transform_filters 保持一致）：
@@ -153,8 +299,9 @@ function clipVideoChain(c: RenderClip, ctx: CompileCtx): string[] {
     chain.push(`crop=${w}:${h}:iw*${t.crop.left.toFixed(4)}:ih*${t.crop.top.toFixed(4)}`);
   }
 
-  const iw = Math.max(2, Math.round(width * t.scale));
-  const ih = Math.max(2, Math.round(height * t.scale));
+  // 非等比缩放：边中点单轴拉伸会让 X/Y 缩放不同，缺省跟随 scale
+  const iw = Math.max(2, Math.round(width * (t.scaleX ?? t.scale)));
+  const ih = Math.max(2, Math.round(height * (t.scaleY ?? t.scale)));
   chain.push(`scale=${iw}:${ih}:force_original_aspect_ratio=decrease`);
 
   if (t.mirrorH) chain.push("hflip");
@@ -270,15 +417,33 @@ export function compileSegment(
     args.push(...inputArgs(c, ctx.localPath(c.mediaId)));
     const chain = clipVideoChain(c, ctx).join(",");
     const glow = c.effects.find((e) => e.type === "glow")?.value ?? 0;
+    const mosaics = c.effects.filter((e) => e.type === "mosaic" && e.mosaicParams)
+      .map((e) => e.mosaicParams!);
+
     if (glow > 0 && hasFilter(ctx.caps, "gblur") && hasFilter(ctx.caps, "blend")) {
       // 发光 = 自身 与 自身的模糊版 做 screen 混合。
       // 必须 split 成两路——同一个流不能被消费两次（ffmpeg 会报
       // "Filter has an unconnected output"）。
       const sigma = (glow / 100 * 14).toFixed(2);
-      parts.push(`[${i}:v]${chain},split=2[g${i}a][g${i}b]`);
-      parts.push(`[g${i}b]gblur=sigma=${sigma}[g${i}blur]`);
-      parts.push(`[g${i}a][g${i}blur]blend=all_mode=screen:all_opacity=`
-        + `${(glow / 100 * 0.8).toFixed(2)}[v${i}]`);
+      if (mosaics.length) {
+        // glow + mosaic：先做 glow，再串马赛克
+        const glowOut = `[gw${i}]`;
+        parts.push(`[${i}:v]${chain},split=2[g${i}a][g${i}b]`);
+        parts.push(`[g${i}b]gblur=sigma=${sigma}[g${i}blur]`);
+        parts.push(`[g${i}a][g${i}blur]blend=all_mode=screen:all_opacity=`
+          + `${(glow / 100 * 0.8).toFixed(2)}${glowOut}`);
+        parts.push(...compileMosaicFilters(glowOut, `[v${i}]`, mosaics, i, seg.clips.indexOf(c)));
+      } else {
+        parts.push(`[${i}:v]${chain},split=2[g${i}a][g${i}b]`);
+        parts.push(`[g${i}b]gblur=sigma=${sigma}[g${i}blur]`);
+        parts.push(`[g${i}a][g${i}blur]blend=all_mode=screen:all_opacity=`
+          + `${(glow / 100 * 0.8).toFixed(2)}[v${i}]`);
+      }
+    } else if (mosaics.length) {
+      // 先跑基本链，再串马赛克区域
+      const afterChain = `[vc${i}]`;
+      parts.push(`[${i}:v]${chain}${afterChain}`);
+      parts.push(...compileMosaicFilters(afterChain, `[v${i}]`, mosaics, i, seg.clips.indexOf(c)));
     } else {
       parts.push(`[${i}:v]${chain}[v${i}]`);
     }
