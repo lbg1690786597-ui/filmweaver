@@ -54,10 +54,27 @@ interface Props {
     name?: string;
   }) => void;
   localBusy: boolean;
-  localProgress: { pct: number; stage: string } | null;
+  localProgress: { pct: number; stage: string; etaSec?: number } | null;
+  /** 导出成功后的结果；非空时弹窗原地切成"已完成"面板（对齐剪映的导出结果页） */
+  localResult: {
+    path: string; segments: number; encoder: string; elapsedMs: number;
+  } | null;
+  /** 在系统文件管理器里选中成片 */
+  onReveal: (path: string) => void;
+  /** 回到参数页再导一次（换个分辨率/范围重导是常见操作） */
+  onResetResult: () => void;
   /** 中断本机渲染——大项目要跑几十分钟，没有取消等于卡死软件 */
   onCancel?: () => void;
   onClose: () => void;
+}
+
+/** 秒 → "约 3 分 20 秒"。导出动辄几十分钟，纯秒数读起来没概念。 */
+function fmtEta(sec: number): string {
+  if (sec < 60) return `约 ${Math.max(1, sec)} 秒`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m < 60) return s ? `约 ${m} 分 ${s} 秒` : `约 ${m} 分钟`;
+  return `约 ${Math.floor(m / 60)} 小时 ${m % 60} 分`;
 }
 
 export default function ExportDialog(p: Props) {
@@ -85,6 +102,7 @@ export default function ExportDialog(p: Props) {
   const totalSec = clips.reduce((a, s) => a + (s.duration_sec ?? 5), 0);
   const missing = clips.filter((s) => !s.video_url).length;
   const busy = p.localBusy;
+  const done = p.localResult;
 
   const doExport = () => {
     if (!clips.length || !IS_TAURI) return;
@@ -108,6 +126,16 @@ export default function ExportDialog(p: Props) {
         </header>
 
         <div className="fw-ex-body">
+          {done && (
+            <div className="fw-ex-done">
+              <Check size={14} />
+              <div>
+                <div className="fw-ex-done-title">导出完成</div>
+                <div className="fw-ex-done-path" title={done.path}>{done.path}</div>
+              </div>
+            </div>
+          )}
+
           {/* ---- 渲染方式（只剩本机一条）---- */}
           <Section title="渲染方式">
             <div className="fw-ex-channels">
@@ -210,6 +238,10 @@ export default function ExportDialog(p: Props) {
                 {p.localProgress
                   ? `${p.localProgress.stage} ${p.localProgress.pct}%`
                   : "准备中"}
+                {/* 剩余时间：几十分钟的渲染里，只给百分比等于不告诉用户还要等多久 */}
+                {p.localProgress?.etaSec != null && (
+                  <span className="fw-ex-eta">剩余 {fmtEta(p.localProgress.etaSec)}</span>
+                )}
               </span>
               <div className="fw-ex-progress-bar">
                 <div style={{ width: `${p.localProgress?.pct ?? 0}%` }} />
@@ -218,6 +250,17 @@ export default function ExportDialog(p: Props) {
                 <button className="fw-ex-btn" onClick={p.onCancel}>取消</button>
               )}
             </div>
+          ) : done ? (
+            <>
+              <span className="fw-ex-foot-info done">
+                <Check size={13} /> 已导出 · {done.segments} 段 ·{" "}
+                {(done.elapsedMs / 1000).toFixed(0)}s · {done.encoder}
+              </span>
+              <button className="fw-ex-btn" onClick={p.onResetResult}>再导一次</button>
+              <button className="fw-ex-btn primary" onClick={() => p.onReveal(done.path)}>
+                <FolderOpen size={13} /> 打开所在文件夹
+              </button>
+            </>
           ) : (
             <>
               <span className="fw-ex-foot-info">
