@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, APP_VERSION, JobOut, ShotInfo } from "./api";
 import type { TransformMeta } from "./api";
@@ -52,6 +52,8 @@ import TasksDrawer from "./features/tasks/TasksDrawer";
 import SettingsDialog from "./features/settings/SettingsDialog";
 import { normalize as normalizeRenderPlan } from "./render/normalize";
 import { render as renderV2 } from "./render/renderer";
+import { save } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useTimelineStore } from "./stores/timelineStore";
 import { useCommands } from "./commands";
 import { useEditorStore, LeftPanelTab } from "./stores/editorStore";
@@ -349,9 +351,18 @@ export default function App() {
   const [tasksOpen, setTasksOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localProgress, setLocalProgress] =
-    useState<{ pct: number; stage: string } | null>(null);
+    useState<{ pct: number; stage: string; etaSec?: number } | null>(null);
+  /** 导出完成态：弹窗原地变成"已完成"面板（对齐剪映的导出结果页），
+   *  而不是关掉弹窗只留一条转瞬即逝的 toast —— 用户往往还想立刻打开文件夹。 */
+  const [exportDone, setExportDone] = useState<
+    { path: string; segments: number; encoder: string; elapsedMs: number } | null>(null);
+  /** 分段渲染的起算时刻，用来估剩余时间（见 doLocalExport 里的注释） */
+  const segT0 = useRef<number | null>(null);
   /** 渲染中断控制器（长任务必须能取消——1424 镜项目要跑几十分钟） */
   const [renderAbort, setRenderAbort] = useState<AbortController | null>(null);
+
+  // ---- V2.3 画布交互模式 ----
+  const [overlayMode, setOverlayMode] = useState<"cropzoom" | "mosaic" | null>(null);
 
   /** 本机 ffmpeg 渲染（Tauri sidecar）。浏览器预览下不可达，由 ExportDialog 屏蔽入口。 */
   const doLocalExport = async (o: {
@@ -363,9 +374,18 @@ export default function App() {
     if (!projectId || !detail) return;
     if (!o.clips.some((s) => s.video_url)) { say("没有已生成的镜头可导出"); return; }
 
+    // ---- 1. 先选好保存路径再开始渲染 ----
+    // 旧做法：跑完 97% 才弹 save() 对话框——几十分钟渲染完，用户若取消或误关，
+    // 全部计算作废。现在"选路径"和"跑渲染"拆成两个独立步骤，取消发生在跑之前，零成本。
+    const defaultName = o.name
+      || `${detail.title || "film"}_${new Date().toISOString().slice(0, 10)}`;
+    const outputPath = await save({
+      defaultPath: `${defaultName}.mp4`,
+      filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
+    });
+    if (!outputPath) { say("已取消导出"); return; }  // 用户取消，不启动渲染
+
     // Render Engine V2：Timeline → RenderPlan → 分段 → ffmpeg。
-    // 分段是可行性前提：单张 filter_complex 在 1424 镜项目需 187GB，
-    // 分段后峰值恒定 <1.5GB（详见 render/segment.ts 头注释）。
     const plan = normalizeRenderPlan({
       projectId,
       shots: o.clips,
@@ -380,44 +400,54 @@ export default function App() {
       selectedShotIds: selectedShot ? [selectedShot.id] : [],
     });
 
-    // 字幕交给最后一道烧录（时间码由后端按镜头顺序换算，与分段无关）
+    // 字幕交给最后一道烧录
     let burnSrt: string | undefined;
     try {
       const r = await api.subtitlesSrt(projectId);
       if (r.count > 0) burnSrt = r.srt;
     } catch { /* 拉不到字幕不该挡住导出 */ }
 
-    // 项目级字幕样式（useSubtitleStyle 已随项目拉好）。烧录是一个 SRT 配
-    // 一套 force_style，必须有个确定的"这个项目的字幕长什么样"，不能随便
-    // 挑一条 cue 的 style 代表全体。为 null 时由 srtForceStyle 兜底默认值。
-
     const ctl = new AbortController();
     setRenderAbort(ctl);
+    setExportDone(null);
+    segT0.current = null;
     setLocalProgress({ pct: 0, stage: "准备" });
     try {
       const res = await renderV2({
         plan,
-        preferEncoder: "auto",       // 有硬件编码器就用，否则回落 libx264
+        preferEncoder: "auto",
         burnSrt,
         subtitleStyle,
-        // 用对话框里填的文件名；为空才回落到「项目名_日期」。
-        // 此前这里写死了默认值，输入框改了也没用。
-        defaultName: o.name
-          || `${detail.title || "film"}_${new Date().toISOString().slice(0, 10)}`,
-        onProgress: (p2) => setLocalProgress({ pct: p2.pct, stage: p2.stage }),
+        outputPath,      // 渲染器直接使用，不再在内部弹对话框
+        onProgress: (p2) => {
+          // 预计剩余时间只用**分段渲染**这一段来推算，不用整体 pct 线性外推：
+          // 前面的下载/探测与后面的 concat/混音/烧字幕速度差着数量级，
+          // 拿总进度做线性估计会在阶段切换时来回跳，比不显示还糟。
+          // 段与段耗时相近（每段输入数固定、时长相近），所以"已用/已完成段"
+          // 外推到剩余段是稳的；尾巴那几步再加 10% 余量。
+          let etaSec: number | undefined;
+          const seg = p2.segment;
+          if (seg && seg.total > 0) {
+            if (seg.done === 0) segT0.current = Date.now();
+            else if (segT0.current) {
+              const perMs = (Date.now() - segT0.current) / seg.done;
+              etaSec = Math.round(perMs * (seg.total - seg.done) * 1.1 / 1000);
+            }
+          }
+          setLocalProgress({ pct: p2.pct, stage: p2.stage, etaSec });
+        },
         signal: ctl.signal,
       });
-      if (res.outputPath) {
-        say(`✅ 已导出到 ${res.outputPath}（${res.segments} 段 · ${res.encoder} · `
-          + `${(res.elapsedMs / 1000).toFixed(0)}s）`);
-        setExportOpen(false);
-      } else {
-        say("已取消保存");
-      }
+      // 不关弹窗：原地切到完成态，用户可直接「打开所在文件夹」。
+      setExportDone({
+        path: res.outputPath ?? outputPath, segments: res.segments,
+        encoder: res.encoder, elapsedMs: res.elapsedMs,
+      });
+      say(`✅ 已导出到 ${res.outputPath}（${res.segments} 段 · ${res.encoder} · `
+        + `${(res.elapsedMs / 1000).toFixed(0)}s）`);
     } catch (e) {
-      // 用户主动取消不是错误，不弹失败提示
       if (e instanceof Error && e.name === "Aborted") say("已取消导出");
-      else say(`本机渲染失败：${String(e)}`);
+      else say(`导出失败：${String(e)}`);
     } finally {
       setLocalProgress(null);
       setRenderAbort(null);
@@ -533,19 +563,52 @@ export default function App() {
     return locs[0] ?? null;
   })();
 
-  /** ▶ 从定位线播放（Space）：定位到定位线所在镜头+镜内秒；已在播同镜则暂停/续播切换 */
+  /** ▶ 播放/暂停（Space）
+   *
+   *  优先级与剪映对齐：**空格永远能播**，不需要先做任何准备动作。
+   *   1. 正在播 → 暂停（无论从哪儿起播的）
+   *   2. 有定位线 → 从定位线播（本软件特有的"标记点"语义，保留）
+   *   3. 否则 → 从播放头（时间指示器）所在位置播 —— 这是剪映的默认行为，
+   *      单击刻度尺就能移动它
+   *   4. 时间轴上什么都没有 → 从第一个可播镜头开头播
+   *
+   *  ⚠️ 旧实现只有第 2 条：没放定位线时按空格只弹一句
+   *  "先在时间轴刻度尺上单击放置定位线"，而刻度尺上单击其实是移动播放头、
+   *  **双击**才放定位线 —— 提示本身就是错的，用户照着做也没反应。
+   */
   const playFromCursor = () => {
-    if (!cursor || !cursorShot) { say("先在时间轴刻度尺上单击放置定位线"); return; }
-    if (!cursorShot.video_url) { say(`镜头 #${cursorShot.order} 尚未生成，无法播放`); return; }
     const v = videoRef.current;
-    if (v && previewShot?.id === cursorShot.id) {
-      // 同镜：Space 语义闭环——播放中=暂停，暂停中=从定位线继续
-      if (!v.paused) { v.pause(); return; }
-      v.currentTime = cursor.offsetSec;
-      void v.play();
+    // 1) 播放中一律暂停（最高优先级：空格的第一语义是"停下来"）
+    if (v && !v.paused && previewShot) { v.pause(); return; }
+
+    // 2) 定位线
+    if (cursor && cursorShot) {
+      if (!cursorShot.video_url) { say(`镜头 #${cursorShot.order} 尚未生成，无法播放`); return; }
+      if (v && previewShot?.id === cursorShot.id) {
+        v.currentTime = cursor.offsetSec;
+        void v.play();
+        return;
+      }
+      seekTo(cursorShot, cursor.offsetSec);
       return;
     }
-    seekTo(cursorShot, cursor.offsetSec);
+
+    // 3) 播放头所在的 clip
+    const ph = useTimelineStore.getState().playheadSec;
+    const phClip = useTimelineStore.getState().allClips().find(
+      (c) => c.shotId && ph >= c.startSec && ph < c.startSec + c.durationSec);
+    const phShot = phClip ? (detail?.shots.find((s) => s.id === phClip.shotId) ?? null) : null;
+    if (phShot?.video_url) {
+      const off = ph - phClip!.startSec;
+      if (v && previewShot?.id === phShot.id) { v.currentTime = off; void v.play(); return; }
+      seekTo(phShot, off);
+      return;
+    }
+
+    // 4) 兜底：从头播
+    const first = (detail?.shots ?? []).find((s) => s.video_url && !s.disabled);
+    if (!first) { say("还没有已生成的镜头，无法播放"); return; }
+    seekTo(first, 0);
   };
 
   /** ⏮ 从头播放（Shift+Space）：第一个已生成且未停用的镜头从 0s 播 */
@@ -590,22 +653,101 @@ export default function App() {
   // 只有 useUndo 自挂的键盘监听能用，重做则完全没实现。
   const tlUndoCount = useTimelineStore((s) => s.undoStack.length);
   const tlRedoCount = useTimelineStore((s) => s.redoStack.length);
+
+  /** 剪映里 Delete 是"把选中的片段从轨道上拿掉"。本软件两类片段的
+   *  "拿掉"含义不同，但**都必须有反馈**——旧实现遇到 AI 镜头直接
+   *  `return`，按下去毫无动静，用户以为快捷键坏了。
+   *
+   *    · 外部素材 → 真删（不可撤销，所以问一句）
+   *    · AI 镜头  → 停用（保留在轨但不参与导出，等价于"拿掉"，且可撤销）
+   *
+   *  同时支持多选：旧实现只取 clipIds[0]，框选了 10 个只处理 1 个。
+   *  `silent` 供 Ctrl+X 用——那边已经报过"已剪切 N 个"，不再重复弹。 */
+  const removeSelectedClips = (o?: { silent?: boolean }) => {
+    const st = tlStore();
+    const clips = st.selection.clipIds
+      .map((id) => st.findClip(id))
+      .filter((c): c is NonNullable<typeof c> => !!c?.shotId);
+    if (!clips.length) { say("先选中时间轴上的片段"); return; }
+
+    const specials = clips.filter((c) => c.isSpecial);
+    const aiShots = clips.filter((c) => !c.isSpecial && !c.disabled);
+
+    if (specials.length) {
+      const names = specials.map((c) => c.label).join("、");
+      if (!window.confirm(
+        `确定从镜头轨移除 ${specials.length} 个外部素材吗？\n\n${names}\n\n`
+        + "此操作不可撤销（素材本身仍在素材库里，可重新拖入）。")) return;
+      void (async () => {
+        for (const c of specials) await deleteSpecialShot(c.shotId!);
+      })();
+    }
+
+    for (const c of aiShots) void patchTimeline(c.shotId!, { disabled: true });
+    if (aiShots.length && !o?.silent) {
+      say(`AI 镜头不能删除，已停用 ${aiShots.length} 个（不参与导出，Ctrl+Z 可撤销）`);
+    }
+  };
+
+  /** Ctrl+V：把剪贴板里的片段以"外部素材"形式插到播放头所在片段之后。 */
+  const doPaste = async () => {
+    if (!projectId) return;
+    const st = tlStore();
+    const buf = st.clipboard.filter((c) => c.mediaUrl);
+    if (!buf.length) {
+      say(st.clipboard.length ? "剪贴板里的片段还没有生成画面，无法粘贴" : "剪贴板是空的");
+      return;
+    }
+    // 插入位置：播放头所在片段之后；播放头不在任何片段上则追加到末尾
+    const ph = st.playheadSec;
+    const hit = st.allClips().find(
+      (c) => c.shotOrder != null && ph >= c.startSec && ph < c.startSec + c.durationSec);
+    let after = hit?.shotOrder;
+    try {
+      for (const c of buf) {
+        const r = await api.addSpecialShot(
+          projectId, `${c.label} 副本`, c.mediaUrl!, after, c.durationSec);
+        // 连续粘贴多个时逐个后移，保持剪贴板内部原有顺序
+        after = r.order;
+      }
+      await refreshDetail();
+      say(`已粘贴 ${buf.length} 个片段${hit ? `（在 #${hit.shotOrder} 之后）` : "（追加到末尾）"}`);
+    } catch (e) { say(`粘贴失败：${String(e)}`); }
+  };
+
+  /** Ctrl+X：复制后按 Delete 的规则移除（外部素材真删、AI 镜头停用）。 */
+  const doCut = async () => {
+    const st = tlStore();
+    st.copySelection();
+    const n = st.clipboard.length;
+    if (!n) { say("先选中时间轴上的片段"); return; }
+    say(`已剪切 ${n} 个片段`);
+    removeSelectedClips({ silent: true });
+  };
+
   useCommands({
     playPause: playFromCursor,
     playFromStart,
     cursorToPlayhead,
-    undo: () => tlStore().undo(),
-    redo: () => tlStore().redo(),
-    copy: () => tlStore().copySelection(),
-    paste: () => {},   // Phase 2 后期：读 clipboard 并插入
-    cut: () => {},
-    deleteSelected: () => {
-      const id = tlStore().selection.clipIds[0];
-      if (!id) return;
-      const clip = tlStore().findClip(id);
-      if (!clip?.shotId) return;
-      if (clip.isSpecial) void deleteSpecialShot(clip.shotId);
+    // 走 doUndo/doRedo 而不是 tlStore().undo()：前者会 toast 出"已撤销：xxx"，
+    // 也会在栈空时明确说"没有可撤销的操作"。直接调 store 的话按下去毫无反馈，
+    // 用户分不清是撤销了还是快捷键没生效。
+    undo: () => { void doUndo(); },
+    redo: () => { void doRedo(); },
+    copy: () => {
+      tlStore().copySelection();
+      const n = tlStore().clipboard.length;
+      say(n ? `已复制 ${n} 个片段（Ctrl+V 粘贴到播放头后）` : "先选中时间轴上的片段");
     },
+    // 粘贴 = 在播放头所在片段之后插入剪贴板里那些片段的副本。
+    //
+    // 副本一律落成"外部素材"镜头（复用同一条 video_url），而不是复制一份
+    // AI 镜头：AI 镜头带着拆解/提示词/版本历史，复制它们语义含糊（副本要不要
+    // 跟着重新生成？版本树怎么算？）。落成外部素材则含义明确——就是同一段
+    // 画面再放一次，与剪映复制片段的效果一致。
+    paste: () => { void doPaste(); },
+    cut: () => { void doCut(); },
+    deleteSelected: () => removeSelectedClips(),
     splitAtPlayhead: () => {
       // 用播放头所在的那个 clip 作为切割目标；播放头必须在片内（两端各留 0.5s）
       const ph = tlStore().playheadSec;
@@ -866,6 +1008,17 @@ export default function App() {
       const r = await api.splitShot(shotId, atSec);
       await refreshDetail();
       say(`已分割为 #${r.head_order}（${r.head_duration}s）+ #${r.tail_order}（${r.tail_duration}s）`);
+      // Ctrl+B 在剪映里是能 Ctrl+Z 回去的。这里的逆操作要走专门的 unsplit：
+      // 后半段是 is_special=0 的 AI 镜头行，delete_shot 明确拒删它。
+      pushUndo(`分割镜头 #${r.head_order}`,
+        async () => {
+          await api.unsplitShot(r.head_shot_id, r.tail_shot_id);
+          await refreshDetail();
+        },
+        async () => {
+          await api.splitShot(r.head_shot_id, atSec);
+          await refreshDetail();
+        });
     } catch (e) { say(String(e)); }
   };
 
@@ -1044,6 +1197,11 @@ export default function App() {
           transform={shots.find((s) => s.id === previewShot?.id)?.transform_meta ?? null}
           subtitles={subtitles}
           subtitleStyle={subtitleStyle}
+          overlayMode={overlayMode}
+          onSetOverlayMode={setOverlayMode}
+          onPatchTransform={previewShot
+            ? (tm) => void doPatchTransform(previewShot.id, tm)
+            : undefined}
           emptyHint={`${shots.filter((s) => !s.disabled).length} 段可导出 · ${fmtTime(totalSec)}`}
           onLoadedMetadata={(e) => {
             if (pendingSeek.current != null) {
@@ -1078,6 +1236,7 @@ export default function App() {
           shot={inspectorShot}
           projectTitle={detail?.title ?? ""}
           baseAspect={detail?.base_aspect}
+          maxDurationSec={detail?.shot_duration_max}
           shotCount={shots.length}
           doneCount={doneCount}
           totalSec={totalSec}
@@ -1108,6 +1267,7 @@ export default function App() {
           stages={stages}
           locations={locations}
           assets={detail?.assets ?? []}
+          maxClipSec={detail?.shot_duration_max}
           selectedShotId={selectedShot?.id ?? null}
           onSelectShot={onSelectShot}
           playhead={playhead}
@@ -1200,8 +1360,15 @@ export default function App() {
               onLocalExport={doLocalExport}
               localBusy={localProgress !== null}
               localProgress={localProgress}
+              localResult={exportDone}
+              onReveal={(path) => {
+                // revealItemInDir = 在资源管理器/访达里定位并选中该文件，
+                // 而不是用播放器打开它——导出完用户十有八九是要去拿这个文件。
+                void revealItemInDir(path).catch((e: unknown) => say(`打开文件夹失败：${String(e)}`));
+              }}
+              onResetResult={() => setExportDone(null)}
               onCancel={() => renderAbort?.abort()}
-              onClose={() => setExportOpen(false)} />
+              onClose={() => { setExportOpen(false); setExportDone(null); }} />
           )}
 
           {/* Phase 6：任务中心抽屉 */}
