@@ -47,12 +47,18 @@ import EffectsPanel from "./features/effects/EffectsPanel";
 // ---- Phase 4 重构：FilmWeaver AI 模块 ----
 import ScriptPanel from "./features/script/ScriptPanel";
 import VideoPanel from "./features/generation/VideoPanel";
-import ExportDialog from "./features/export/ExportDialog";
+import ExportDialog, { IS_TAURI } from "./features/export/ExportDialog";
 import TasksDrawer from "./features/tasks/TasksDrawer";
 import SettingsDialog from "./features/settings/SettingsDialog";
 import { normalize as normalizeRenderPlan } from "./render/normalize";
 import { render as renderV2 } from "./render/renderer";
-import { save } from "@tauri-apps/plugin-dialog";
+import { planToSrt } from "./render/srt";
+import { save, open, confirm as tauriConfirm } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
+import { join, downloadDir } from "@tauri-apps/api/path";
+import {
+  safeFileName, episodeFileName, dirOf, baseOf, stripMp4,
+} from "./lib/filename";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useTimelineStore } from "./stores/timelineStore";
 import { useCommands } from "./commands";
@@ -355,7 +361,9 @@ export default function App() {
   /** 导出完成态：弹窗原地变成"已完成"面板（对齐剪映的导出结果页），
    *  而不是关掉弹窗只留一条转瞬即逝的 toast —— 用户往往还想立刻打开文件夹。 */
   const [exportDone, setExportDone] = useState<
-    { path: string; segments: number; encoder: string; elapsedMs: number } | null>(null);
+    { path: string; segments: number; encoder: string; elapsedMs: number;
+      /** 按集导出产出的文件数（>1 时 path 指向最后一个成片，用于定位所在目录） */
+      files?: number } | null>(null);
   /** 分段渲染的起算时刻，用来估剩余时间（见 doLocalExport 里的注释） */
   const segT0 = useRef<number | null>(null);
   /** 渲染中断控制器（长任务必须能取消——1424 镜项目要跑几十分钟） */
@@ -364,90 +372,250 @@ export default function App() {
   // ---- V2.3 画布交互模式 ----
   const [overlayMode, setOverlayMode] = useState<"cropzoom" | "mosaic" | null>(null);
 
+  /** 导出目录。记忆到 localStorage：导出是重复动作，用户几乎总是往同一个
+   *  文件夹里放，每次都要重新翻目录树很烦。 */
+  const [exportDir, setExportDir] = useState<string | null>(
+    () => localStorage.getItem("fw_export_dir"));
+  /** 没记忆过就默认「下载」目录——比空着强，用户至少知道会落到哪。
+   *  downloadDir() 只在 Tauri 里可用，网页预览下保持 null（那边本来也导不了）。 */
+  useEffect(() => {
+    if (exportDir || !IS_TAURI) return;
+    let alive = true;
+    downloadDir()
+      .then((d) => { if (alive && d) setExportDir(d); })
+      .catch(() => { /* 拿不到就算了，用户点「选择…」即可 */ });
+    return () => { alive = false; };
+  }, [exportDir]);
+  const rememberDir = (d: string) => {
+    setExportDir(d);
+    localStorage.setItem("fw_export_dir", d);
+  };
+  /** 路径分隔符按路径本身判断（Windows 反斜杠 / 其余正斜杠），
+   *  拆分逻辑与单测同源，见 lib/filename.ts。 */
+
+  /** 选导出文件夹（按集导出用；单文件没选过位置时也走它兜底）。 */
+  const pickExportDir = async (): Promise<string | null> => {
+    const d = await open({
+      directory: true, multiple: false,
+      defaultPath: exportDir ?? undefined,
+      title: "选择导出文件夹",
+    });
+    const dir = typeof d === "string" ? d : null;
+    if (dir) rememberDir(dir);
+    return dir;
+  };
+
+  /**
+   * 导出对话框里的「选择…」。
+   *
+   * 单文件走系统 save() 而不是选文件夹：save() 自带「同名文件已存在，是否替换」
+   * 的原生确认，而我们做不了这个检查——fs 权限被 capabilities 限死在 $APPDATA，
+   * 拿不到任意路径的 exists()。顺带把用户在对话框里改的文件名回填到输入框。
+   */
+  const pickExportPath = async (mode: "file" | "dir", suggestName: string) => {
+    if (mode === "dir") {
+      const dir = await pickExportDir();
+      return dir ? { dir } : null;
+    }
+    const full = await save({
+      defaultPath: exportDir
+        ? await join(exportDir, `${suggestName}.mp4`)
+        : `${suggestName}.mp4`,
+      filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
+    });
+    if (!full) return null;
+    const dir = dirOf(full);
+    rememberDir(dir);
+    return { dir, name: stripMp4(baseOf(full)) };
+  };
+
   /** 本机 ffmpeg 渲染（Tauri sidecar）。浏览器预览下不可达，由 ExportDialog 屏蔽入口。 */
   const doLocalExport = async (o: {
     clips: ShotInfo[]; width: number; height: number; fps: number;
     vcodec: string; crf: number; withAudio: boolean;
-    scope: "generated" | "all" | "selection";
+    scope: "generated" | "all" | "selection" | "episode";
     name?: string;
+    /** 对话框里已选好的目录；缺省时这里兜底弹一次选择器 */
+    dir?: string;
+    /** scope=episode：要导的集号；每集单独渲染成一个文件 */
+    episodes?: number[];
   }) => {
     if (!projectId || !detail) return;
     if (!o.clips.some((s) => s.video_url)) { say("没有已生成的镜头可导出"); return; }
 
-    // ---- 1. 先选好保存路径再开始渲染 ----
+    const output = {
+      width: o.width, height: o.height, fps: o.fps,
+      vcodec: o.vcodec, crf: o.crf, withAudio: o.withAudio,
+    };
+    const defaultName = safeFileName(o.name
+      || `${detail.title || "film"}_${new Date().toISOString().slice(0, 10)}`, 60)
+      || "film";
+
+    // ---- 1. 先把"要产出哪些文件"排好，再开始渲染 ----
     // 旧做法：跑完 97% 才弹 save() 对话框——几十分钟渲染完，用户若取消或误关，
     // 全部计算作废。现在"选路径"和"跑渲染"拆成两个独立步骤，取消发生在跑之前，零成本。
-    const defaultName = o.name
-      || `${detail.title || "film"}_${new Date().toISOString().slice(0, 10)}`;
-    const outputPath = await save({
-      defaultPath: `${defaultName}.mp4`,
-      filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
-    });
-    if (!outputPath) { say("已取消导出"); return; }  // 用户取消，不启动渲染
+    // 位置正常在导出对话框里就选好了（o.dir）；下面的弹窗只是没选过时的兜底。
+    type Job = { shots: ShotInfo[]; outputPath: string; label: string };
+    const jobs: Job[] = [];
+    /** 目标路径是否已经由系统保存框问过"是否替换"（问过就别再问一遍） */
+    let osAskedOverwrite = false;
 
-    // Render Engine V2：Timeline → RenderPlan → 分段 → ffmpeg。
-    const plan = normalizeRenderPlan({
-      projectId,
-      shots: o.clips,
-      audioClips,
-      subtitleClips: subtitles,
-      transitions,
-      output: {
-        width: o.width, height: o.height, fps: o.fps,
-        vcodec: o.vcodec, crf: o.crf, withAudio: o.withAudio,
-      },
-      scope: o.scope,
-      selectedShotIds: selectedShot ? [selectedShot.id] : [],
-    });
+    if (o.scope === "episode" && o.episodes?.length) {
+      // 按集导出产出的是**一批**文件，逐集弹 save() 等于让用户点 N 次对话框，
+      // 64 集就是 64 次——所以只认一个目标文件夹，文件名由集号+集标题生成。
+      const dir = o.dir ?? await pickExportDir();
+      if (!dir) { say("已取消导出"); return; }
+      const titleOf = new Map(detail.episodes.map((e) => [e.order, e.title]));
+      for (const ep of o.episodes) {
+        const shots = o.clips.filter((s) => (s.episode ?? 1) === ep);
+        if (!shots.length) continue;   // 该集没有可导镜头：跳过而不是产出空文件
+        jobs.push({
+          shots,
+          // 与导出对话框的路径预览共用同一个函数，预览到哪就落到哪
+          outputPath: await join(dir, episodeFileName(defaultName, ep, titleOf.get(ep))),
+          label: `第 ${ep} 集`,
+        });
+      }
+      if (!jobs.length) { say("所选集里没有已生成的镜头"); return; }
+    } else {
+      const outputPath = o.dir
+        ? await join(o.dir, `${defaultName}.mp4`)
+        : await save({
+          defaultPath: `${defaultName}.mp4`,
+          filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
+        });
+      if (!outputPath) { say("已取消导出"); return; }  // 用户取消，不启动渲染
+      // 走 save() 的分支：系统保存框已经问过"是否替换"，别再问第二遍
+      osAskedOverwrite = !o.dir;
+      jobs.push({ shots: o.clips, outputPath, label: "" });
+    }
 
-    // 字幕交给最后一道烧录
-    let burnSrt: string | undefined;
-    try {
-      const r = await api.subtitlesSrt(projectId);
-      if (r.count > 0) burnSrt = r.srt;
-    } catch { /* 拉不到字幕不该挡住导出 */ }
+    // ---- 2. 覆盖确认 ----
+    // 导出位置改成在对话框里当场选之后，「开始导出」不再弹系统保存框，
+    // 也就丢掉了它自带的"同名文件已存在，是否替换"。跑几十分钟把上一版成片
+    // 静默盖掉是不可接受的，所以开跑前自己问一次（一次问全部，不逐个弹）。
+    if (!osAskedOverwrite) {
+      // invoke 失败（网页预览等没有 Rust 侧的环境）时按"查不到"处理：
+      // 宁可不拦，也不能因为探测不了就挡住导出。
+      const clashes = await invoke<string[]>("export_paths_exist",
+        { paths: jobs.map((j) => j.outputPath) }).catch(() => [] as string[]);
+      if (clashes.length) {
+        const ok = await tauriConfirm(
+          clashes.length === 1
+            ? `已存在同名文件：\n${clashes[0]}\n\n继续导出将覆盖它。`
+            : `目标文件夹里已存在 ${clashes.length} 个同名文件`
+              + `（共 ${jobs.length} 个）：\n${clashes.slice(0, 5).map(baseOf).join("\n")}`
+              + `${clashes.length > 5 ? `\n…另有 ${clashes.length - 5} 个` : ""}`
+              + "\n\n继续导出将覆盖它们。",
+          { title: "覆盖已有文件？", kind: "warning", okLabel: "覆盖", cancelLabel: "取消" });
+        if (!ok) { say("已取消导出"); return; }
+      }
+    }
 
     const ctl = new AbortController();
     setRenderAbort(ctl);
     setExportDone(null);
     segT0.current = null;
     setLocalProgress({ pct: 0, stage: "准备" });
+    const t0 = Date.now();
+    let segments = 0;
+    let encoder = "";
+    let lastPath = "";
+    let okCount = 0;
+
     try {
-      const res = await renderV2({
-        plan,
-        preferEncoder: "auto",
-        burnSrt,
-        subtitleStyle,
-        outputPath,      // 渲染器直接使用，不再在内部弹对话框
-        onProgress: (p2) => {
-          // 预计剩余时间只用**分段渲染**这一段来推算，不用整体 pct 线性外推：
-          // 前面的下载/探测与后面的 concat/混音/烧字幕速度差着数量级，
-          // 拿总进度做线性估计会在阶段切换时来回跳，比不显示还糟。
-          // 段与段耗时相近（每段输入数固定、时长相近），所以"已用/已完成段"
-          // 外推到剩余段是稳的；尾巴那几步再加 10% 余量。
-          let etaSec: number | undefined;
-          const seg = p2.segment;
-          if (seg && seg.total > 0) {
-            if (seg.done === 0) segT0.current = Date.now();
-            else if (segT0.current) {
-              const perMs = (Date.now() - segT0.current) / seg.done;
-              etaSec = Math.round(perMs * (seg.total - seg.done) * 1.1 / 1000);
+      for (let i = 0; i < jobs.length; i++) {
+        const job = jobs[i];
+        if (ctl.signal.aborted) break;
+
+        // Render Engine V2：Timeline → RenderPlan → 分段 → ffmpeg。
+        // 按集导出时 shots 已按集切好，normalize 的 cursor 从 0 起算，
+        // 音频/字幕/转场里锚定到范围外镜头的条目会被自动丢弃（见 normalize.ts）。
+        const plan = normalizeRenderPlan({
+          projectId,
+          shots: job.shots,
+          audioClips,
+          subtitleClips: subtitles,
+          transitions,
+          output,
+          // 按集的镜头已在对话框里筛成"已出片且未停用"，交给 generated 档即可
+          scope: o.scope === "episode" ? "generated" : o.scope,
+          selectedShotIds: selectedShot ? [selectedShot.id] : [],
+        });
+
+        // 字幕交给最后一道烧录。必须由 plan 现算，不能用后端的全项目 SRT：
+        // 那份时间码是从项目第一个镜头累加的，按集导出会整体偏掉前面所有集的时长。
+        const srt = planToSrt(plan);
+        const burnSrt = srt.trim() ? srt : undefined;
+
+        segT0.current = null;
+        const res = await renderV2({
+          plan,
+          preferEncoder: "auto",
+          burnSrt,
+          subtitleStyle,
+          outputPath: job.outputPath,   // 渲染器直接使用，不再在内部弹对话框
+          onProgress: (p2) => {
+            // 预计剩余时间只用**分段渲染**这一段来推算，不用整体 pct 线性外推：
+            // 前面的下载/探测与后面的 concat/混音/烧字幕速度差着数量级，
+            // 拿总进度做线性估计会在阶段切换时来回跳，比不显示还糟。
+            // 段与段耗时相近（每段输入数固定、时长相近），所以"已用/已完成段"
+            // 外推到剩余段是稳的；尾巴那几步再加 10% 余量。
+            let etaSec: number | undefined;
+            const seg = p2.segment;
+            if (seg && seg.total > 0) {
+              if (seg.done === 0) segT0.current = Date.now();
+              else if (segT0.current) {
+                const perMs = (Date.now() - segT0.current) / seg.done;
+                etaSec = Math.round(perMs * (seg.total - seg.done) * 1.1 / 1000);
+              }
             }
-          }
-          setLocalProgress({ pct: p2.pct, stage: p2.stage, etaSec });
-        },
-        signal: ctl.signal,
-      });
+            if (jobs.length > 1) {
+              // 多集：单集内的分段外推推不出"还剩几集"，改用整体已完成比例外推。
+              // 集与集时长相近（同一部剧），这个估计比只报当前集的剩余诚实得多。
+              const frac = (i + p2.pct / 100) / jobs.length;
+              etaSec = frac > 0.02
+                ? Math.round((Date.now() - t0) * (1 - frac) / frac / 1000)
+                : undefined;
+              setLocalProgress({
+                pct: Math.round(frac * 100),
+                stage: `${job.label}（${i + 1}/${jobs.length}）· ${p2.stage}`,
+                etaSec,
+              });
+            } else {
+              setLocalProgress({ pct: p2.pct, stage: p2.stage, etaSec });
+            }
+          },
+          signal: ctl.signal,
+        });
+        segments += res.segments;
+        encoder = res.encoder;
+        lastPath = res.outputPath ?? job.outputPath;
+        okCount += 1;
+      }
+
+      if (!okCount) { say("已取消导出"); return; }
       // 不关弹窗：原地切到完成态，用户可直接「打开所在文件夹」。
+      // 多文件时 path 仍指向最后一个成片——revealItemInDir 会打开其所在目录
+      // 并选中它，正好就是那批文件所在的文件夹。
       setExportDone({
-        path: res.outputPath ?? outputPath, segments: res.segments,
-        encoder: res.encoder, elapsedMs: res.elapsedMs,
+        path: lastPath, segments, encoder,
+        elapsedMs: Date.now() - t0,
+        files: okCount,
       });
-      say(`✅ 已导出到 ${res.outputPath}（${res.segments} 段 · ${res.encoder} · `
-        + `${(res.elapsedMs / 1000).toFixed(0)}s）`);
+      say(okCount > 1
+        ? `✅ 已导出 ${okCount} 个文件到 ${lastPath.replace(/[/\\][^/\\]*$/, "")}`
+          + `（共 ${segments} 段 · ${encoder} · ${((Date.now() - t0) / 1000).toFixed(0)}s）`
+        : `✅ 已导出到 ${lastPath}（${segments} 段 · ${encoder} · `
+          + `${((Date.now() - t0) / 1000).toFixed(0)}s）`);
     } catch (e) {
-      if (e instanceof Error && e.name === "Aborted") say("已取消导出");
-      else say(`导出失败：${String(e)}`);
+      if (e instanceof Error && e.name === "Aborted") {
+        // 多集导出中途取消：已经落盘的那几集是完整可用的，必须告诉用户，
+        // 否则他会以为全白跑了而重导一遍。
+        say(okCount > 0
+          ? `已取消导出（前 ${okCount} 集已完成并保存）`
+          : "已取消导出");
+      } else say(`导出失败：${String(e)}`);
     } finally {
       setLocalProgress(null);
       setRenderAbort(null);
@@ -1356,7 +1524,11 @@ export default function App() {
               shots={shots}
               baseAspect={detail.base_aspect}
               projectTitle={detail.title}
+              episodeTitles={Object.fromEntries(
+                detail.episodes.map((e) => [e.order, e.title]))}
               selectedShotIds={selectedShot ? [selectedShot.id] : []}
+              exportDir={exportDir}
+              onPickPath={pickExportPath}
               onLocalExport={doLocalExport}
               localBusy={localProgress !== null}
               localProgress={localProgress}
