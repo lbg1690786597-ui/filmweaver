@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 import type { Say } from "./useToast";
 import { useTimelineStore } from "../stores/timelineStore";
 
@@ -49,20 +49,13 @@ export function useUndo(say: Say) {
     } catch (e) { say(`重做失败：${String(e)}`); }
   }, [say]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const t = e.target as HTMLElement;
-      // 输入框里的 Ctrl+Z 保留原生文本撤销
-      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-      const k = e.key.toLowerCase();
-      if (k === "z" && !e.shiftKey) { e.preventDefault(); void doUndo(); }
-      // 两种重做键位都支持：Windows 习惯 Ctrl+Y，macOS/NLE 习惯 ⌘+Shift+Z
-      else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); void doRedo(); }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [doUndo, doRedo]);
+  // ⚠️ 这里**不再**自挂 window keydown。
+  //
+  // Ctrl+Z 的键位归 commands/index.ts 的 `edit.undo` 统一管（那里还负责
+  // 输入框豁免、与其他快捷键的优先级）。本 hook 曾另挂一个监听，结果是
+  // 一次 Ctrl+Z 触发两个 handler、连弹**两条**撤销记录——用户以为撤销了
+  // 一步，实际退了两步，且多退的那步没有任何提示，属于静默数据丢失。
+  // App 把 useCommands 的 undo/redo 指到下面的 doUndo/doRedo 即可。
 
   /** 撤销栈按项目隔离，切项目即清空 */
   const clearUndo = useCallback(() => {
