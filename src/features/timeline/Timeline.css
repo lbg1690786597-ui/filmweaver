@@ -128,6 +128,19 @@
   border-top: 8px solid var(--c-accent);
 }
 
+/* 播放头拖动手柄：只有顶端这一小块可交互，竖线本身仍是 pointer-events:none，
+   否则贯穿全高的线会把底下片段的点击全挡掉。命中区做得比三角大一圈（16×14），
+   2px 宽的线光靠视觉尺寸根本抓不住。 */
+.fw-tl-playhead-grip {
+  position: absolute;
+  top: 0;
+  left: -7px;
+  width: 16px;
+  height: 14px;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
 /* ---- 定位线 ---- */
 .fw-tl-cursor {
   position: absolute;
