@@ -7,7 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![export_copy_file])
+        .invoke_handler(tauri::generate_handler![export_copy_file, export_paths_exist])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -33,4 +33,22 @@ fn export_copy_file(src: String, dst: String) -> Result<u64, String> {
             .map_err(|e| format!("创建目录失败 {}: {e}", parent.display()))?;
     }
     std::fs::copy(&src, &dst).map_err(|e| format!("拷贝失败 {src} → {dst}: {e}"))
+}
+
+/// 哪些目标路径已存在（批量）。
+///
+/// 为什么需要它：导出位置改到对话框里当场选之后，「开始导出」不再弹系统
+/// 保存框，也就丢掉了保存框自带的「同名文件已存在，是否替换」确认。
+/// 而按集导出一次产出几十个文件，逐个弹保存框更不现实。
+/// 于是在**开跑之前**一次性把要写的路径问一遍，有冲突再让用户确认。
+///
+/// 同样绕开 fs 插件：目标路径来自用户在系统对话框里选的任意目录，
+/// capabilities 的 scope 事先枚举不了（理由与 export_copy_file 相同）。
+/// 只读元数据、不读内容，返回的也只是调用方自己传进来的那批路径。
+#[tauri::command]
+fn export_paths_exist(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect()
 }
