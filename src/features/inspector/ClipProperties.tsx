@@ -42,6 +42,8 @@ interface Props {
   /** 用于在切换镜头时重载本地编辑态 */
   shotId: string;
   durationSec: number;
+  /** 单镜时长上限（秒），来自 detail.shot_duration_max。缺省 15。 */
+  maxDurationSec?: number;
   order: number;
   disabled: boolean;
   /** 该镜已保存的调整参数（后端 transform_meta） */
@@ -172,23 +174,25 @@ export default function ClipProperties(p: Props) {
   }
 
   if (p.tab === "time") {
+    // 上限跟项目的视频模型走（seedance-2.5 单镜 30s），不是常数 15。
+    const maxDur = Math.round(p.maxDurationSec ?? 15);
     return (
       <div className="fw-cp">
         <Group title="时长（可编辑）">
           <div className="fw-cp-row">
             <span className="fw-cp-k">时长</span>
             <span className="fw-cp-dur">
-              <input type="number" min={1} max={15} step={1} value={durDraft}
+              <input type="number" min={1} max={maxDur} step={1} value={durDraft}
                 onChange={(e) => setDurDraft(Number(e.target.value))}
                 onBlur={() => {
-                  const v = Math.max(1, Math.min(15, Math.round(durDraft)));
+                  const v = Math.max(1, Math.min(maxDur, Math.round(durDraft)));
                   setDurDraft(v);
                   if (v !== Math.round(p.durationSec)) p.onPatchDuration(v);
                 }} />
               <span className="fw-cp-unit">s</span>
             </span>
           </div>
-          <div className="fw-cp-hint">后端钳制 1–15 秒，与时间轴拖拽同源</div>
+          <div className="fw-cp-hint">后端钳制 1–{maxDur} 秒，与时间轴拖拽同源</div>
         </Group>
 
         <Group title="位置">
