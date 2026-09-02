@@ -46,6 +46,14 @@ ok(/#\[tauri::command\]\s*\n\s*(?:async\s+)?fn export_copy_file/.test(rs),
 ok(/generate_handler!\[[^\]]*export_copy_file/.test(rs),
    "export_copy_file 已注册进 invoke_handler",
    "只定义不注册的话，前端 invoke 会报 command not found");
+// 覆盖确认用的存在性探测。导出位置改到对话框里当场选之后，「开始导出」不再弹
+// 系统保存框，同名覆盖的确认得靠它——漏注册的话导出会静默盖掉上一版成片。
+ok(/#\[tauri::command\]\s*\n\s*(?:async\s+)?fn export_paths_exist/.test(rs),
+   "export_paths_exist 已用 #[tauri::command] 标注");
+ok(/generate_handler!\[[^\]]*export_paths_exist/.test(rs),
+   "export_paths_exist 已注册进 invoke_handler");
+ok(read("src/App.tsx").includes('invoke<string[]>("export_paths_exist"'),
+   "App.tsx 在开跑前做了覆盖探测");
 
 // ---- ③ 保存对话框权限 ----
 console.log("\n③ capabilities 权限");
