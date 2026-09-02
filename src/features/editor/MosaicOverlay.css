@@ -1,0 +1,265 @@
+/* MosaicOverlay.css — 预览窗口内的马赛克绘制层 */
+
+.fw-mso {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  z-index: 11;
+  overflow: visible;
+}
+.fw-mso.active { pointer-events: all; }
+
+/* ---- 区域 ---- */
+.fw-mso-region {
+  position: absolute;
+  overflow: visible;
+}
+.fw-mso.active .fw-mso-region { cursor: move; }
+
+.fw-mso-preview {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 像素化：棋盘格近似（真实效果见导出） */
+.fw-mso-pixel {
+  background:
+    repeating-linear-gradient(0deg,
+      oklch(0% 0 0 / 0.13) 0 7px, oklch(100% 0 0 / 0.07) 7px 14px),
+    repeating-linear-gradient(90deg,
+      oklch(0% 0 0 / 0.13) 0 7px, oklch(100% 0 0 / 0.07) 7px 14px);
+}
+
+/* 高斯模糊：backdrop-filter 由组件按强度内联 */
+.fw-mso-gaussblur { }
+
+/* 纯黑遮挡 */
+.fw-mso-blackbox { background: oklch(0% 0 0 / 0.88); }
+
+/* 画笔蒙版用的 SVG：只提供 <mask> 定义，本身不占位也不可见。
+   ⚠️ 不能用 opacity:0 —— 那会让整棵子树（含 mask 定义）不参与渲染，
+   蒙版会失效。用零尺寸 + overflow:visible，defs 内容照样可被引用。 */
+.fw-mso-svg {
+  position: absolute;
+  left: 0; top: 0;
+  width: 0; height: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* 未选中时的轮廓 */
+.fw-mso-outline {
+  position: absolute;
+  inset: -1px;
+  border: 1.5px dashed oklch(100% 0 0 / 0.5);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.fw-mso-outline.ellipse { border-radius: 50%; }
+
+/* 选中态 */
+.fw-mso-region.selected::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1.5px solid oklch(80% 0.17 220);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.35);
+}
+
+/* ---- 控制点 ---- */
+.fw-mso-handle {
+  position: absolute;
+  background: oklch(100% 0 0);
+  border: 1.5px solid oklch(45% 0.13 220);
+  border-radius: 2px;
+  pointer-events: all;
+  box-shadow: 0 1px 3px oklch(0% 0 0 / 0.4);
+  transition: transform 80ms;
+  z-index: 2;
+}
+.fw-mso-handle:hover { transform: scale(1.3); }
+
+.fw-mso-h-nw { top: -5px;    left: -5px;   cursor: nwse-resize; }
+.fw-mso-h-ne { top: -5px;    right: -5px;  cursor: nesw-resize; }
+.fw-mso-h-sw { bottom: -5px; left: -5px;   cursor: nesw-resize; }
+.fw-mso-h-se { bottom: -5px; right: -5px;  cursor: nwse-resize; }
+.fw-mso-h-n  { top: -5px;    left: 50%; margin-left: -4.5px; cursor: ns-resize; }
+.fw-mso-h-s  { bottom: -5px; left: 50%; margin-left: -4.5px; cursor: ns-resize; }
+.fw-mso-h-w  { left: -5px;   top: 50%;  margin-top: -4.5px;  cursor: ew-resize; }
+.fw-mso-h-e  { right: -5px;  top: 50%;  margin-top: -4.5px;  cursor: ew-resize; }
+
+/* ---- 删除按钮 ---- */
+.fw-mso-del {
+  position: absolute;
+  top: -24px; right: -6px;
+  width: 19px; height: 19px;
+  border-radius: 50%;
+  background: oklch(58% 0.21 22);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: all;
+  z-index: 3;
+  box-shadow: 0 1px 4px oklch(0% 0 0 / 0.45);
+  transition: background 80ms, transform 80ms;
+}
+.fw-mso-del:hover { background: oklch(50% 0.24 22); transform: scale(1.15); }
+
+/* ---- 绘制中 ---- */
+.fw-mso-drawing {
+  position: absolute;
+  border: 2px dashed oklch(100% 0 0 / 0.9);
+  background: oklch(100% 0 0 / 0.08);
+  pointer-events: none;
+  border-radius: 2px;
+}
+.fw-mso-drawing.ellipse { border-radius: 50%; }
+
+.fw-mso-paint-live {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* ---- 工具栏 ---- */
+.fw-mso-toolbar {
+  position: absolute;
+  top: 8px; left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  background: oklch(18% 0.008 250 / 0.92);
+  border: 1px solid oklch(38% 0.01 250);
+  box-shadow: 0 3px 12px oklch(0% 0 0 / 0.4);
+  pointer-events: all;
+  backdrop-filter: blur(8px);
+  z-index: 5;
+  cursor: default;
+}
+
+.fw-mso-tools, .fw-mso-styles { display: flex; gap: 3px; }
+
+.fw-mso-sep {
+  width: 1px; height: 17px;
+  background: oklch(38% 0.01 250);
+}
+
+.fw-mso-tool {
+  width: 25px; height: 23px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: oklch(70% 0.01 250);
+  cursor: pointer;
+  transition: background 80ms, color 80ms;
+}
+.fw-mso-tool:hover { color: oklch(92% 0.006 250); background: oklch(26% 0.008 250); }
+.fw-mso-tool.on {
+  background: oklch(55% 0.15 220);
+  border-color: oklch(65% 0.18 220);
+  color: #fff;
+}
+
+.fw-mso-style {
+  padding: 3px 8px;
+  border: 1px solid oklch(38% 0.01 250);
+  border-radius: 4px;
+  background: transparent;
+  color: oklch(70% 0.01 250);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 80ms, color 80ms, background 80ms;
+}
+.fw-mso-style:hover { color: oklch(92% 0.006 250); border-color: oklch(55% 0.15 220); }
+.fw-mso-style.on {
+  background: oklch(55% 0.15 220 / 0.22);
+  border-color: oklch(65% 0.18 220);
+  color: oklch(88% 0.1 220);
+}
+
+.fw-mso-slider-wrap {
+  display: flex; align-items: center; gap: 5px;
+  color: oklch(70% 0.01 250);
+}
+.fw-mso-slider-wrap input { width: 74px; accent-color: oklch(65% 0.18 220); cursor: pointer; }
+
+/* ---- 设置气泡 ---- */
+.fw-mso-popover {
+  position: absolute;
+  width: 216px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 7px;
+  background: oklch(18% 0.008 250 / 0.95);
+  border: 1px solid oklch(40% 0.01 250);
+  box-shadow: 0 4px 16px oklch(0% 0 0 / 0.5);
+  pointer-events: all;
+  backdrop-filter: blur(8px);
+  z-index: 6;
+  cursor: default;
+}
+
+.fw-mso-pop-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.fw-mso-pop-row input[type="range"] {
+  flex: 1;
+  accent-color: oklch(65% 0.18 220);
+  cursor: pointer;
+}
+.fw-mso-pop-label {
+  font-size: 11px;
+  color: oklch(70% 0.01 250);
+}
+.fw-mso-pop-val {
+  font-size: 11px;
+  color: oklch(90% 0.006 250);
+  font-variant-numeric: tabular-nums;
+  width: 22px;
+  text-align: right;
+}
+.fw-mso-pop-close {
+  margin-left: auto;
+  width: 18px; height: 18px;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: oklch(65% 0.01 250);
+  cursor: pointer;
+}
+.fw-mso-pop-close:hover { background: oklch(28% 0.008 250); color: oklch(92% 0.006 250); }
+
+/* ---- 提示 ---- */
+/* ---- 提示 ----
+ * 挂在工具栏正下方（左上角），不放画面中央 ——
+ * 居中会正好盖住画面主体，用户还没开始画就先看不清素材了。
+ * 视觉上做轻：无实心底色、不抢焦点，且 6 秒后自动淡出。 */
+.fw-mso-hint {
+  position: absolute;
+  top: 42px;          /* 工具栏高度 ~34px + 间距 */
+  left: 8px;
+  font-size: 11.5px;
+  color: oklch(100% 0 0 / 0.62);
+  text-shadow: 0 1px 3px oklch(0% 0 0 / 0.9), 0 0 8px oklch(0% 0 0 / 0.7);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: fw-mso-hint-fade 6s ease-out forwards;
+}
+
+@keyframes fw-mso-hint-fade {
+  0%, 55% { opacity: 1; }
+  100%    { opacity: 0; }
+}
