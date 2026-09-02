@@ -24,6 +24,7 @@ const VIDEO_MODELS_FALLBACK = [
   { key: "veo-3-1-fast", label: "Veo 快速", icon: "⚡", hint: "1-3分钟出片 · 8s固定" },
   { key: "veo-3-1", label: "Veo 质量", icon: "🎥", hint: "质量档 · 8s固定" },
   { key: "minimax-h3-ref2v", label: "海螺 H3", icon: "🎭", hint: "9图参考/首帧/首尾帧 · 音色参考 · 约10分钟" },
+  { key: "seedance-2.5", label: "Seedance 2.5", icon: "🏆", hint: "单镜可出 30s 长镜 · 同场戏少切几刀 · 音画一体" },
   { key: "seedance-2.0", label: "Seedance 2.0", icon: "💎", hint: "音画一体 · 首尾帧/参考图全能" },
   { key: "seedance-2.0-mini", label: "Seedance mini", icon: "🔹", hint: "轻量快出 · 成本更低" },
 ];
