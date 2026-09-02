@@ -1,0 +1,194 @@
+/* MosaicPanel.css — 马赛克区域编辑器 */
+
+.fw-mp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--c-text);
+}
+
+.fw-mp-empty {
+  padding: var(--sp-3) var(--sp-2);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+/* 区域卡片 */
+.fw-mp-region {
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.fw-mp-region.open {
+  border-color: var(--c-accent-dim);
+}
+
+.fw-mp-region-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: transparent;
+  border: none;
+  color: var(--c-text);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  text-align: left;
+}
+.fw-mp-region-head:hover { background: oklch(from var(--c-surface) calc(l + 0.04) c h); }
+
+.fw-mp-region-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-mp-del {
+  margin-left: auto;
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  color: var(--c-muted);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+}
+.fw-mp-del:hover { color: var(--c-danger, oklch(65% 0.22 20)); background: oklch(65% 0.22 20 / 0.12); }
+
+/* 展开体 */
+.fw-mp-region-body {
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border-top: 1px solid var(--c-border);
+  background: oklch(from var(--c-surface) calc(l + 0.02) c h);
+}
+
+/* 样式行 */
+.fw-mp-style-row {
+  display: flex;
+  gap: var(--sp-1);
+}
+.fw-mp-style-btn {
+  flex: 1;
+  padding: 3px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color 80ms, color 80ms, background 80ms;
+  white-space: nowrap;
+}
+.fw-mp-style-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+.fw-mp-style-btn.active {
+  border-color: var(--c-accent);
+  color: var(--c-accent-hi);
+  background: oklch(from var(--c-accent) l c h / 0.12);
+}
+
+/* 字段行 */
+.fw-mp-field {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.fw-mp-field-label {
+  width: 44px;
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+}
+.fw-mp-field-unit {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+  width: 28px;
+  text-align: right;
+}
+
+.fw-mp-slider {
+  flex: 1;
+  accent-color: var(--c-accent);
+  cursor: pointer;
+}
+
+/* 数值输入网格 */
+.fw-mp-grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-2) var(--sp-3);
+}
+.fw-mp-num-input {
+  width: 52px;
+  padding: 2px var(--sp-2);
+  background: var(--c-bg, oklch(15% 0.008 250));
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.fw-mp-num-input:focus { outline: none; border-color: var(--c-accent); }
+
+/* 预设区 */
+.fw-mp-presets-label {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  margin-top: var(--sp-1);
+}
+.fw-mp-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.fw-mp-preset-btn {
+  padding: 3px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 80ms, color 80ms;
+}
+.fw-mp-preset-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+
+/* 操作按钮 */
+.fw-mp-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px dashed var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color 80ms, color 80ms;
+}
+.fw-mp-add-btn:hover { color: var(--c-accent); border-color: var(--c-accent-dim); }
+
+.fw-mp-clear-btn {
+  padding: 3px var(--sp-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  align-self: flex-end;
+}
+.fw-mp-clear-btn:hover { color: oklch(65% 0.22 20); border-color: oklch(65% 0.22 20 / 0.5); }
