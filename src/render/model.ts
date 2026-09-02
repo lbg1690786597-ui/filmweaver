@@ -28,8 +28,11 @@ export interface RenderMedia {
 
 /** 画面变换（与后端 Shot.transform_meta 同构，但这里是**规范化后**的值）。 */
 export interface RenderTransform {
-  /** 相对画布的缩放，1 = 铺满 */
+  /** 相对画布的缩放，1 = 铺满（等比时用它） */
   scale: number;
+  /** 非等比缩放（拖边中点单轴拉伸产生）；缺省跟随 scale */
+  scaleX?: number;
+  scaleY?: number;
   /** 度 */
   rotate: number;
   /** 相对画布中心的像素偏移 */
@@ -58,13 +61,42 @@ export type RenderEffectType =
   | "shake"         // crop+scale 画面抖动（按时间摆动裁切窗口）
   | "zoomPulse"     // scale(eval=frame)+crop 心跳缩放
   | "flash"         // curves   闪白
-  | "glow";         // gblur+blend=screen 发光
+  | "glow"          // gblur+blend=screen 发光
+  // ---- 区域马赛克（V2.3）----
+  // style: "pixel"=像素化(默认) "gaussblur"=高斯模糊 "blackbox"=黑色遮挡
+  | "mosaic";       // 见 MosaicParams
+
+/** 马赛克区域参数（存在 RenderEffect.mosaicParams 里） */
+export interface MosaicParams {
+  /** 区域包围盒，相对画面的比例 0..1 */
+  x: number; y: number; w: number; h: number;
+  /** pixel=像素化马赛克(默认) | gaussblur=高斯模糊 | blackbox=黑色实心遮挡 */
+  style: "pixel" | "gaussblur" | "blackbox";
+  /** 强度 0..100；pixel: 方块大小(越大越模糊), gaussblur: sigma, blackbox 忽略 */
+  intensity: number;
+  /**
+   * 形状。缺省 = rect（向后兼容：V2.3 早期只有矩形，老数据没这个字段）。
+   *  rect    矩形
+   *  ellipse 椭圆/圆
+   *  brush   画笔涂抹（自由笔迹，由 stroke 描述）
+   */
+  shape?: "rect" | "ellipse" | "brush";
+  /**
+   * brush 专用：笔迹点序列（相对画面的比例坐标 0..1）。
+   * 渲染时每个点画一个圆，连起来即成笔画。
+   */
+  stroke?: { x: number; y: number }[];
+  /** brush 专用：笔刷直径（相对画面宽度的比例，如 0.08 = 8%） */
+  brushSize?: number;
+}
 
 export interface RenderEffect {
   type: RenderEffectType;
   /** 数值类效果的强度（多数 0..100）；lut 用 assetUrl */
   value?: number;
   assetUrl?: string;
+  /** mosaic 类型专用：区域和样式参数 */
+  mosaicParams?: MosaicParams;
 }
 
 /** 混合模式：叠加层与下层的合成方式（ffmpeg blend=all_mode） */
@@ -179,4 +211,9 @@ export function clipNeedsFilter(c: RenderClip): boolean {
     || c.effects.length > 0
     || c.speed !== 1
     || !isDefaultAudio(c.audio);
+}
+
+/** mosaic 效果需要 split/overlay，不能走 passthrough 的 -vf 单链路径 */
+export function clipHasMosaic(c: RenderClip): boolean {
+  return c.effects.some((e) => e.type === "mosaic");
 }
