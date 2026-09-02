@@ -10,6 +10,7 @@ export const VIDEO_MODEL_LABELS: Record<string, string> = {
   "veo-3-1-fast": "Veo 快速",
   "veo-3-1": "Veo 质量",
   "minimax-h3-ref2v": "海螺 H3",
+  "seedance-2.5": "Seedance 2.5",
   "seedance-2.0": "Seedance 2.0",
   "seedance-2.0-mini": "Seedance mini",
 };
