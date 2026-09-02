@@ -131,6 +131,12 @@
 .fw-insp-chip.info { background: color-mix(in oklch, var(--c-info) 20%, transparent); color: var(--c-info); }
 .fw-insp-chip.char { background: color-mix(in oklch, var(--c-asset-char) 22%, transparent); color: var(--c-asset-char); }
 .fw-insp-chip.loc { background: color-mix(in oklch, var(--c-asset-loc) 22%, transparent); color: var(--c-asset-loc); }
+/* 尾帧接力：与角色/场景区分开——它不是"资产"，是上一镜的画面延续 */
+.fw-insp-chip.tail {
+  background: color-mix(in oklch, var(--c-accent) 20%, transparent);
+  color: var(--c-accent-hi);
+  cursor: help;
+}
 
 .fw-insp-chips {
   display: flex;
@@ -161,6 +167,11 @@
   border-radius: var(--r-sm);
   display: block;
   background: var(--c-bg);
+}
+/* 承接画面缩略图：比首帧小一号并留间距，视觉上从属于上面那排 chip */
+.fw-insp-thumb.tail {
+  margin-top: var(--sp-2);
+  border: 1px solid color-mix(in oklch, var(--c-accent) 45%, transparent);
 }
 
 .fw-insp-prompt {
