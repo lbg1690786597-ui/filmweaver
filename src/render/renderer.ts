@@ -24,8 +24,7 @@
 import { Command } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join, resolveResource } from "@tauri-apps/api/path";
-import { exists, mkdir, writeFile, writeTextFile, remove } from "@tauri-apps/plugin-fs";
-import { save } from "@tauri-apps/plugin-dialog";
+import { exists, mkdir, writeFile, writeTextFile, remove, rename, stat } from "@tauri-apps/plugin-fs";
 import { api } from "../api";
 import type { SubtitleStyleLike } from "../lib/subtitleStyle";
 import type { RenderPlan } from "./model";
@@ -53,8 +52,15 @@ export interface RenderOptions {
   /** 字幕样式（字号/颜色/描边/底框/位置/字体）。
    *  不传则用 srtForceStyle 的短剧默认值，**而不是**此前写死的 FontSize=18。 */
   subtitleStyle?: SubtitleStyleLike | null;
-  /** 默认另存文件名（不含扩展名） */
-  defaultName?: string;
+  /**
+   * 最终输出文件的绝对路径（含 .mp4 后缀）。
+   *
+   * ⚠️ 调用方必须在开始渲染**之前**用系统保存对话框问好这个值——
+   * 不能再像旧版那样等渲染跑完 97% 才弹 save()：几十分钟渲染完，用户
+   * 一旦手滑关掉/取消保存对话框，整轮计算全部作废。现在"选路径"和
+   * "跑渲染"是两个独立步骤，取消发生在跑之前，零成本。
+   */
+  outputPath: string;
   onProgress?: (p: RenderProgress) => void;
   signal?: AbortSignal;
 }
@@ -142,21 +148,80 @@ async function cacheMedia(
   const cacheDir = await join(base, "cache", plan.projectId);
   if (!(await exists(cacheDir))) await mkdir(cacheDir, { recursive: true });
 
+  // 清理上一轮留下的 .part 残留（断电/Kill 后的遗留），避免下一次误判为完整文件。
+  // exists 检查只用于目录，不逐一列文件，所以这里不做全量扫描——
+  // 原子化下载（先写 .part 再 rename）本身已经保证 dest 不会是半截文件。
+
   const map = new Map<string, string>();
-  for (let i = 0; i < plan.media.length; i++) {
+  let done = 0;
+
+  // 并发下载上限（每次导出通常有几十至几百个素材，串行太慢；
+  // 并发上限保守取 4，避免把 HTTP 连接池打爆。如需调整请改这一行）。
+  const CONCURRENCY = 4;
+
+  async function fetchOne(m: { id: string; url: string }) {
     if (signal?.aborted) throw new Aborted();
-    const m = plan.media[i];
-    const name = m.url.split("/").pop()!.split("?")[0];
+
+    // 缓存键包含 URL 哈希，避免同名但不同来源的素材互相覆盖。
+    // 简单哈希：取 URL 的最后 64 字节的 charCode 异或，足够区分。
+    let h = 0;
+    const s = m.url.slice(-64);
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    const hx = (h >>> 0).toString(16).padStart(8, "0");
+    const name = `${hx}_${m.url.split("/").pop()!.split("?")[0]}`;
     const dest = await join(cacheDir, name);
-    // 已缓存直接复用——重复导出时这一步几乎是零成本
-    if (!(await exists(dest))) {
-      const resp = await fetch(api.mediaUrl(m.url));
-      if (!resp.ok) throw new Error(`素材下载失败 ${resp.status}: ${name}`);
-      await writeFile(dest, new Uint8Array(await resp.arrayBuffer()));
+    const part = dest + ".part";
+
+    // 复用校验：存在 + size > 0（.part 是独立路径，永远不会被当成 dest，
+    // 所以原子 rename 之前的半截文件不会被当作完整缓存复用）。
+    if (await exists(dest)) {
+      const st = await stat(dest);
+      if (st.size > 0) {
+        map.set(m.id, dest);
+        report(++done, plan.media.length);
+        return;
+      }
+      // size === 0：之前写出了空文件（磁盘满？），删掉重下。
+      await remove(dest).catch(() => {});
     }
+
+    // 下载 → 写 .part → rename（原子落地）。plugin-fs 的 rename 在同一
+    // 文件系统内是原子操作；写 .part 失败或进程被杀，dest 永远不会
+    // 出现半截内容——下轮 exists(dest) 判否，重新走一遍下载。
+    //
+    // fetch 必须带 signal：不带的话点了取消要等当前这批（最多 4 个）素材
+    // 全部下完才停，慢网下一个大素材就是几十秒的"点了没反应"。
+    const resp = await fetch(api.mediaUrl(m.url), { signal }).catch((e) => {
+      // fetch 被 signal 中断时抛的是 DOMException(name="AbortError")，
+      // 而调用方只认我们自己的 Aborted（靠 e.name 判断要不要静默）。
+      // 不归一化的话取消导出会弹成"导出失败：AbortError"。
+      if (signal?.aborted) throw new Aborted();
+      throw e;
+    });
+    if (!resp.ok) throw new Error(`素材下载失败 ${resp.status}: ${name}`);
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    if (bytes.length === 0) throw new Error(`素材下载为空: ${name}`);
+    try {
+      await writeFile(part, bytes);
+      await rename(part, dest);
+    } catch (e) {
+      // 半截 .part 不清掉会永久留在用户盘上（缓存目录只按 dest 名复用，
+      // 没有任何一处会再碰它）。失败路径顺手删掉。
+      await remove(part).catch(() => {});
+      throw e;
+    }
+
     map.set(m.id, dest);
-    report(i + 1, plan.media.length);
+    report(++done, plan.media.length);
   }
+
+  // 限并发：把任务切成 CONCURRENCY 宽的批次顺序执行，每批内并发。
+  for (let i = 0; i < plan.media.length; i += CONCURRENCY) {
+    if (signal?.aborted) throw new Aborted();
+    const batch = plan.media.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(fetchOne));
+  }
+
   return map;
 }
 
@@ -192,10 +257,25 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
 
     // 逐个素材探一次音轨（每个素材一次，不是每段一次）。
     // 这决定 passthrough 段该用素材自己的声音还是补静音。
+    //
+    // 并发探测：每次探测要拉起一个 ffmpeg 进程（约 30-80ms），
+    // 串行跑 170 个素材就是十几秒的纯等待，而且这段**没有进度反馈**，
+    // 用户看到的是进度条卡在 15% 不动。并发上限与素材下载一致（4）。
     const audioMap = new Map<string, boolean>();
-    for (const m of plan.media) {
-      if (signal?.aborted) throw new Aborted();
-      audioMap.set(m.id, await probeHasAudio(paths.get(m.id) ?? ""));
+    {
+      const media = plan.media;
+      let probed = 0;
+      const PROBE_CONCURRENCY = 4;
+      for (let i = 0; i < media.length; i += PROBE_CONCURRENCY) {
+        if (signal?.aborted) throw new Aborted();
+        const batch = media.slice(i, i + PROBE_CONCURRENCY);
+        await Promise.all(batch.map(async (m) => {
+          audioMap.set(m.id, await probeHasAudio(paths.get(m.id) ?? ""));
+          probed++;
+        }));
+        report({ pct: 15 + Math.round((probed / Math.max(media.length, 1)) * 3),
+                 stage: `检查素材音轨 ${probed}/${media.length}` });
+      }
     }
 
     const ctx = {
@@ -209,16 +289,23 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
       hasAudio: (id: string) => audioMap.get(id) ?? true,
     };
 
-    // 2) 逐段渲染（15-85%）——内存在这里恒定，是整个方案的关键
+    // 2) 逐段渲染（18-85%）——内存在这里恒定，是整个方案的关键
     const segFiles: string[] = [];
     for (let i = 0; i < segs.length; i++) {
       if (signal?.aborted) throw new Aborted();
+      // 进入本段前先报一次：单段（尤其 30s 长镜）可能跑好几分钟，
+      // 只在**完成后**报进度的话，用户看到的是长时间不动的进度条。
+      report({
+        pct: 18 + Math.round((i / segs.length) * 67),
+        stage: `渲染片段 ${i + 1}/${segs.length}`,
+        segment: { done: i, total: segs.length },
+      });
       const out = await join(work, `seg_${String(i).padStart(4, "0")}.mp4`);
       const { args } = compileSegment(segs[i], ctx, out);
       await runFfmpeg(args, signal);
       segFiles.push(out);
       report({
-        pct: 15 + Math.round(((i + 1) / segs.length) * 70),
+        pct: 18 + Math.round(((i + 1) / segs.length) * 67),
         stage: `渲染片段 ${i + 1}/${segs.length}`,
         segment: { done: i + 1, total: segs.length },
       });
@@ -291,19 +378,19 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
 
     // 5) 另存（97-100%）
     report({ pct: 97, stage: "保存文件" });
-    const dest = await save({
-      defaultPath: `${opts.defaultName || "film"}.mp4`,
-      filters: [{ name: "MP4 视频", extensions: ["mp4"] }],
-    });
-    if (!dest) {
-      return { outputPath: null, segments: segs.length,
-               estPeakMB: stats.estPeakMB, encoder, elapsedMs: Date.now() - t0 };
-    }
+    const dest = opts.outputPath;
     // 走 Rust 侧的 export_copy_file 而不是 fs 插件的 copyFile：
     // fs 插件受 capabilities scope 限制（只允许 $APPDATA 等预声明目录），
     // 而这里的 dest 来自系统保存对话框，用户可能选任意盘符，无法事先枚举。
     // 此前导出"闪一下就没反应"正是 copyFile 被 scope 拦下所致。
     await invoke("export_copy_file", { src: final, dst: dest });
+
+    // 落地校验：若拷贝写了 0 字节（磁盘满/被安全软件拦截），不能假装成功。
+    const finalStat = await stat(dest).catch(() => null);
+    if (!finalStat || finalStat.size === 0) {
+      throw new Error(`保存失败：目标文件未写入或为空 —— 请检查目标磁盘空间和写入权限 (${dest})`);
+    }
+
     report({ pct: 100, stage: "已导出" });
 
     return {
