@@ -1,0 +1,153 @@
+/* CropZoomPanel.css — 取景框裁切/平移/缩放编辑器 */
+
+.fw-czp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--c-text);
+}
+
+/* 裁切预览示意图 */
+.fw-czp-preview {
+  margin-bottom: var(--sp-1);
+}
+
+.fw-czp-preview-outer {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: oklch(10% 0.01 250);
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border);
+  overflow: hidden;
+}
+
+/* 四边遮挡层（阴影区域 = 被裁掉的部分） */
+.fw-czp-preview-shadow {
+  position: absolute;
+  background: oklch(0% 0 0 / 0.55);
+  z-index: 1;
+}
+.fw-czp-preview-shadow.top    { top: 0; left: 0; right: 0; }
+.fw-czp-preview-shadow.bottom { bottom: 0; left: 0; right: 0; }
+.fw-czp-preview-shadow.left   { top: 0; bottom: 0; left: 0; }
+.fw-czp-preview-shadow.right  { top: 0; bottom: 0; right: 0; }
+
+/* 保留区域（亮框） */
+.fw-czp-preview-center {
+  position: absolute;
+  border: 1.5px solid var(--c-accent);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: left 80ms, top 80ms, width 80ms, height 80ms;
+}
+
+.fw-czp-preview-label {
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  background: oklch(0% 0 0 / 0.55);
+  color: var(--c-text-hi);
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+/* 分区标题 */
+.fw-czp-section-title {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  margin-top: var(--sp-1);
+}
+
+/* 行 */
+.fw-czp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.fw-czp-label {
+  width: 36px;
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+}
+
+.fw-czp-slider {
+  flex: 1;
+  accent-color: var(--c-accent);
+  cursor: pointer;
+}
+
+.fw-czp-val {
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  font-variant-numeric: tabular-nums;
+  width: 38px;
+  text-align: right;
+}
+
+/* 重置链接 */
+.fw-czp-reset-link {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.fw-czp-reset-link:hover { color: var(--c-accent); }
+
+/* 预设按钮 */
+.fw-czp-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.fw-czp-preset-btn {
+  padding: 3px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 80ms, color 80ms, background 80ms;
+}
+.fw-czp-preset-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+.fw-czp-preset-btn.active {
+  border-color: var(--c-accent);
+  color: var(--c-accent-hi);
+  background: oklch(from var(--c-accent) l c h / 0.12);
+}
+
+/* 操作按钮 */
+.fw-czp-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-top: var(--sp-1);
+}
+.fw-czp-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color 80ms, color 80ms;
+}
+.fw-czp-action-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
