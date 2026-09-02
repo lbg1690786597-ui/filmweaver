@@ -316,3 +316,38 @@
 
 @keyframes fw-spin { to { transform: rotate(360deg); } }
 .fw-spin { animation: fw-spin 0.8s linear infinite; }
+
+/* 剩余时间：跟在阶段文字后面，弱化一档，别抢百分比的视觉位 */
+.fw-ex-eta {
+  margin-left: var(--sp-2);
+  color: var(--c-text-lo);
+}
+
+/* ---- 完成态（对齐剪映的导出结果页）---- */
+.fw-ex-done {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--c-ok, oklch(70% 0.14 150));
+  border-radius: var(--r-md, 6px);
+  background: color-mix(in oklch, var(--c-ok, oklch(70% 0.14 150)) 12%, transparent);
+}
+.fw-ex-done > svg { color: var(--c-ok, oklch(70% 0.14 150)); flex-shrink: 0; margin-top: 1px; }
+.fw-ex-done-title { font-size: var(--fs-sm); font-weight: 600; color: var(--c-text); }
+.fw-ex-done-path {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--c-text-lo);
+  /* 路径可能很长；截断而不是撑破弹窗 */
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.fw-ex-foot-info.done {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--c-ok, oklch(70% 0.14 150));
+}
