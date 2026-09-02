@@ -1,0 +1,135 @@
+/* CropZoomOverlay.css — 预览窗口内的画面变换交互层
+ *
+ * 心智模型：画布固定，画面（视频）可拖动/缩放/旋转并溢出画布。
+ */
+
+.fw-czo {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;   /* 只有画面框和控制点接收事件 */
+  z-index: 10;
+  /* 溢出画布的画面框要能画到外面去，但整体不撑破播放器 */
+  overflow: visible;
+}
+
+/* ---- 画布边界（导出范围）---- */
+.fw-czo-canvas-edge {
+  position: absolute;
+  inset: 0;
+  border: 1px solid oklch(100% 0 0 / 0.35);
+  pointer-events: none;
+}
+
+/* 画布之外压暗：用超大 box-shadow 把画布外圈铺满暗色，
+   画布内部保持原样（用户要看清最终成片）。 */
+.fw-czo-outside {
+  position: absolute;
+  inset: 0;
+  box-shadow: 0 0 0 4000px oklch(0% 0 0 / 0.45);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ---- 三分线 ---- */
+.fw-czo-grid-h,
+.fw-czo-grid-v {
+  position: absolute;
+  background: oklch(100% 0 0 / 0.3);
+  pointer-events: none;
+  z-index: 3;
+}
+.fw-czo-grid-h { left: 0; right: 0; height: 1px; }
+.fw-czo-grid-v { top: 0; bottom: 0; width: 1px; }
+
+/* ---- 视频画面框（用户操作的对象）---- */
+.fw-czo-frame {
+  position: absolute;
+  border: 1.5px solid oklch(75% 0.16 220 / 0.95);
+  z-index: 4;
+  pointer-events: none;   /* 子元素单独开 */
+  transform-origin: center center;
+}
+.fw-czo-frame.dragging {
+  border-color: oklch(80% 0.19 220);
+}
+
+/* 画面内部拖动区：整块可拖，不留死角 */
+.fw-czo-move {
+  position: absolute;
+  inset: 0;
+  pointer-events: all;
+  cursor: move;
+}
+
+/* ---- 旋转手柄 ---- */
+.fw-czo-rotate-stem {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.5px;
+  height: 18px;
+  background: oklch(75% 0.16 220 / 0.9);
+  pointer-events: none;
+}
+.fw-czo-rotate {
+  position: absolute !important;
+  top: -32px !important;
+  left: 50% !important;
+  margin-left: -6px;
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 50% !important;
+  cursor: grab;
+}
+.fw-czo-rotate:active { cursor: grabbing; }
+.fw-czo-rotate:hover { transform: scale(1.25); }
+
+/* ---- 8 个控制点 ---- */
+.fw-czo-handle {
+  position: absolute;
+  background: oklch(100% 0 0);
+  border: 1.5px solid oklch(45% 0.13 220);
+  border-radius: 2px;
+  pointer-events: all;
+  box-shadow: 0 1px 3px oklch(0% 0 0 / 0.4);
+  transition: transform 80ms;
+  z-index: 5;
+}
+.fw-czo-handle:hover { transform: scale(1.3); }
+
+/* 角点：等比缩放 */
+.fw-czo-h-nw { top: -6px;    left: -6px;   cursor: nwse-resize; }
+.fw-czo-h-ne { top: -6px;    right: -6px;  cursor: nesw-resize; }
+.fw-czo-h-sw { bottom: -6px; left: -6px;   cursor: nesw-resize; }
+.fw-czo-h-se { bottom: -6px; right: -6px;  cursor: nwse-resize; }
+
+/* 边中点：单轴缩放 */
+.fw-czo-h-n { top: -6px;    left: 50%; margin-left: -5px; cursor: ns-resize; }
+.fw-czo-h-s { bottom: -6px; left: 50%; margin-left: -5px; cursor: ns-resize; }
+.fw-czo-h-w { left: -6px;   top: 50%;  margin-top: -5px;  cursor: ew-resize; }
+.fw-czo-h-e { right: -6px;  top: 50%;  margin-top: -5px;  cursor: ew-resize; }
+
+/* ---- 状态角标 ---- */
+.fw-czo-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px;
+  border-radius: 5px;
+  background: oklch(0% 0 0 / 0.62);
+  color: oklch(97% 0 0);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  z-index: 6;
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+.fw-czo-badge-hint {
+  color: oklch(80% 0.14 85);
+  font-size: 10px;
+}
