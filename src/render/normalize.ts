@@ -41,12 +41,18 @@ function toTransform(tm: TransformMeta | null | undefined): RenderTransform {
   if (!tm) return { ...DEFAULT_TRANSFORM };
   return {
     scale: (tm.scale ?? 100) / 100,
+    scaleX: (tm.scaleX ?? tm.scale ?? 100) / 100,
+    scaleY: (tm.scaleY ?? tm.scale ?? 100) / 100,
     rotate: tm.rotate ?? 0,
     x: tm.x ?? 0,
     y: tm.y ?? 0,
     opacity: (tm.opacity ?? 100) / 100,
     mirrorH: !!tm.mirrorH,
     mirrorV: !!tm.mirrorV,
+    // V2.3：取景框裁切，直接透传比例值（0..1）
+    crop: tm.crop
+      ? { left: tm.crop.left, top: tm.crop.top, right: tm.crop.right, bottom: tm.crop.bottom }
+      : undefined,
   };
 }
 
@@ -87,6 +93,12 @@ function toEffects(tm: TransformMeta | null | undefined): RenderEffect[] {
   num("flash", "flash");
   num("glow", "glow");
   if (tm.lut) out.push({ type: "lut", assetUrl: tm.lut });
+  // V2.3 区域马赛克（每个区域一条 effect entry）
+  if (tm.mosaics?.length) {
+    for (const m of tm.mosaics) {
+      out.push({ type: "mosaic", mosaicParams: { ...m } });
+    }
+  }
   return out;
 }
 
