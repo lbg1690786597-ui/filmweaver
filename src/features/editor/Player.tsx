@@ -9,6 +9,7 @@
 import { RefObject, useEffect, useRef, useState } from "react";
 import {
   SkipBack, Play, Pause, Rewind, Crosshair, Maximize2, Repeat,
+  Scissors, Blend,
 } from "lucide-react";
 import { fmtSec } from "../../types/timeline";
 import "./Player.css";
@@ -18,6 +19,10 @@ import { transformToFilter, transformToTransform, vignetteOverlay,
 import { useGradePreview } from "../../hooks/useGradePreview";
 import { styleToCss } from "../../lib/subtitleStyle";
 import type { SubtitleStyleLike } from "../../lib/subtitleStyle";
+import CropZoomOverlay from "./CropZoomOverlay";
+import MosaicOverlay from "./MosaicOverlay";
+import "./CropZoomOverlay.css";
+import "./MosaicOverlay.css";
 
 export interface PlayerProps {
   videoRef: RefObject<HTMLVideoElement>;
@@ -50,6 +55,12 @@ export interface PlayerProps {
   subtitles?: SubtitleClipInfo[];
   /** 项目级默认字幕样式。单条 clip 的 style 优先，为空时继承这里。 */
   subtitleStyle?: SubtitleStyleLike | null;
+
+  // ---- V2.3 画布交互覆盖层 ----
+  /** 当前激活的覆盖层模式：null=不激活, "cropzoom"=取景框, "mosaic"=马赛克 */
+  overlayMode?: "cropzoom" | "mosaic" | null;
+  onSetOverlayMode?: (mode: "cropzoom" | "mosaic" | null) => void;
+  onPatchTransform?: (tm: TransformMeta | Record<string, never>) => void;
 }
 
 /** 画面在播放器里的实际矩形（letterbox 之外的那块）。
@@ -58,32 +69,19 @@ export interface PlayerProps {
 interface VideoRect { left: number; top: number; width: number; height: number }
 
 export default function Player(p: PlayerProps) {
-  // 调色实时预览。优先 WebGL —— CSS filter **表达不了 LUT**（能力缺失，
-  // 不是精度问题），且色温/高光只能靠 sepia 之类硬凑，跟 ffmpeg 差得远。
-  // WebGL 这条路的运算逐条对齐 media.py，所见即所得。
-  // 拿不到 WebGL2（旧显卡/远程桌面）时自动退回 CSS 近似，不会黑屏。
   const { canvasRef, gpuActive } = useGradePreview(p.videoRef, p.transform);
 
-  // CSS 降级路径：GPU 生效时就不要再叠一层 filter，否则调色被应用两次
   const filter = gpuActive ? "" : transformToFilter(p.transform);
   const transform = transformToTransform(p.transform);
   const vignette = gpuActive ? "" : vignetteOverlay(p.transform);
   const unpreviewable = unpreviewableEffects(p.transform, gpuActive);
 
-  // 变速预览：渲染端早有完整实现（ffmpeg setpts + atempo），预览端却一直没接，
-  // 用户把镜头调成 2× 后预览仍按原速播，只能靠导出验证。
-  // playbackRate 是 <video> 原生能力，与渲染端同一个 speed 值，行为天然一致。
-  // 注意要在 src 变化后重设 —— 换片源会把 playbackRate 复位成 1。
   const speed = Math.max(0.25, Math.min(4, p.transform?.speed ?? 1));
   useEffect(() => {
     const v = p.videoRef.current;
     if (v) v.playbackRate = speed;
   }, [speed, p.previewUrl, p.videoRef]);
 
-  // ---- 字幕叠加层 ----
-  // 字号是按 1920 基准存的，预览要按**画面实际高度**缩放；而画面盒
-  // ≠ 播放器盒（竖屏片子在宽播放器里两侧是黑边）。所以必须实测 <video>
-  // 元素的矩形，用播放器盒的高度去缩会让字幕明显偏大。
   const boxRef = useRef<HTMLDivElement>(null);
   const [vrect, setVrect] = useState<VideoRect | null>(null);
   useEffect(() => {
@@ -94,7 +92,6 @@ export default function Player(p: PlayerProps) {
       width: v.offsetWidth, height: v.offsetHeight,
     });
     measure();
-    // 元素盒随片源宽高比、面板拖拽、最大化而变，三者都只能靠观察拿到
     const ro = new ResizeObserver(measure);
     ro.observe(v);
     if (boxRef.current) ro.observe(boxRef.current);
@@ -102,12 +99,6 @@ export default function Player(p: PlayerProps) {
     return () => { ro.disconnect(); v.removeEventListener("loadedmetadata", measure); };
   }, [p.previewUrl, p.videoRef]);
 
-  // 当前 cue：锚点是 (start_shot_order, start_offset_sec)，播放头同构，
-  // 直接比即可，不需要把整条时间轴换算成绝对秒。
-  //
-  // ⚠️ 只认锚在**当前预览镜头**上的 cue。一条 cue 的时长若溢出到下一镜，
-  // 预览里不会跟着延续——烧录走的是后端换算好的 SRT，那边是连续的。
-  // 解说剧的 cue 由旁白拆条而来（单条 ≤5s），实际几乎不会溢出。
   const order = p.previewShot?.order;
   const t = p.playhead && p.playhead.order === order ? p.playhead.offsetSec : null;
   const cue = (t === null || order === undefined) ? null
@@ -115,12 +106,11 @@ export default function Player(p: PlayerProps) {
         (c) => c.start_shot_order === order
             && t >= c.start_offset_sec
             && t < c.start_offset_sec + (c.duration || 0));
-  // 单条覆写优先于项目级默认（剪映/PR 都是这个两层模型）。
-  // 空对象 {} 算"没有覆写"——「应用到全部」正是把覆写清成 {} 来让整轨
-  // 回到跟随项目样式，这里若把它当成一套真样式，预览就会掉回硬编码默认值。
   const ovr = cue?.style && Object.keys(cue.style).length
     ? (cue.style as SubtitleStyleLike) : null;
   const cueStyle = ovr ?? p.subtitleStyle ?? null;
+
+  const overlayMode = p.overlayMode ?? null;
 
   return (
     <>
@@ -149,9 +139,7 @@ export default function Player(p: PlayerProps) {
             {vignette && (
               <div className="fw-pl-vignette" style={{ background: vignette }} />
             )}
-            {/* 字幕层。定位到画面矩形内（不是播放器矩形），字号按画面高度
-                从 1920 基准缩下来，与 srtForceStyle 同一套语义。
-                pointer-events:none —— 不能挡住 <video> 的原生播控条。 */}
+            {/* 字幕层 */}
             {cue && vrect && (
               <div className="fw-pl-subtitle"
                 style={{
@@ -161,14 +149,36 @@ export default function Player(p: PlayerProps) {
                 <div style={styleToCss(cueStyle, vrect.height)}>{cue.text}</div>
               </div>
             )}
-            {/* 预览体现不出来的效果要明说，否则用户会以为没生效 */}
+
+            {/* V2.3 取景框覆盖层（选中镜头且激活 cropzoom 模式时显示） */}
+            {overlayMode === "cropzoom" && vrect && p.onPatchTransform && (
+              <div style={{ position: "absolute", left: vrect.left, top: vrect.top }}>
+                <CropZoomOverlay
+                  vrect={vrect}
+                  transform={p.transform ?? null}
+                  onPatchTransform={p.onPatchTransform}
+                />
+              </div>
+            )}
+
+            {/* V2.3 马赛克覆盖层（激活 mosaic 模式或已有马赛克区域时显示） */}
+            {vrect && p.onPatchTransform && (
+              <div style={{ position: "absolute", left: vrect.left, top: vrect.top }}>
+                <MosaicOverlay
+                  vrect={vrect}
+                  transform={p.transform ?? null}
+                  onPatchTransform={p.onPatchTransform}
+                  active={overlayMode === "mosaic"}
+                />
+              </div>
+            )}
+
+            {/* 预览体现不出来的效果要明说 */}
             {unpreviewable.length > 0 && (
               <div className="fw-pl-approx" title="这些效果需要导出后才能看到实际结果">
                 {unpreviewable.join(" / ")} 仅渲染时生效
               </div>
             )}
-            {/* 只有 CSS 降级路径才需要"近似"免责说明。
-                GPU 路径的运算逐条对齐 ffmpeg，标它反而会让用户不敢信预览。 */}
             {!gpuActive && (filter || vignette) && (
               <div className="fw-pl-approx alt"
                 title="当前设备不支持 WebGL2，预览用 CSS 近似，最终以导出成片为准">
@@ -215,6 +225,22 @@ export default function Player(p: PlayerProps) {
 
         <div className="fw-pl-spacer" />
 
+        {/* V2.3 画布工具按钮 */}
+        {p.onPatchTransform && p.previewShot && <>
+          <button
+            className={`fw-pl-btn${overlayMode === "cropzoom" ? " active" : ""}`}
+            title="取景框：在画面上直接拖拽裁切/平移/缩放"
+            onClick={() => p.onSetOverlayMode?.(overlayMode === "cropzoom" ? null : "cropzoom")}>
+            <Scissors size={14} />
+          </button>
+          <button
+            className={`fw-pl-btn${overlayMode === "mosaic" ? " active" : ""}`}
+            title="马赛克：在画面上拖拽绘制遮罩区域"
+            onClick={() => p.onSetOverlayMode?.(overlayMode === "mosaic" ? null : "mosaic")}>
+            <Blend size={14} />
+          </button>
+        </>}
+
         {p.previewLabel && (
           <span className="fw-pl-label" title={p.previewLabel}>{p.previewLabel}</span>
         )}
@@ -229,8 +255,6 @@ export default function Player(p: PlayerProps) {
 
         {p.baseAspect && <span className="fw-pl-meta">{p.baseAspect}</span>}
 
-        {/* 变速状态要能一眼看到：预览已按此倍速播放，与导出一致。
-            不显示的话，用户看到画面比记忆中快/慢会怀疑是卡顿。 */}
         {speed !== 1 && (
           <span className="fw-pl-meta speed" title="该镜头已变速，预览与导出同步">
             {speed}× 变速
