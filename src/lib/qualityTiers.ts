@@ -37,6 +37,7 @@ export const tierModel = (t: QualityTier): string => TIERS[t].modelId;
 /** model id → 友好名（版本列表/检查器展示用） */
 export function modelLabel(modelId: string | null | undefined): string {
   const m = (modelId ?? "").toLowerCase();
+  if (m.includes("seedance-2.5")) return "Seedance 2.5";
   if (m.includes("seedance-2.0-mini")) return "Seedance mini";
   if (m.includes("seedance-2.0")) return "Seedance 2.0";
   if (m.includes("minimax-h3")) return "海螺 H3";
@@ -48,6 +49,7 @@ export function modelLabel(modelId: string | null | undefined): string {
 /** 该 model 属于哪一档（版本列表打 ⚡/◆ 标） */
 export function tierOf(modelId: string | null | undefined): QualityTier {
   const m = (modelId ?? "").toLowerCase();
+  if (m.includes("seedance-2.5")) return "final";
   if (m.includes("seedance-2.0") && !m.includes("mini")) return "final";
   if (m.includes("veo-3-1") && !m.includes("fast")) return "final";
   return "preview";
