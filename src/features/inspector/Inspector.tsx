@@ -11,22 +11,26 @@
 import { useState, useEffect } from "react";
 import {
   Layers, Clock, Volume2, Sparkles, Info, ImageIcon, RefreshCw, Gem, History,
-  Scissors, Undo2,
+  Scissors, Undo2, Blend, ScanEye,
 } from "lucide-react";
 import type { ShotInfo, TransformMeta, AssetInfo } from "../../api";
 import { api } from "../../api";
 import { shotDuration } from "../../adapters/shotToClip";
 import ClipProperties from "./ClipProperties";
+import MosaicPanel from "./MosaicPanel";
+import CropZoomPanel from "./CropZoomPanel";
 import VersionList from "./VersionList";
 import "./Inspector.css";
 
-type Tab = "basic" | "time" | "audio" | "ai";
+type Tab = "basic" | "time" | "audio" | "ai" | "mosaic" | "cropzoom";
 
 const TABS: { id: Tab; label: string; Icon: typeof Layers }[] = [
-  { id: "basic", label: "基础", Icon: Layers },
-  { id: "time", label: "时间", Icon: Clock },
-  { id: "audio", label: "音频", Icon: Volume2 },
-  { id: "ai", label: "AI", Icon: Sparkles },
+  { id: "basic",   label: "基础", Icon: Layers },
+  { id: "time",    label: "时间", Icon: Clock },
+  { id: "audio",   label: "音频", Icon: Volume2 },
+  { id: "ai",      label: "AI",   Icon: Sparkles },
+  { id: "mosaic",  label: "马赛克", Icon: Blend },
+  { id: "cropzoom",label: "取景", Icon: ScanEye },
 ];
 
 const PROMPT_STATE_LABEL: Record<string, { text: string; cls: string }> = {
@@ -43,6 +47,8 @@ export interface InspectorProps {
    *  （手打的名字对不上资产库就注入不到参考图，等于白填） */
   assets: AssetInfo[];
   baseAspect?: string;
+  /** 单镜时长上限（秒），来自 detail.shot_duration_max（seedance-2.5 = 30）。 */
+  maxDurationSec?: number;
   shotCount: number;
   doneCount: number;
   totalSec: number;
@@ -309,17 +315,34 @@ export default function Inspector(p: InspectorProps) {
             </Section>
 
             <Section title="参考资产" Icon={ImageIcon}>
-              {chars.length === 0 && locs.length === 0 ? (
+              {chars.length === 0 && locs.length === 0 && !s.prev_tail_ref ? (
                 <div className="fw-insp-empty">本镜无参考资产注入</div>
               ) : (
-                <div className="fw-insp-chips">
-                  {chars.map((c) => (
-                    <span key={c} className="fw-insp-chip char">👤 {c}</span>
-                  ))}
-                  {locs.map((l) => (
-                    <span key={l} className="fw-insp-chip loc">📍 {l}</span>
-                  ))}
-                </div>
+                <>
+                  <div className="fw-insp-chips">
+                    {chars.map((c) => (
+                      <span key={c} className="fw-insp-chip char">👤 {c}</span>
+                    ))}
+                    {locs.map((l) => (
+                      <span key={l} className="fw-insp-chip loc">📍 {l}</span>
+                    ))}
+                    {/* 尾帧接力：本镜与上一镜时间紧接且同场景时，上一镜的结尾画面
+                        也会作为参考图注入，用来消除硬切跳变。这里必须显示出来 ——
+                        否则用户看到的注入集合与实际下发的对不上。 */}
+                    {s.prev_tail_ref && (
+                      <span className="fw-insp-chip tail"
+                        title="上一镜的结尾画面作为参考图注入，让同场景连续镜头衔接自然">
+                        🔗 承接 #{s.prev_tail_ref.from_order}
+                      </span>
+                    )}
+                  </div>
+                  {s.prev_tail_ref && (
+                    <img className="fw-insp-thumb tail"
+                      src={api.mediaUrl(s.prev_tail_ref.url)}
+                      alt={s.prev_tail_ref.label} loading="lazy"
+                      title={s.prev_tail_ref.label} />
+                  )}
+                </>
               )}
             </Section>
 
@@ -394,6 +417,7 @@ export default function Inspector(p: InspectorProps) {
 
         {tab === "time" && (
           <ClipProperties tab="time" shotId={s.id} durationSec={shotDuration(s)}
+            maxDurationSec={p.maxDurationSec}
             order={s.order} disabled={s.disabled}
             transform={s.transform_meta ?? null}
             isOverlay={(s.track_index ?? 0) > 0}
@@ -418,6 +442,22 @@ export default function Inspector(p: InspectorProps) {
             transform={s.transform_meta ?? null}
             isOverlay={(s.track_index ?? 0) > 0}
             onPatchDuration={(sec) => p.onPatchDuration(s.id, sec)}
+            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            onToast={p.onToast} />
+        )}
+
+        {tab === "mosaic" && (
+          <MosaicPanel
+            shotId={s.id}
+            transform={s.transform_meta ?? null}
+            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            onToast={p.onToast} />
+        )}
+
+        {tab === "cropzoom" && (
+          <CropZoomPanel
+            shotId={s.id}
+            transform={s.transform_meta ?? null}
             onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
             onToast={p.onToast} />
         )}
