@@ -69,8 +69,21 @@ export function transformToFilter(tm: TransformMeta | null | undefined): string 
 export function transformToTransform(tm: TransformMeta | null | undefined): string {
   if (!tm) return "";
   const t: string[] = [];
-  if (tm.x || tm.y) t.push(`translate(${tm.x || 0}%, ${tm.y || 0}%)`);
-  if (tm.scale && tm.scale !== 1) t.push(`scale(${tm.scale})`);
+  // ⚠️ 单位必须与 transform_meta 的存储约定一致，否则预览与导出完全对不上：
+  //   scale 存的是**百分比**（100 = 原尺寸），normalize.ts 里也是 /100 后再用；
+  //         此前这里直接写 scale(tm.scale)，scale=100 就成了放大 100 倍 ——
+  //         用户一点缩放手柄画面就炸开，且边框与实际画面完全错位。
+  //   x / y 存的是**像素**（相对画布中心的偏移），不是百分比。
+  if (tm.x || tm.y) t.push(`translate(${tm.x || 0}px, ${tm.y || 0}px)`);
+  const s = tm.scale ?? 100;
+  // 非等比缩放（拖边中点单轴拉伸时产生）；缺省跟随 scale
+  const sx = tm.scaleX ?? s;
+  const sy = tm.scaleY ?? s;
+  if (sx !== 100 || sy !== 100) {
+    t.push(sx === sy
+      ? `scale(${(sx / 100).toFixed(4)})`
+      : `scale(${(sx / 100).toFixed(4)}, ${(sy / 100).toFixed(4)})`);
+  }
   if (tm.rotate) t.push(`rotate(${tm.rotate}deg)`);
   // 镜像用 scale 负值；与上面的 scale 相乘不冲突（CSS 按顺序应用）
   if (tm.mirrorH) t.push("scaleX(-1)");
