@@ -39,7 +39,10 @@ import "./Timeline.css";
 
 const GUTTER_W = 68; // 轨道头宽度（px），与 TrackHeader sticky left 对齐
 const MIN_CLIP_SEC = 1;
-const MAX_CLIP_SEC = 15;
+//: 拿不到项目上限时的兜底（= seedance-2.0 / veo 的 15s）。
+//: 真实上限由服务端 `detail.shot_duration_max` 下发——seedance-2.5 是 30s，
+//: 在这里写死 15 会让用户随手拖一下就把 28s 的长镜砍掉一半。
+const MAX_CLIP_SEC_FALLBACK = 15;
 
 interface Props {
   shots: ShotInfo[];
@@ -48,6 +51,10 @@ interface Props {
   stages?: StageInfo[];
   locations?: LocationInfo[];
   assets?: AssetInfo[];
+
+  /** 单镜时长上限（秒），来自 detail.shot_duration_max（seedance-2.5 = 30）。
+   *  缺省按 15，即老模型口径。 */
+  maxClipSec?: number;
 
   selectedShotId: string | null;
   onSelectShot: (s: ShotInfo) => void;
@@ -194,14 +201,14 @@ export default function Timeline(p: Props) {
     e.preventDefault(); e.stopPropagation();
     const shotId = clip.shotId;
     const startSec = clip.durationSec;
-    const order = clip.shotOrder ?? 0;
     const startX = e.clientX;
     let latest = Math.round(startSec);
     setPreviewDur({ id: clip.id, sec: latest });
     document.body.style.cursor = "ew-resize";
     const onMove = (ev: MouseEvent) => {
       const delta = (ev.clientX - startX) / pxPerSec;
-      const next = Math.max(MIN_CLIP_SEC, Math.min(MAX_CLIP_SEC, Math.round(startSec + delta)));
+      const maxSec = p.maxClipSec ?? MAX_CLIP_SEC_FALLBACK;
+      const next = Math.max(MIN_CLIP_SEC, Math.min(maxSec, Math.round(startSec + delta)));
       if (next === latest) return;
       latest = next;
       setPreviewDur({ id: clip.id, sec: next });
@@ -213,9 +220,11 @@ export default function Timeline(p: Props) {
       setPreviewDur(null);
       const old = Math.round(startSec);
       if (latest === old) return;
+      // ⚠️ 这里**不要**再 onPushUndo：onPatch 就是 App 的 patchTimeline，
+      // 它内部已按 durationSec/toOrder/disabled 三类各自入栈，且带正确的 redo。
+      // 两边都推的话，一次拖动进两条栈，Ctrl+Z 要按两下才回到原状，
+      // 而且这边推的那条没有 redo（会弹"暂不支持重做"）。
       await p.onPatch(shotId, { durationSec: latest });
-      p.onPushUndo(`镜头 #${order} 时长 ${old}→${latest}s`,
-        async () => { await p.onPatch(shotId, { durationSec: old }); });
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -291,9 +300,8 @@ export default function Timeline(p: Props) {
       window.removeEventListener("mouseup", onUp);
       setMove(null); setPreviewOrder(null);
       if (latest === startOrder) return;
+      // 同 trim：入栈由 onPatch(=patchTimeline) 统一负责，这里再推一次会重复。
       await p.onPatch(shotId, { toOrder: latest });
-      p.onPushUndo(`镜头 #${startOrder} → #${latest}`,
-        async () => { await p.onPatch(shotId, { toOrder: startOrder }); });
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -724,9 +732,32 @@ export default function Timeline(p: Props) {
         })}
 
 
-        {/* 播放头（蓝色竖线，绝对坐标） */}
+        {/* 播放头（蓝色竖线，绝对坐标）
+            竖线本身保持 pointer-events:none —— 它贯穿整个轨道区，可交互的话
+            会挡住底下片段的点击。可拖的只有顶端那个三角手柄。 */}
         <div className="fw-tl-playhead" style={{ left: GUTTER_W + playheadLeft }}
-          title="播放头" />
+          title="播放头">
+          <div className="fw-tl-playhead-grip"
+            title="拖动播放头"
+            onMouseDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              e.stopPropagation();
+              // 用位移增量而不是绝对坐标：播放头挂在可横向滚动的容器里，
+              // 拖动时若容器跟着滚，绝对坐标算出来的秒数会跳。
+              const x0 = e.clientX;
+              const s0 = useTimelineStore.getState().playheadSec;
+              const onMove = (ev: MouseEvent) => {
+                onRulerScrub(Math.max(0, s0 + (ev.clientX - x0) / pxPerSec));
+              };
+              const onUp = () => {
+                window.removeEventListener("mousemove", onMove);
+                window.removeEventListener("mouseup", onUp);
+              };
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup", onUp);
+            }} />
+        </div>
 
         {/* 定位线（白色虚线竖线） */}
         {cursorLeft !== null && (
