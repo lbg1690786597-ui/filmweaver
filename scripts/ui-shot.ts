@@ -17,6 +17,9 @@
  *
  * 默认打预览地址（已发布的构建产物），不需要另起 dev server。
  *
+ * ⚠️ `/fw/app/` 是**飞书扫码登录门控**的，无人扫码时默认截到的是登录页。
+ *    想截工作区界面需要一个已登录的会话；不要为此去签令牌（项目规则禁止）。
+ *
  * ## 输出
  *
  * 除截图外还会报告**控制台错误与失败请求**——这两样静态检查完全看不到，
@@ -55,7 +58,12 @@ page.on("response", (r) => {
 });
 
 console.log(`打开 ${URL}`);
-await page.goto(URL, { waitUntil: "networkidle", timeout: 30000 });
+// ⚠️ 不能用 `waitUntil: "networkidle"`：登录页挂着飞书的
+// `passport.feishu.cn/.../qr/polling` 长轮询，进了工作区之后又有任务/TTS 轮询 ——
+// **网络永远不会空闲**，networkidle 必然 30s 超时，脚本一张图都截不出来。
+// 2026-09-04 实测确认过一次（那时它已经坏了，只是没人跑）。
+// 改成 domcontentloaded + 固定等待：等多久由 --wait 控制，是显式的、可调的。
+await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 await page.waitForTimeout(WAIT);
 
 if (CLICK) {
