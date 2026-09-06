@@ -1,6 +1,10 @@
 import { memo, useCallback, useEffect, useState } from "react";
 import { api, ApiError, JobPhase, Readiness, ShotInfo } from "../api";
 import { effectiveUrl, type Override } from "../lib/formState";
+import { staleBadge, staleHint, needsRebreak } from "../lib/stale";
+import {
+  useLoadState, describeLoadError, LOAD_LABELS,
+} from "../stores/loadStateStore";
 import PreflightDialog from "./PreflightDialog";
 
 interface Props {
@@ -82,6 +86,8 @@ const ShotCard = memo(function ShotCard(props: {
   const { s } = props;
   const meta = STATUS_META[s.status];
   const [versions, setVersions] = useState<{ version_no: number; video_url: string | null; created_at: string | null }[] | null>(null);
+  /** 历史版本没拉到时的说明。空串 = 正常。 */
+  const [verErr, setVerErr] = useState("");
   // 首帧图的乐观覆盖：单镜重生后立即显示新图，不等整树 refreshDetail。
   // 覆盖必须能自愈 —— 判定逻辑与踩坑记录见 lib/formState.ts effectiveUrl()（F17）。
   const [ffOverride, setFfOverride] = useState<Override>(null);
@@ -99,8 +105,24 @@ const ShotCard = memo(function ShotCard(props: {
     try {
       const r = await api.shotVersions(s.id);
       setVersions(r.versions);
-    } catch { setVersions([]); }
+      setVerErr("");
+      useLoadState.getState().noteLoaded("versions");
+    } catch (e) {
+      // 2.4：以前是 `catch { setVersions([]) }`。空数组 → 版本条整条不渲染
+      // （渲染条件是 `versions.length > 1`），于是界面在说"这个镜头只有一个版本"。
+      // 这句谎话的代价很具体：用户想退回上一版的画面，看不到 V1 就以为没保存过，
+      // 只能一遍遍重新生成去碰那个"原来的感觉"——每次都花钱，而且再也碰不回来。
+      setVerErr(describeLoadError(e, LOAD_LABELS.versions).message);
+      useLoadState.getState().noteFailed("versions", e);
+    }
   };
+
+  // 只在**确实失败**时占用顶栏的重试位：卡片收起/卸载或重试成功即注销并清掉条目。
+  // （每个镜头卡都无条件注册的话，最后展开的那张会覆盖掉真正失败的那张。）
+  useEffect(() => {
+    if (!verErr) return;
+    return useLoadState.getState().registerRetry("versions", () => { void loadVersions(); });
+  }, [verErr, s.id]);
 
   /** 生成/重生首帧。regenAnchor=true 连带重建场景基准帧（影响同场景其他镜头）。
    *  imageModel 显式指定时覆盖项目预设——用于「被审核拒绝后换个模型再试」：
@@ -136,7 +158,7 @@ const ShotCard = memo(function ShotCard(props: {
           <div className="sp-shot-title">#{s.order}
             <span className="sp-status">{meta.label}</span>
             {s.duration_sec != null && <span className="muted" style={{ fontSize: 10 }}>{s.duration_sec}s</span>}
-            {s.stale && <span className="sp-stale-badge">已过期</span>}
+            {s.stale && <span className="sp-stale-badge" title={staleHint(s)}>{staleBadge(s)}</span>}
             {s.profile_override && <span title="本镜有策略覆盖">⚙</span>}
             {/* 版本徽标：有历史版本时显示当前版本号，点击展开版本条 */}
             {(s.adopted_version ?? 0) > 1 && (
@@ -145,6 +167,14 @@ const ShotCard = memo(function ShotCard(props: {
           </div>
           <div className="sp-ref">{s.script_ref}</div>
           {/* 版本切换条（展开详情时加载）：点 V1/V2 即切换采用并同步时间轴/预览 */}
+          {props.expanded && verErr && (
+            /* 2.4：版本条不显示时必须说清是"没有历史版本"还是"没查到" ——
+               前者可以放心重生成，后者重生成就是在旧版本还找不着的时候又叠一版。 */
+            <div className="sp-ver-fail" onClick={(e) => e.stopPropagation()}>
+              ⚠️ {verErr}
+              <button className="btn tiny" onClick={() => void loadVersions()}>重试</button>
+            </div>
+          )}
           {props.expanded && versions && versions.length > 1 && (
             <div className="sp-versions" onClick={(e) => e.stopPropagation()}>
               🕘 {versions.map((v) => (
@@ -476,15 +506,28 @@ export default function ShotsPanel(p: Props) {
       <div className="sp-list">
         {[...byEpisode.entries()].sort((a, b) => a[0] - b[0]).map(([ep, shots]) => {
           const staleCount = shots.filter((s) => s.stale).length;
+          // 只有真的「切分失效」才提供重拆入口。以前不分原因一律给这个按钮：
+          // 旁白时长变了（重出片即可）也引导用户重拆整集，代价是本集其它
+          // 已调好的镜头与已出的片全部作废——救一个镜头，废掉一整集。
+          const rebreakCount = shots.filter(needsRebreak).length;
           return (
             <div key={ep} className={staleCount ? "sp-epi stale" : "sp-epi"}>
               <div className="sp-ep">
                 <span>{p.episodes.find((e) => e.order === ep)?.title ?? `第${ep}集`}</span>
                 {staleCount > 0 && (
                   <>
-                    <span className="sp-stale-badge">已过期（剧本有改动）</span>
-                    <button className="btn tiny" disabled={breakingDown || p.generating}
-                      onClick={() => p.onBreakdown([ep])}>↻ 重新拆解本集</button>
+                    <span className="sp-stale-badge"
+                      title={rebreakCount
+                        ? `${rebreakCount} 个镜头需重新拆解`
+                        : "重新生成这些镜头即可，无需重拆本集"}>
+                      {rebreakCount
+                        ? `${rebreakCount} 镜需重拆`
+                        : `${staleCount} 镜待重生成`}
+                    </span>
+                    {rebreakCount > 0 && (
+                      <button className="btn tiny" disabled={breakingDown || p.generating}
+                        onClick={() => p.onBreakdown([ep])}>↻ 重新拆解本集</button>
+                    )}
                   </>
                 )}
               </div>
