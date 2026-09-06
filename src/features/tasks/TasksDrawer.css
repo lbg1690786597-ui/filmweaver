@@ -68,6 +68,27 @@
   color: var(--c-muted);
 }
 
+/* 读失败横幅（2.4）：**在列表之上**而不是替换列表 —— 上一次拿到的任务仍有参考
+   价值，只是可能已经过时。所以做成一条压在顶部的告警，不是空状态。 */
+.fw-tasks-loadfail {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--c-warning);
+  background: color-mix(in oklch, var(--c-warning) 10%, transparent);
+  border-bottom: 1px solid color-mix(in oklch, var(--c-warning) 35%, transparent);
+}
+.fw-tasks-loadfail > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
 .fw-tasks-group { display: flex; flex-direction: column; gap: 2px; }
 
 .fw-tasks-group-title {
