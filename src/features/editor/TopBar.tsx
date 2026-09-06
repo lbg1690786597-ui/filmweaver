@@ -12,10 +12,12 @@
 
 import {
   ChevronLeft, Undo2, Redo2, Download, Scissors, Moon, Sun,
-  User as UserIcon, RefreshCw, Settings, Loader2, Check,
+  User as UserIcon, RefreshCw, Settings, Loader2,
 } from "lucide-react";
 import { IS_TAURI } from "../export/ExportDialog";
 import WindowControls from "./WindowControls";
+import SaveIndicator from "./SaveIndicator";
+import LoadIndicator from "./LoadIndicator";
 import "./TopBar.css";
 import { productionModeLabel } from "../../lib/modelLabels";
 
@@ -89,9 +91,10 @@ export default function TopBar(p: TopBarProps) {
         <span className="fw-tb-ver">v{p.appVersion}</span>
       </div>
 
-      <span className="fw-tb-saved" title="改动已自动保存到服务端">
-        <Check size={11} /> 已保存
-      </span>
+      <SaveIndicator />
+      {/* 紧挨保存状态：两者回答的是同一个问题的两半 ——
+          "我的改动进去了吗" / "我看到的东西全吗"。分开放会让用户只看到一半。 */}
+      <LoadIndicator />
 
       <div className="fw-tb-divider" />
 
