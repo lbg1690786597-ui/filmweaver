@@ -4,7 +4,7 @@
  * 自己画而不引依赖：解码用 Web Audio 的 `decodeAudioData`，绘制用 Canvas，
  * 总共百来行。引 wavesurfer 之类会带来几百 KB 和一套自己的 DOM 管理。
  *
- * **判据全部在 `waveform.ts`**（纯模块，node 下可直接断言）；本文件只负责
+ * **判据全部在 `waveformPeaks.ts`**（纯模块，node 下可直接断言）；本文件只负责
  * 「什么时候解、把结果画到哪」这两件离不开浏览器的事。3.9 修的三个问题
  * （230 MB 解码 / canvas 超宽变空白 / 缓存无上限且失败不缓存）的完整来龙去脉
  * 写在那个文件的头注释里，不在这里重复。
@@ -24,9 +24,9 @@ import { localSources } from "../../lib/mediaCache";
 import {
   DECODE_SAMPLE_RATE, bucketsFor, computePeaks, canvasBacking, peakRange,
   PeakCache, Gate,
-} from "./waveform";
+} from "./waveformPeaks";
 
-/** url → 峰值包络。`null` = 这段解不出来（负结果也缓存，见 waveform.ts） */
+/** url → 峰值包络。`null` = 这段解不出来（负结果也缓存，见 waveformPeaks.ts） */
 const PEAK_CACHE = new PeakCache();
 const PENDING = new Map<string, Promise<Float32Array | null>>();
 const GATE = new Gate();
