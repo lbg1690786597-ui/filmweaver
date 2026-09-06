@@ -140,7 +140,7 @@ for (const { name, plan, expect } of cases) {
     const lst = join(work, `${name.replace(/\W/g, "")}.txt`);
     writeFileSync(lst, files.map((f) => `file '${f}'`).join("\n") + "\n");
     const merged = join(work, `${name.replace(/\W/g, "")}_out.mp4`);
-    sh([...compileConcat(lst, merged), "-loglevel", "error"]);
+    sh([...compileConcat(lst, merged, { faststart: true }), "-loglevel", "error"]);
     const d = dur(merged);
     const ok = Math.abs(d - expect) < 0.25;
     if (!ok) allOk = false;
