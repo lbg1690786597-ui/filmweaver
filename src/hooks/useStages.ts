@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, LocationInfo, StageInfo } from "../api";
 import type { Say } from "./useToast";
+import { useLoadState } from "../stores/loadStateStore";
 
 /** G4 状态分层 · 资产层：R1 人物阶段 + P1-3 场景（时间轴轨道数据）。 */
 export function useStages(projectId: string | null, say: Say) {
@@ -15,9 +16,20 @@ export function useStages(projectId: string | null, say: Say) {
       const r = await api.listStages(id);
       setStages(r.stages);
       setLocations(r.locations ?? []);  // 旧后端无此字段时回退空
-    } catch { /* 后端旧版无此接口时静默 */ }
-  }, [projectId]);
+      useLoadState.getState().noteLoaded("stages");
+    } catch (e) {
+      // 2.4：以前是静默 catch。人物阶段没加载出来时轨道是空的，用户会去点
+      // 「AI 识别服装」重跑一遍 —— 那是要花钱出图的操作，而且它的语义是
+      // "已出图的阶段一律保留、只做增量"，在一份空快照上跑等于凭空多出一批草稿。
+      if (useLoadState.getState().noteFailed("stages", e)) {
+        say(`⚠️ ${useLoadState.getState().failures.stages?.message ?? "人物与场景没能加载"}`);
+      }
+    }
+  }, [projectId, say]);
   useEffect(() => { if (projectId) refreshStages(projectId); }, [projectId, refreshStages]);
+
+  useEffect(() => useLoadState.getState().registerRetry(
+    "stages", () => { void refreshStages(); }), [refreshStages]);
 
   const doStagesDraft = async () => {
     if (!projectId) return;
