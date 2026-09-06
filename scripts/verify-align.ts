@@ -59,6 +59,60 @@ console.log("\n[1] 拆条规则（不依赖音频）");
   ok(cues.length > 1, "确实拆开了", `${cues.length} 条`);
 }
 
+console.log("\n[1.5] 小说体旁白：引号不能独占一条，短条不能一闪而过");
+{
+  // ── 6.10 的两个真实缺陷，各一条回归 ──
+  //
+  // 第 5 集是第一人称小说体，满篇 `"……。"` 引语。这两个 bug 就是在它身上
+  // 现形的：78 段旁白产出 504 条字幕，里面有只写着一个 `"` 的条，
+  // 还有 23 条短于 0.5s（最短 0.10s）。
+  const quoted = "他冷冷地说：“你不配。”我没有回答。";
+  const cues = splitIntoCues(quoted);
+  ok(cues.every((c) => /[\p{L}\p{N}]/u.test(c)),
+     "没有任何一条是纯标点（`”` 独占一条是 6.10 之前的真实产物）",
+     JSON.stringify(cues));
+  ok(cues.join("") === quoted.replace(/\s+/g, ""),
+     "并标点不吞字：拆条后仍逐字一致", `${cues.join("")}`);
+  ok(cues.some((c) => c.endsWith("”")),
+     "句末标点后的收尾引号跟着**上一句**走，不被推到下一条开头",
+     JSON.stringify(cues));
+
+  // 开头就是引号的段落：无前一条可并，必须并进后一条而不是独立成条
+  const lead = splitIntoCues("“我回来了。”她说。");
+  ok(lead.every((c) => /[\p{L}\p{N}]/u.test(c)) && lead[0].startsWith("“"),
+     "整段以引号开头时并进后一条", JSON.stringify(lead));
+
+  // ⚠️ 这一条只有"纯标点折叠"能救，CLOSERS 吸收救不了：`…` 自己就在
+  // HARD_STOPS 里，所以 `……` 会被断成**两个都是纯标点**的句子。库里那条
+  // 只写着一个 `…` 的字幕就是这么来的。
+  const ell = splitIntoCues("他沉默了。……然后转身走了。");
+  ok(ell.every((c) => /[\p{L}\p{N}]/u.test(c)),
+     "连续省略号不产出纯标点条（`…` 本身是句末标点，吸收收尾符号管不到它）",
+     JSON.stringify(ell));
+  ok(ell.join("") === "他沉默了。……然后转身走了。", "折叠省略号不丢字", ell.join(""));
+  // 破折号收尾同理：它不在 CLOSERS 里，也不是句末标点
+  const dash = splitIntoCues("你怎么能——");
+  ok(dash.length === 1, "破折号跟着正文，不另起一条", JSON.stringify(dash));
+
+  // minSec：构造一组会被吸出极短条的边界 —— 静音点紧贴前一个边界
+  const shortCues = ["很长的一句话在这里", "短", "后面还有一段话"];
+  const aligned = alignCues(shortCues, [{ start: 4.30, end: 4.40 }], 10);
+  ok(aligned.every((c) => c.end - c.start >= DEFAULT_SPLIT.minSec - 1e-6),
+     `每条 ≥${DEFAULT_SPLIT.minSec}s（minSec 在 6.10 之前是个从未被读取的参数）`,
+     aligned.map((c) => `${(c.end - c.start).toFixed(2)}s`).join(" "));
+  ok(aligned.map((c) => c.text).join("") === shortCues.join(""),
+     "合并短条不丢字、不改顺序", aligned.map((c) => c.text).join("|"));
+  // 反向承重：正常间距的一组**不该**被合并掉
+  const normal = alignCues(["第一句话在这里啊", "第二句话在这里啊"], [], 10);
+  ok(normal.length === 2, "间距正常时不合并（不是把所有条都并成一条）",
+     `${normal.length} 条`);
+  // 极端：总时长撑不起 minSec 时收敛到 1 条，而不是死循环或产出负长
+  const tiny = alignCues(["甲", "乙", "丙"], [], 0.5);
+  ok(tiny.length >= 1 && tiny.every((c) => c.end > c.start),
+     "总时长不足时收敛而不是死循环", `${tiny.length} 条`);
+  ok(tiny.map((c) => c.text).join("") === "甲乙丙", "收敛后仍不丢字");
+}
+
 console.log("\n[2] 符号剥离（只删符号，一个汉字都不删）");
 {
   const cases: [string, string][] = [
