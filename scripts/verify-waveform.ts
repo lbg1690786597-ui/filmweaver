@@ -33,7 +33,7 @@ import {
   PEAK_BUCKETS_PER_SEC, PEAK_BUCKETS_MIN, PEAK_BUCKETS_MAX,
   DECODE_SAMPLE_RATE, DECODE_CONCURRENCY, PEAK_CACHE_MAX, MAX_CANVAS_PX,
   bucketsFor, computePeaks, canvasBacking, peakRange, PeakCache, Gate,
-} from "../src/features/timeline/waveform";
+} from "../src/features/timeline/waveformPeaks";
 import { ZOOM_MAX } from "../src/types/timeline";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -251,7 +251,7 @@ ok("并发上限是小数字：解码峰值是每段几十 MB",
 console.log("\n⑦ 静态钉：三条省内存的措施都还在");
 
 const wf = read("src/features/timeline/Waveform.tsx");
-const mod = read("src/features/timeline/waveform.ts");
+const mod = read("src/features/timeline/waveformPeaks.ts");
 const app = read("src/App.tsx");
 
 ok("解码上下文指定 8kHz（不指定就按设备默认 48kHz，内存 6 倍）",
@@ -296,7 +296,7 @@ ok("切项目清波形缓存",
   && /import \{ clearWaveformCache \}/.test(app),
   "峰值按 url 缓存，跨项目零复用价值，留着只会把新项目的条目挤出 LRU");
 
-ok("waveform.ts 是纯模块：不 import React / store / api",
+ok("waveformPeaks.ts 是纯模块：不 import React / store / api",
   !/from "react"/.test(mod) && !/stores\//.test(mod) && !/\.\.\/\.\.\/api/.test(mod),
   "它要能被本脚本在 node 下直接跑");
 
