@@ -35,22 +35,6 @@ export function isTextInput(target: EventTarget | null): boolean {
 
 const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
 
-/** 以播放头为界选中一侧全部片段。
- *  判据用 clip 中点：播放头落在某镜中间时，用首/尾都会反直觉。 */
-function selectSide(side: "left" | "right"): void {
-  const st = useTimelineStore.getState();
-  const at = st.playheadSec;
-  const hit: string[] = [];
-  for (const tk of st.timeline.tracks) {
-    if (tk.locked || tk.hidden) continue;
-    for (const c of tk.clips) {
-      const mid = c.startSec + c.durationSec / 2;
-      if (side === "left" ? mid < at : mid > at) hit.push(c.id);
-    }
-  }
-  if (hit.length) st.selectClips(hit);
-}
-
 /** 命令处理函数集合：由 App 提供具体实现 */
 export interface CommandHandlers {
   playPause: () => void;
@@ -70,7 +54,28 @@ export interface CommandHandlers {
   zoomFit: () => void;
   escape: () => void;
   selectAll: () => void;
+  /** `[` / `]`：以播放头为界选中一侧全部片段。
+   *
+   *  3.5：这里原本是本文件里的一个私有函数，与 `Timeline.tsx` 里的工具条按钮
+   *  各写一份 —— 两份逻辑同源却不同步（时间轴那份多一个 toast、还顺手写了
+   *  另一套选中态），改一处必漏一处。现在都收敛到 App 的同一个实现上，
+   *  判据统一在 `features/timeline/selection.ts`。 */
+  selectSide: (side: "left" | "right") => void;
   toggleDisabled: () => void;
+
+  // ---- 3.3 播放头导航 ----
+  /** Home / End：跳到时间轴两端 */
+  playheadToStart: () => void;
+  playheadToEnd: () => void;
+  /** ↑ / ↓：跳到上/下一个片段边界（Premiere 的 edit point 语义） */
+  prevEdge: () => void;
+  nextEdge: () => void;
+  /** J / L / K：快退 / 快进 / 停。dir=-1 是 J，+1 是 L */
+  shuttle: (dir: -1 | 1) => void;
+  shuttleStop: () => void;
+  /** I / O：把播放头处设为当前镜头的入点 / 出点 */
+  setIn: () => void;
+  setOut: () => void;
 }
 
 export function buildCommands(h: CommandHandlers): Command[] {
@@ -141,12 +146,12 @@ export function buildCommands(h: CommandHandlers): Command[] {
     {
       id: "select.left", label: "选中播放头左侧全部", keys: "[",
       match: (e) => e.key === "[" && !mod(e),
-      run: () => selectSide("left"),
+      run: () => h.selectSide("left"),
     },
     {
       id: "select.right", label: "选中播放头右侧全部", keys: "]",
       match: (e) => e.key === "]" && !mod(e),
-      run: () => selectSide("right"),
+      run: () => h.selectSide("right"),
     },
     {
       id: "edit.split", label: "在播放头分割", keys: "Ctrl+B",
@@ -167,6 +172,57 @@ export function buildCommands(h: CommandHandlers): Command[] {
       id: "playhead.right", label: "播放头右移", keys: "→ / Shift+→",
       match: (e) => e.key === "ArrowRight" && !mod(e),
       run: () => h.nudgeRight(false),
+    },
+    // ---- 3.3 播放头导航 ----
+    // ↑/↓ 取 Premiere 的 edit point 语义（跳片段边界），不取剪映的"换轨道"——
+    // 本项目的镜头全在同一条主轨上，换轨道无处可去。
+    {
+      id: "playhead.prevEdge", label: "上一个片段边界", keys: "↑",
+      match: (e) => e.key === "ArrowUp" && !mod(e),
+      run: h.prevEdge,
+    },
+    {
+      id: "playhead.nextEdge", label: "下一个片段边界", keys: "↓",
+      match: (e) => e.key === "ArrowDown" && !mod(e),
+      run: h.nextEdge,
+    },
+    {
+      id: "playhead.home", label: "跳到片头", keys: "Home",
+      match: (e) => e.key === "Home" && !mod(e),
+      run: h.playheadToStart,
+    },
+    {
+      id: "playhead.end", label: "跳到片尾", keys: "End",
+      match: (e) => e.key === "End" && !mod(e),
+      run: h.playheadToEnd,
+    },
+    // J-K-L：剪辑行业的通用手势。连按同向加倍（1→2→4），按反向先停。
+    {
+      id: "shuttle.reverse", label: "快退（连按加速）", keys: "J",
+      match: (e) => e.key.toLowerCase() === "j" && !mod(e) && !e.shiftKey,
+      run: () => h.shuttle(-1),
+    },
+    {
+      id: "shuttle.stop", label: "停止", keys: "K",
+      match: (e) => e.key.toLowerCase() === "k" && !mod(e) && !e.shiftKey,
+      run: h.shuttleStop,
+    },
+    {
+      id: "shuttle.forward", label: "快进（连按加速）", keys: "L",
+      match: (e) => e.key.toLowerCase() === "l" && !mod(e) && !e.shiftKey,
+      run: () => h.shuttle(1),
+    },
+    // I/O 直接复用 3.1/3.2 的修剪通路（trimIn/trimOut + 同一条撤销记录），
+    // 所以键盘改出来的窗口与拖边缘改出来的**逐字节相同**。
+    {
+      id: "trim.setIn", label: "设为入点", keys: "I",
+      match: (e) => e.key.toLowerCase() === "i" && !mod(e) && !e.shiftKey,
+      run: h.setIn,
+    },
+    {
+      id: "trim.setOut", label: "设为出点", keys: "O",
+      match: (e) => e.key.toLowerCase() === "o" && !mod(e) && !e.shiftKey,
+      run: h.setOut,
     },
     {
       id: "zoom.in", label: "时间轴放大", keys: "Ctrl + =",
@@ -227,7 +283,9 @@ export function listCommandKeys(): { label: string; keys: string }[] {
     deleteSelected: noop, splitAtPlayhead: noop,
     nudgeLeft: noop, nudgeRight: noop,
     zoomIn: noop, zoomOut: noop, zoomFit: noop,
-    escape: noop, selectAll: noop, toggleDisabled: noop,
+    escape: noop, selectAll: noop, selectSide: noop, toggleDisabled: noop,
+    playheadToStart: noop, playheadToEnd: noop, prevEdge: noop, nextEdge: noop,
+    shuttle: noop, shuttleStop: noop, setIn: noop, setOut: noop,
   };
   return buildCommands(dummy).map((c) => ({ label: c.label, keys: c.keys }));
 }
