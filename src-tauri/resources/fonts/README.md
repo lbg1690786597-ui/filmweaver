@@ -33,6 +33,11 @@
 bash scripts/fetch-fonts.sh
 ```
 
-**缺失不会导致构建失败**，只是安装包里没有内置字体、
-`resolveResource("resources/fonts")` 拿不到目录，字幕回落到系统字体。
-正式出包前请先跑一遍这个脚本。
+**CI 出包时会强制跑一遍，取不到就中止发布**（见
+`.github/workflows/build-windows.yml` 的「取回内置字体」步骤 + 脚本末尾的体积断言）。
+2026-09-06 之前 CI 并不跑它，打出的包里这个目录只有 README + LICENSE。
+
+⚠️ 缺失**不会**让 `resolveResource("resources/fonts")` 失败——README 是入 git 的，
+目录永远在，它也只拼路径不看内容。所以运行时另有一道逐文件校验
+（`src/render/bundledFonts.ts`）：两个 .ttc 都不在就不传 fontsdir，并明确告诉用户
+已回落系统字体，而不是让字形悄悄变掉。
