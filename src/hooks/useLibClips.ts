@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api";
 import { LibClip } from "../types";
 import type { Say } from "./useToast";
+import { useLoadState } from "../stores/loadStateStore";
 
 /** G4 状态分层 · 素材层：P1-3 素材池落库（项目维度持久化，刷新/换设备不丢）。 */
 export function useLibClips(projectId: string | null, say: Say) {
@@ -16,9 +17,21 @@ export function useLibClips(projectId: string | null, say: Say) {
         id: c.id, name: c.name, url: c.url, size: c.size,
         kind: (c.kind as LibClip["kind"]) ?? "other", duration: c.duration,
       })));
-    } catch { /* 旧后端无此接口时保持内存态 */ }
-  }, [projectId]);
+      useLoadState.getState().noteLoaded("clips");
+    } catch (e) {
+      // 2.4：以前是「保持内存态」静默 —— §4.4 点名这条最危险。素材池是**跨设备
+      // 持久化**的，拉不到时界面显示的是上一次的内存快照（刚打开项目时就是空的），
+      // 用户据此判断"这个素材我还没上传"，于是再传一遍：同一个文件在池子里出现两份，
+      // 占两份存储，而且他分不清哪个是被镜头引用的那个。必须明说这是没加载出来。
+      if (useLoadState.getState().noteFailed("clips", e)) {
+        say(`⚠️ ${useLoadState.getState().failures.clips?.message ?? "素材池没能加载"}`);
+      }
+    }
+  }, [projectId, say]);
   useEffect(() => { if (projectId) refreshClips(projectId); }, [projectId, refreshClips]);
+
+  useEffect(() => useLoadState.getState().registerRetry(
+    "clips", () => { void refreshClips(); }), [refreshClips]);
 
   /** 删除素材（B23）。
    *
