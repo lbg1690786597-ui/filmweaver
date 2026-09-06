@@ -57,9 +57,23 @@
 
 /* 分区标题 */
 .fw-czp-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
   font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: 0.02em;
+}
+.fw-czp-section-title:first-child { margin-top: 0; }
+
+/* 副标题：一句话说清这一组到底在改什么，
+   "裁剪"和"画面"混在一起时用户分不清自己在裁素材还是在挪画面 */
+.fw-czp-section-note {
+  margin-left: auto;
+  font-weight: 400;
   color: var(--c-muted);
-  margin-top: var(--sp-1);
 }
 
 /* 行 */
@@ -128,6 +142,72 @@
   border-color: var(--c-accent);
   color: var(--c-accent-hi);
   background: oklch(from var(--c-accent) l c h / 0.12);
+}
+/* 局部构图预设（上半/左半/去字幕…）：与比例预设区分开，弱一档 */
+.fw-czp-preset-btn.subtle {
+  border-style: dashed;
+}
+
+/* "在画面上直接拖拽" —— 与预览窗口下方那个小按钮是同一个开关。
+   用户反馈那个小按钮好用，所以面板里也给一个显式入口，而不是让他自己去找。 */
+.fw-czp-canvas-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px dashed var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color 80ms, color 80ms, background 80ms;
+}
+.fw-czp-canvas-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+.fw-czp-canvas-btn.on {
+  border-style: solid;
+  border-color: var(--c-accent);
+  color: var(--c-accent-hi);
+  background: oklch(from var(--c-accent) l c h / 0.12);
+}
+
+/* 旋转 90° / 水平镜像 / 垂直镜像 */
+.fw-czp-btn-row {
+  display: flex;
+  gap: var(--sp-1);
+}
+.fw-czp-icon-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 80ms, color 80ms, background 80ms;
+}
+.fw-czp-icon-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+.fw-czp-icon-btn.on {
+  border-color: var(--c-accent);
+  color: var(--c-accent-hi);
+  background: oklch(from var(--c-accent) l c h / 0.12);
+}
+
+/* 比例锁状态提示 */
+.fw-czp-lock-note {
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: oklch(from var(--c-accent) l c h / 0.10);
+  color: var(--c-accent-hi);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
 }
 
 /* 操作按钮 */
