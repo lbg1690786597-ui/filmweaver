@@ -467,6 +467,27 @@
   line-height: 1.4;
 }
 
+/* ---- 降级提示（5.8）----
+ * 导出**成功**了，但有东西没按用户设置的样子出来（缺滤镜、动画蒙版超预算降级）。
+ * 刻意放在结果面板里而不是 toast：toast 4 秒就没，而"羽化怎么没生效"是用户
+ * 事后才会发现的问题，那时他需要能回来读这段话。 */
+.fw-ex-notices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1, 4px);
+  margin-bottom: var(--sp-3);
+}
+.fw-ex-notice {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--c-warning, #d08700);
+  border-radius: var(--r-md, 6px);
+  background: color-mix(in oklch, var(--c-warning, #d08700) 12%, transparent);
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .fw-ex-foot-info.done {
   display: inline-flex;
   align-items: center;
