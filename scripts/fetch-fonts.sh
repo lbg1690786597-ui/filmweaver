@@ -31,8 +31,35 @@ if [ ! -s "$DEST/LICENSE-Noto-CJK.txt" ]; then
   if [ -f /usr/share/doc/fonts-noto-cjk/copyright ]; then
     cp /usr/share/doc/fonts-noto-cjk/copyright "$DEST/LICENSE-Noto-CJK.txt"
   else
-    curl -fL --retry 3 -o "$DEST/LICENSE-Noto-CJK.txt" "$BASE/LICENSE"
+    # 仓库根没有 LICENSE（实测 404），OFL 正文在各字型子目录下。
+    # 这条分支平时不会走（该文件是入 git 的），但 set -e 下走错就是整条 CI 红。
+    curl -fL --retry 3 -o "$DEST/LICENSE-Noto-CJK.txt" "$BASE/Sans/LICENSE"
   fi
+fi
+
+# ---- 硬断言：宁可不出包，也不出一个"内置字体"是空壳的包 ----
+#
+# 这个脚本以前在 CI 和 package.json 里**零引用**，于是安装包里
+# resources/fonts/ 只有 README + LICENSE。而运行时 resolveResource 只拼路径、
+# 不校验存在，libass 找不到 Noto 就静默换字形：用户选了「思源黑体（内置）」，
+# 导出成功，字幕却是别的字体，全程没有一条提示。
+# 所以取回之后必须当场断言，而不是等用户来发现。
+# 下限 1MB：真实体积 19MB / 26MB，够宽松，又能挡住"下了半截"和占位空文件。
+MIN_BYTES=1000000
+bad=0
+for f in NotoSansCJK-Regular.ttc NotoSerifCJK-Regular.ttc; do
+  sz=$(wc -c < "$DEST/$f" 2>/dev/null || echo 0)
+  if [ "$sz" -lt "$MIN_BYTES" ]; then
+    echo "❌ $f 缺失或残缺（$sz 字节 < $MIN_BYTES）" >&2
+    bad=1
+  else
+    echo "✓ $f  $sz 字节"
+  fi
+done
+if [ "$bad" != 0 ]; then
+  echo "内置字体不完整——若这是出包流程，请修好再打包（安装包里的「内置字体」" >&2
+  echo "选项会静默回落系统字体，用户看不到任何提示）。" >&2
+  exit 1
 fi
 
 echo "完成。目录内容："
