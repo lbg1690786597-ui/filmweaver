@@ -24,15 +24,25 @@
 import { Command } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join, resolveResource } from "@tauri-apps/api/path";
-import { exists, mkdir, writeFile, writeTextFile, remove, rename, stat } from "@tauri-apps/plugin-fs";
-import { api } from "../api";
+import { exists, mkdir, writeTextFile, writeFile, remove, stat } from "@tauri-apps/plugin-fs";
 import type { SubtitleStyleLike } from "../lib/subtitleStyle";
+import { retireFiles } from "../lib/retireFiles";
+import {
+  ensureCached, sweepParts, peekCached, loadAudioProbes, saveAudioProbes,
+} from "../lib/mediaCache";
+import { Aborted } from "../lib/aborted";
+import { canReadLocal, getLocalRoots } from "../lib/localRootStore";
 import type { RenderPlan } from "./model";
+import { prepareMedia, type PrepIO } from "./exportPrep";
 import { buildSegments, segmentStats } from "./segment";
 import { probeCapabilities, pickEncoder, hasFilter } from "./capabilities";
 import {
+  planSegmentMasks, writeSegmentMasks, maskClipsOf, maskDegradeNotices, type MaskIO,
+} from "./maskFiles";
+import {
   compileSegment, compileConcat, compileBurnSubtitles, compileAudioMix,
 } from "./ffmpegCompiler";
+import { checkBundledFonts, bundledFontsWarning, MIN_FONT_BYTES } from "./bundledFonts";
 
 export interface RenderProgress {
   /** 0-100 */
@@ -72,10 +82,15 @@ export interface RenderResult {
   estPeakMB: number;
   encoder: string;
   elapsedMs: number;
-}
-
-class Aborted extends Error {
-  constructor() { super("用户已取消渲染"); this.name = "Aborted"; }
+  /**
+   * 面向用户的降级提示（5.8）。导出**成功**了，但有东西没有按用户设置的样子出来 ——
+   * 本机 ffmpeg 缺滤镜、动画蒙版超预算被降级等。
+   *
+   * 为什么必须单独有这么个出口：这几种降级都是「不报错、画面悄悄不一样」，
+   * 而进度条只有一行 `stage`、跑完就没了。不把它端到用户眼前，用户只会看到
+   * 「羽化没生效」而无从知道原因，回头来报一个查不出的 bug。
+   */
+  notices: string[];
 }
 
 async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
@@ -121,108 +136,60 @@ async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** 把 RenderPlan 里的媒体缓存到本地；返回 mediaId → 本地绝对路径 */
 /** 探测素材是否含音轨。
  *
  *  ffprobe 不随包分发（只打了 ffmpeg.exe，见 CI 里"只放 ffmpeg.exe"的取舍），
  *  所以沿用 localRender.ts 的老办法：`ffmpeg -i` 无输出文件必然返回非 0，
  *  但 stderr 里有完整的流信息，从中匹配 Audio 流即可。
  *
- *  探测失败（异常/超时）一律当作**有音轨**：猜错的代价不对称——
- *  当作没有会静音成片，当作有则由 `0:a:0?` 的可选映射兜住。 */
-async function probeHasAudio(path: string): Promise<boolean> {
+ *  ⚠️ **返回 `null` 表示探测本身失败**（sidecar 拉不起来 / 权限缺失 / 超时），
+ *  不是"没有音轨"。调用方（`exportPrep`）据此区分两件事：
+ *    · 本次怎么办 —— 按**有音轨**继续（猜错代价不对称：当作没有会静音成片，
+ *      当作有则由 `0:a:0?` 的可选映射兜住）；
+ *    · 要不要记进探测表 —— **不记**。把一次偶发失败的猜持久化，会让它变成
+ *      这个素材永久的错误结论，而错误的 `true` 在 composite 分支意味着去映射
+ *      一条不存在的 `[i:a]`，后果是整段导出失败。 */
+async function probeHasAudio(path: string): Promise<boolean | null> {
   try {
     const out = await Command.sidecar("binaries/ffmpeg", ["-i", path]).execute();
     return /Stream #\d+:\d+.*Audio/.test(out.stderr || "");
   } catch {
-    return true;
+    return null;
   }
 }
 
-async function cacheMedia(
-  plan: RenderPlan,
-  report: (done: number, total: number) => void,
-  signal?: AbortSignal,
-): Promise<Map<string, string>> {
-  const base = await appDataDir();
-  const cacheDir = await join(base, "cache", plan.projectId);
-  if (!(await exists(cacheDir))) await mkdir(cacheDir, { recursive: true });
-
-  // 清理上一轮留下的 .part 残留（断电/Kill 后的遗留），避免下一次误判为完整文件。
-  // exists 检查只用于目录，不逐一列文件，所以这里不做全量扫描——
-  // 原子化下载（先写 .part 再 rename）本身已经保证 dest 不会是半截文件。
-
-  const map = new Map<string, string>();
-  let done = 0;
-
-  // 并发下载上限（每次导出通常有几十至几百个素材，串行太慢；
-  // 并发上限保守取 4，避免把 HTTP 连接池打爆。如需调整请改这一行）。
-  const CONCURRENCY = 4;
-
-  async function fetchOne(m: { id: string; url: string }) {
-    if (signal?.aborted) throw new Aborted();
-
-    // 缓存键包含 URL 哈希，避免同名但不同来源的素材互相覆盖。
-    // 简单哈希：取 URL 的最后 64 字节的 charCode 异或，足够区分。
-    let h = 0;
-    const s = m.url.slice(-64);
-    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-    const hx = (h >>> 0).toString(16).padStart(8, "0");
-    const name = `${hx}_${m.url.split("/").pop()!.split("?")[0]}`;
-    const dest = await join(cacheDir, name);
-    const part = dest + ".part";
-
-    // 复用校验：存在 + size > 0（.part 是独立路径，永远不会被当成 dest，
-    // 所以原子 rename 之前的半截文件不会被当作完整缓存复用）。
-    if (await exists(dest)) {
-      const st = await stat(dest);
-      if (st.size > 0) {
-        map.set(m.id, dest);
-        report(++done, plan.media.length);
-        return;
+/**
+ * 生产侧的准备阶段 I/O 接线。**规则一条都不在这里**——本地化判据、进度权重、
+ * 探测表的键与容量策略全在 `render/exportPrep.ts`，那份能在 node 下被真跑。
+ *
+ * ⚠️ `peek` 走的是 `peekCached`（只 stat）而不是 `cacheDirFor`：后者会 `mkdir`，
+ * 而准备阶段第一步是「先看盘上有什么」——那一步为没缓存过的项目建一串空目录，
+ * 既是读操作留写痕迹，也会让 `localCacheStats` 的"有缓存的项目数"虚高。
+ */
+function prepIO(projectId: string): PrepIO {
+  return {
+    peek: (url) => peekCached(projectId, url),
+    fetch: (url, signal) => ensureCached(projectId, url, signal),
+    probeAudio: (path) => probeHasAudio(path),
+    loadProbes: () => loadAudioProbes(),
+    saveProbes: (t) => saveAudioProbes(t),
+    sweep: () => sweepParts(projectId),
+    // 6.6：用户自己盘上的素材。**先问登记簿再碰盘** —— 那份列表是设置里
+    // 「移出列表」唯一真正生效的地方（插件侧没有撤销 scope 的接口，
+    // 见 `lib/localRootStore.ts`）。跳过这一句，那个按钮就成了假的。
+    statLocal: async (path) => {
+      if (!canReadLocal(path)) return null;
+      try {
+        const st = await stat(path);
+        // 目录也有 size，放过去会让一个目录被当成素材喂给 ffmpeg。
+        return st.isFile ? { size: st.size } : null;
+      } catch {
+        // 不在 scope（重启后授权已释放）/ 文件没了 / 盘拔了 —— 都是**正常输入**。
+        // 由 exportPrep 按 `explainUnreachable` 分辨原因并说人话，这里不抛。
+        return null;
       }
-      // size === 0：之前写出了空文件（磁盘满？），删掉重下。
-      await remove(dest).catch(() => {});
-    }
-
-    // 下载 → 写 .part → rename（原子落地）。plugin-fs 的 rename 在同一
-    // 文件系统内是原子操作；写 .part 失败或进程被杀，dest 永远不会
-    // 出现半截内容——下轮 exists(dest) 判否，重新走一遍下载。
-    //
-    // fetch 必须带 signal：不带的话点了取消要等当前这批（最多 4 个）素材
-    // 全部下完才停，慢网下一个大素材就是几十秒的"点了没反应"。
-    const resp = await fetch(api.mediaUrl(m.url), { signal }).catch((e) => {
-      // fetch 被 signal 中断时抛的是 DOMException(name="AbortError")，
-      // 而调用方只认我们自己的 Aborted（靠 e.name 判断要不要静默）。
-      // 不归一化的话取消导出会弹成"导出失败：AbortError"。
-      if (signal?.aborted) throw new Aborted();
-      throw e;
-    });
-    if (!resp.ok) throw new Error(`素材下载失败 ${resp.status}: ${name}`);
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    if (bytes.length === 0) throw new Error(`素材下载为空: ${name}`);
-    try {
-      await writeFile(part, bytes);
-      await rename(part, dest);
-    } catch (e) {
-      // 半截 .part 不清掉会永久留在用户盘上（缓存目录只按 dest 名复用，
-      // 没有任何一处会再碰它）。失败路径顺手删掉。
-      await remove(part).catch(() => {});
-      throw e;
-    }
-
-    map.set(m.id, dest);
-    report(++done, plan.media.length);
-  }
-
-  // 限并发：把任务切成 CONCURRENCY 宽的批次顺序执行，每批内并发。
-  for (let i = 0; i < plan.media.length; i += CONCURRENCY) {
-    if (signal?.aborted) throw new Aborted();
-    const batch = plan.media.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(fetchOne));
-  }
-
-  return map;
+    },
+  };
 }
 
 /**
@@ -237,7 +204,13 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
   if (!caps.available) {
     throw new Error("本机渲染不可用：未找到 ffmpeg（网页预览环境请改用服务端导出）");
   }
-  const encoder = pickEncoder(caps, opts.preferEncoder);
+  // 4.4：编码器要**先看用户选的 codec、再看硬件**。此前这里只传 preferEncoder，
+  // 而 pickEncoder 直接拿 hwEncoders[0]，于是 plan.output.vcodec 从来没被读过——
+  // 导出对话框里的「H.265」选了等于没选。
+  const encoder = pickEncoder(caps, {
+    preferred: opts.preferEncoder,
+    vcodec: plan.output.vcodec,
+  });
 
   const segs = buildSegments(plan);
   if (!segs.length) throw new Error("没有可渲染的片段");
@@ -249,34 +222,52 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
   await mkdir(work, { recursive: true });
 
   try {
-    // 1) 缓存素材（0-15%）
-    report({ pct: 0, stage: "准备素材" });
-    const paths = await cacheMedia(plan, (d, t) => {
-      report({ pct: Math.round((d / t) * 15), stage: `下载素材 ${d}/${t}` });
-    }, signal);
-
-    // 逐个素材探一次音轨（每个素材一次，不是每段一次）。
-    // 这决定 passthrough 段该用素材自己的声音还是补静音。
+    // 1) 准备素材（0-18%）：本地化 + 音轨探测
     //
-    // 并发探测：每次探测要拉起一个 ffmpeg 进程（约 30-80ms），
-    // 串行跑 170 个素材就是十几秒的纯等待，而且这段**没有进度反馈**，
-    // 用户看到的是进度条卡在 15% 不动。并发上限与素材下载一致（4）。
-    const audioMap = new Map<string, boolean>();
-    {
-      const media = plan.media;
-      let probed = 0;
-      const PROBE_CONCURRENCY = 4;
-      for (let i = 0; i < media.length; i += PROBE_CONCURRENCY) {
-        if (signal?.aborted) throw new Aborted();
-        const batch = media.slice(i, i + PROBE_CONCURRENCY);
-        await Promise.all(batch.map(async (m) => {
-          audioMap.set(m.id, await probeHasAudio(paths.get(m.id) ?? ""));
-          probed++;
-        }));
-        report({ pct: 15 + Math.round((probed / Math.max(media.length, 1)) * 3),
-                 stage: `检查素材音轨 ${probed}/${media.length}` });
-      }
-    }
+    // 规则全在 `render/exportPrep.ts`（含"该报什么话"），这里只做两件事：
+    // 接 I/O、把它的语义化 `frac` 映射进本阶段的百分比配额。
+    //
+    // ⚠️ 6.4 之前这里是「无条件报 `下载素材 d/t` 并吃掉 0→15%」：6.2 让 AI 产物
+    // 一出现就落盘之后，全命中才是常态，于是每次导出都要看着进度条为**零工作量**
+    // 爬 15%，还被告知在"下载"。现在没活干就只报一次「素材已在本地 (N)」。
+    const prep = await prepareMedia({
+      plan,
+      io: prepIO(plan.projectId),
+      // 并发上限保持 4（与 6.4 之前逐字相同）：下载怕打爆 HTTP 连接池，
+      // 探测怕同时拉起太多 ffmpeg 进程。**这两个数字不因本次重构而改动。**
+      downloadConcurrency: 4,
+      probeConcurrency: 4,
+      // 6.6：只用来**把话说清楚** —— 某个本地素材读不到时，是"重启后授权没了、
+      // 重选一下就行"还是"文件真的不见了"，两句话的处置办法完全不同。
+      localRoots: getLocalRoots(),
+      signal,
+      onProgress: (p) => report({ pct: Math.round(p.frac * 18), stage: p.stage }),
+    });
+    const paths = prep.paths;
+    const audioMap = prep.audio;
+
+    // ---- 5.8 蒙版接线 ----
+    //
+    // 蒙版落在 work/masks/ 下，于是 **本函数末尾那句 `remove(work, {recursive:true})`
+    // 就是它的清理**——成功 / 失败 / 取消三条路径共用同一句，不需要再写一套。
+    // （再写一套的下场是三条路径里迟早漏掉一条，而漏掉的那条通常是"取消"。）
+    const masksDir = await join(work, "masks");
+    await mkdir(masksDir, { recursive: true });
+    const maskIO: MaskIO = {
+      join: (dir, name) => join(dir, name),
+      write: (path, data, append) => writeFile(path, data, { append }),
+    };
+    // 本段的 (clipIdx,groupIdx) → 蒙版路径。编译器只通过 ctx.maskPath 读它，
+    // 每段渲染前重填 —— 段与段之间的蒙版不共享（文件名里的 segIdx 就是这个意思）。
+    let segMasks = new Map<string, string>();
+
+    const notices = new Set<string>(prep.notices);
+    // 缺滤镜的降级提示要在**开跑前**就算出来：它取决于 caps 和素材，与跑到第几段无关，
+    // 而放在段内算会随段重复判断、还可能因为某段恰好没有马赛克而漏报。
+    for (const n of maskDegradeNotices(
+      segs.flatMap((s) => maskClipsOf(s.clips)),
+      { alphamerge: hasFilter(caps, "alphamerge"), geq: hasFilter(caps, "geq") },
+    )) notices.add(n);
 
     const ctx = {
       plan, caps, encoder,
@@ -287,6 +278,12 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
         return p;
       },
       hasAudio: (id: string) => audioMap.get(id) ?? true,
+      // 6.4：效果依赖的资源文件（当前只有 LUT）。拿不到返回 null 而不是 throw ——
+      // LUT 是装饰性的，下载失败该少一层调色，不该让整个导出崩掉。
+      assetPath: (id: string) => paths.get(id) ?? null,
+      // 与 localPath / hasAudio 同一个模式：编译器不产生文件，只拼参数。
+      maskPath: (clipIdx: number, groupIdx: number) =>
+        segMasks.get(`${clipIdx}:${groupIdx}`) ?? null,
     };
 
     // 2) 逐段渲染（18-85%）——内存在这里恒定，是整个方案的关键
@@ -301,9 +298,34 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
         segment: { done: i, total: segs.length },
       });
       const out = await join(work, `seg_${String(i).padStart(4, "0")}.mp4`);
+
+      // 先产蒙版、再编译：`compileSegment` 通过 ctx.maskPath 读的就是这一份，
+      // 拿不到路径时它整段落回 legacy 的 drawbox / split-crop-overlay（§5.3.1 零回归）。
+      segMasks = new Map();
+      if (segs[i].kind === "composite" && hasFilter(caps, "alphamerge")) {
+        const mplan = planSegmentMasks(
+          i, maskClipsOf(segs[i].clips),
+          { w: plan.output.width, h: plan.output.height }, plan.output.fps,
+        );
+        if (mplan.specs.length) {
+          report({
+            pct: 18 + Math.round((i / segs.length) * 67),
+            stage: `生成遮挡蒙版 ${i + 1}/${segs.length}`,
+            segment: { done: i, total: segs.length },
+          });
+          segMasks = await writeSegmentMasks(
+            masksDir, mplan, maskIO, signal, () => { throw new Aborted(); });
+          for (const n of mplan.notices) notices.add(n);
+        }
+      }
+
       const { args } = compileSegment(segs[i], ctx, out);
       await runFfmpeg(args, signal);
       segFiles.push(out);
+      // 本段已出片 → 它的蒙版再没人读了。峰值磁盘因此是「单段蒙版」而不是「全片蒙版」；
+      // 就算这里漏了，finally 的整目录删仍然兜底，二者不是替代关系。
+      const segMaskFiles = [...segMasks.values()];
+      if (segMaskFiles.length) await retireFiles(segMaskFiles);
       report({
         pct: 18 + Math.round(((i + 1) / segs.length) * 67),
         stage: `渲染片段 ${i + 1}/${segs.length}`,
@@ -311,23 +333,47 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
       });
     }
 
+    // 4.3：中间产物用完即删。
+    //
+    // 峰值磁盘 = 所有分段之和 + 尾段每一道的产物。四道齐全时约是成片体积的
+    // **4 倍**（1424 镜 4K 项目动辄几十 GB），而用户盘满的表现是导出跑了半小时
+    // 之后在最后一步失败——最贵的一种失败。
+    //
+    // ⚠️ 安全规则只有一条，但必须严格遵守：
+    //    **只有当下一道已经成功产出新文件、`final` 也已经指向它之后，
+    //      才删上一道的产物。**
+    // §0.5(h) 记了反面教材：`merged.mp4` / `mixed.mp4` **在降级分支里就是成片**
+    // （无音频时成片是 merged；老机器 ffmpeg 没有 subtitles 滤镜时成片是 mixed，
+    // 那是刻意保留的降级分支）。无条件删这两个 = 静音项目和老机器直接导不出来。
+    // 而按「下一道成功后才删上一道」来写，被删的那个**必然不是成片**——
+    // 三种降级组合自动成立，不需要在每个分支里各写一遍条件。
+    //
+    // 缓存目录（cache/<projectId>/）一个都不能碰：同一素材可能被多镜引用，
+    // 且分段渲染与混音会**两次读取**它。这里删的全部在 work 目录内。
+    //
+    // 具体的删除动作（分批 + 吞错）在 lib/retireFiles.ts，与 legacy localRender
+    // 共用同一份实现——这条规则写错的代价太不对称，不能两边各抄一遍。
+
     // 3) concat（85-92%）——各段编码参数一致，-c copy 安全
     report({ pct: 85, stage: "拼接片段" });
     const listPath = await join(work, "list.txt");
     await writeTextFile(listPath,
       segFiles.map((f) => `file '${f.replace(/\\/g, "/")}'`).join("\n") + "\n");
     let final = await join(work, "merged.mp4");
-    await runFfmpeg(
-      compileConcat(listPath, final, plan.output.withAudio), signal);
 
-    // 3.5) 混入音频轨（旁白 / 配乐 / 镜头原声）
+    // 4.2：`+faststart` 只给**最后一道**产物。它靠整文件重写把 moov 挪到文件头，
+    // 而中间产物没有一个会被播放器打开（下一道 ffmpeg 读本地文件不在乎 moov 位置），
+    // 加了纯属白做几次全文件读写。
     //
-    // 分段渲染只处理视频轨（buildSegments 按 kind==="video" 过滤），
-    // 音频轨必须在这里单独混一次——否则成片里没有旁白也没有配乐。
-    // 对"镜头原声"尤其关键：normalize.ts 已把被剥离的镜头视频静音，
-    // 这一步不做的话那些镜头会彻底没声音。
-    if (plan.output.withAudio) {
-      const audioClips = plan.tracks
+    // 哪一道是最后一道取决于后面两步跑不跑，所以两个判据都必须**提前**定下来。
+    // 混音这一步尤其要小心：能不能混不是看「有没有音频 clip」，而是看
+    // `compileAudioMix` 过完自己那道 `!muted && volume > 0 && path` 的筛之后
+    // 还剩不剩东西（全部静音时它返回 null）。若在这里另写一个近似判据，
+    // 就会出现「以为要混音、于是 concat 不加 faststart，结果混音没跑，
+    // 交付的 merged.mp4 没有 moov 前置」——静默、且只有网页边下边播的用户会遇到。
+    // 故直接把 mixArgs **算出来**当判据，让同一个对象决定两件事。
+    const audioClips = plan.output.withAudio
+      ? plan.tracks
         .filter((t) => t.kind === "audio" && !t.muted)
         .flatMap((t) => t.clips)
         .map((c) => ({
@@ -336,20 +382,47 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
           volume: c.audio.volume,
           muted: c.audio.muted,
         }))
-        .filter((c) => c.path);
-      const mixArgs = audioClips.length
-        ? compileAudioMix(final, audioClips, await join(work, "mixed.mp4"))
-        : null;
-      if (mixArgs) {
-        report({ pct: 90, stage: `混音 ${audioClips.length} 段` });
-        await runFfmpeg(mixArgs, signal);
-        final = await join(work, "mixed.mp4");
-      }
+        .filter((c) => c.path)
+      : [];
+    const mixOut = await join(work, "mixed.mp4");
+    const willBurn = !!opts.burnSrt?.trim() && hasFilter(caps, "subtitles");
+    const mixArgs = audioClips.length
+      ? compileAudioMix(final, audioClips, mixOut, { faststart: !willBurn })
+      : null;
+
+    await runFfmpeg(
+      compileConcat(listPath, final, {
+        withAudio: plan.output.withAudio,
+        faststart: !mixArgs && !willBurn,
+      }), signal);
+
+    // concat 已经成功产出 merged.mp4，分段文件就此退休（§0.5(h) 认定的唯一安全窗口）。
+    // 单独报一次进度：1424 个文件的删除不是瞬时的，不报的话用户看到的是
+    // 进度条在 85% 上莫名其妙地停一下。
+    report({ pct: 88, stage: `清理 ${segFiles.length} 个分段文件` });
+    await retireFiles(segFiles);
+
+    // 3.5) 混入音频轨（旁白 / 配乐 / 镜头原声）
+    //
+    // 分段渲染只处理视频轨（buildSegments 按 kind==="video" 过滤），
+    // 音频轨必须在这里单独混一次——否则成片里没有旁白也没有配乐。
+    // 对"镜头原声"尤其关键：normalize.ts 已把被剥离的镜头视频静音，
+    // 这一步不做的话那些镜头会彻底没声音。
+    if (mixArgs) {
+      report({ pct: 90, stage: `混音 ${audioClips.length} 段` });
+      await runFfmpeg(mixArgs, signal);
+      const prev = final;
+      final = mixOut;
+      // final 已经指向 mixed.mp4 → merged.mp4 不可能是成片了（4.3）
+      await retireFiles([prev]);
     }
 
     // 4) 烧字幕（92-97%）——放最后，避免每段各烧一次导致时间码错位
     if (opts.burnSrt?.trim()) {
-      if (!hasFilter(caps, "subtitles")) {
+      // ⚠️ 这里刻意复用上面那个 willBurn，而不是把 `hasFilter(caps,"subtitles")`
+      // 再写一遍：它同时决定了「前一道要不要 faststart」。两处各写一份判据一旦漂移，
+      // 症状是成片**一个 faststart 都没有**（前一道以为字幕会烧、字幕这边却跳过了）。
+      if (!willBurn) {
         // 能力不足时跳过而不是失败：没字幕的成片仍然可用
         report({ pct: 92, stage: "当前 ffmpeg 不支持字幕烧录，已跳过" });
       } else {
@@ -366,13 +439,33 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
         // 故只在 bundled 时传。
         let fontsDir: string | null = null;
         if (opts.subtitleStyle?.fontSource === "bundled") {
-          fontsDir = await resolveResource("resources/fonts").catch(() => null);
+          // ⚠️ resolveResource **只拼路径、不校验存在**。字体二进制不进 git，
+          // 而 CI 以前从不跑 fetch-fonts.sh —— 于是这里拿到一个"存在但空的"
+          // 目录，fontsdir 照传，libass 找不到 Noto 就悄悄换字形：用户选了
+          // 内置字体、导出成功、字幕却是别的样子，全程零提示。
+          // 现在真去看那两个 .ttc 在不在，不在就明说并回落（见 bundledFonts.ts）。
+          const dir = await resolveResource("resources/fonts").catch(() => null);
+          // 判据是"存在**且**够大"而不是单纯存在：安装中断留下的 0 字节占位文件
+          // 与完全没有这个文件，对 libass 是同一件事（都换字形），却只有前者
+          // 能骗过 exists()。stat 抛错由 checkBundledFonts 兜成"不可用"。
+          const check = await checkBundledFonts(dir, async (p) =>
+            (await stat(p)).size >= MIN_FONT_BYTES);
+          fontsDir = check.fontsDir;
+          const warn = bundledFontsWarning(check);
+          if (warn) report({ pct: 92, stage: warn });
         }
         await runFfmpeg(
-          compileBurnSubtitles(final, srt, burned, encoder, plan.output.crf,
-                               opts.subtitleStyle, plan.output.height, fontsDir),
+          compileBurnSubtitles(final, srt, burned, encoder, plan.output.crf, {
+            style: opts.subtitleStyle, videoH: plan.output.height, fontsDir,
+            faststart: true,   // 烧字幕永远是最后一道
+          }),
           signal);
+        const prev = final;
         final = burned;
+        // final 已经指向 final.mp4 → 上一道（mixed 或 merged）不可能是成片了（4.3）。
+        // 注意 retire 必须排在 runFfmpeg **之后**：prev 正是烧字幕这一道的
+        // **输入文件**，提前删就等于抽掉它脚下的地板。混音那道同理。
+        await retireFiles([prev]);
       }
     }
 
@@ -396,6 +489,7 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
     return {
       outputPath: dest, segments: segs.length,
       estPeakMB: stats.estPeakMB, encoder, elapsedMs: Date.now() - t0,
+      notices: [...notices],
     };
   } finally {
     // 成功/失败/取消都要清工作目录，否则几十 GB 中间文件会堆在用户盘上
