@@ -66,8 +66,10 @@ uniform float u_temp;       // temperature/200
 uniform float u_tint;       // tint/200
 uniform float u_shadowGamma;// 1+shadows/200
 uniform float u_vignette;   // 0..1
-uniform float u_blur;       // 0..1（近似：小半径均值模糊）
-uniform vec2  u_texel;      // 1/分辨率，供模糊取样
+// 模糊：mipmap 层级 + 该层级上的 3x3 取样间距。<0 表示不模糊。
+// 为什么不是单纯的 3x3 均值，见下方 main() 里的说明。
+uniform float u_blurLod;
+uniform vec2  u_blurStep;   // uv 单位
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -78,14 +80,26 @@ vec3 applyGamma(vec3 c, float g) {
 
 void main() {
   vec3 c;
-  if (u_blur > 0.001) {
-    // 3x3 均值：CSS blur() 是高斯，这里用均值近似，半径随强度放大。
-    // 预览用途够了，真正的模糊在 ffmpeg gblur 里做。
-    vec2 r = u_texel * (u_blur * 6.0);
+  if (u_blurLod >= 0.0) {
+    // ⚠️ 这里**不是**「3x3 均值就够了」。
+    //
+    // CSS 路径写的是 blur(强度/100*6 px)，作用在**显示尺寸**上；
+    // 而 shader 跑在**源分辨率**上（1080 宽的片子显示成 400 宽时差 2.7 倍）。
+    // 旧实现用固定 3x3、间距只有 blur*6 个**源**像素，实测等效标准差约 5 源像素，
+    // 相当于显示尺寸上不到 2px —— 比 CSS 弱一个数量级。
+    // 之前这条路径被自举死锁挡着从没跑起来，所以没人发现；一旦 GPU 路径生效，
+    // 用户会看到"模糊滑块几乎没用了"，那是**回退**，不是新功能。
+    //
+    // 直接把 3x3 的间距拉到 ~20 源像素也不行：三个离散抽头会出现三重鬼影。
+    // 所以用 mipmap 承担大尺度、3x3 抽头负责把 mip 的方块感抹平：
+    //   mip 层级 L 的一次双线性取样 ≈ 宽 2^L 的方块滤波（σ ≈ 0.289·2^L），
+    //   取 L 使其 σ 恰为目标的一半，剩下 3/4 的方差交给间距 1.06σ 的 3x3。
+    // 两者方差相加即目标 σ²，且抽头间距小于 mip 方块宽度，重叠平滑无鬼影。
     c = vec3(0.0);
     for (int y = -1; y <= 1; y++)
       for (int x = -1; x <= 1; x++)
-        c += texture(u_frame, v_uv + vec2(float(x), float(y)) * r).rgb;
+        c += textureLod(u_frame, v_uv + vec2(float(x), float(y)) * u_blurStep,
+                        u_blurLod).rgb;
     c /= 9.0;
   } else {
     c = texture(u_frame, v_uv).rgb;
@@ -163,7 +177,7 @@ export class GradePreview {
     gl.bindTexture(gl.TEXTURE_3D, t);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, 1, 1, 1, 0, gl.RGB, gl.FLOAT,
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, 1, 1, 1, 0, gl.RGB, gl.FLOAT,
                   new Float32Array([0, 0, 0]));
     this.dummyTex = t;
     return t;
@@ -192,7 +206,7 @@ export class GradePreview {
 
     for (const n of ["u_frame", "u_lut", "u_hasLut", "u_lutSize", "u_bright",
                      "u_contrast", "u_satur", "u_gamma", "u_temp", "u_tint",
-                     "u_shadowGamma", "u_vignette", "u_blur", "u_texel"]) {
+                     "u_shadowGamma", "u_vignette", "u_blurLod", "u_blurStep"]) {
       this.uni[n] = gl.getUniformLocation(prog, n);
     }
   }
@@ -240,8 +254,15 @@ export class GradePreview {
     for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) {
       gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
     }
-    // RGB32F：硬件三线性插值直接可用，无需在 shader 里手写四面体插值
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, cube.size, cube.size, cube.size,
+    // ⚠️ 内部格式必须是 **RGB16F，不能是 RGB32F**。
+    // WebGL2 里 32 位浮点纹理**默认不可线性过滤**：要 LINEAR 必须先
+    // `getExtension("OES_texture_float_linear")`，否则该纹理判定为"不完整"，
+    // 采样一律返回 (0,0,0,1) —— 表现就是**一加 LUT 画面全黑**，
+    // 而且 `getError()` 依然是 0，没有任何报错线索（已实测复现）。
+    // 半浮点的线性过滤是 WebGL2 **核心**能力，不依赖任何扩展，各端一致；
+    // LUT 值域是 0..1，half 的精度远超 .cube 本身，且显存减半。
+    // 硬件三线性插值直接可用，无需在 shader 里手写四面体插值。
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, cube.size, cube.size, cube.size,
                   0, gl.RGB, gl.FLOAT, cube.data);
     this.lutSize = cube.size;
     this.lutUrl = url;
@@ -264,6 +285,27 @@ export class GradePreview {
     gl.bindTexture(gl.TEXTURE_2D, this.frameTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
     gl.uniform1i(this.uni.u_frame, 0);
+
+    // ---- 模糊：按**显示尺寸**换算，再拆成 mipmap + 3x3（见 shader 里的说明）----
+    // cv.clientWidth 是 canvas 的 CSS 宽度；为 0（还没布局/隐藏）时退化为 1:1。
+    const blurN = (tm?.blur || 0) / 100;
+    if (blurN > 0.001) {
+      const srcPerCss = cv.clientWidth ? w / cv.clientWidth : 1;
+      // CSS 路径是 blur(blurN*6 px)，那是显示像素上的高斯标准差
+      const sigma = Math.max(0.5, blurN * 6 * srcPerCss);
+      // mip 只在需要时生成：不模糊的帧不该白付一次 generateMipmap
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      // 0.289·2^L = σ/2  →  L = log2(σ) + 0.79
+      gl.uniform1f(this.uni.u_blurLod,
+        Math.max(0, Math.min(12, Math.log2(sigma) + 0.79)));
+      gl.uniform2f(this.uni.u_blurStep, 1.06 * sigma / w, 1.06 * sigma / h);
+    } else {
+      // 关掉 mipmap 过滤：不生成 mip 却留着 MIPMAP 过滤会让纹理"不完整"，采样全黑
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.uniform1f(this.uni.u_blurLod, -1);
+      gl.uniform2f(this.uni.u_blurStep, 0, 0);
+    }
 
     const hasLut = !!(this.lutTex && this.lutSize);
     // ⚠️ u_lut 必须**始终**指向 1 号单元，哪怕这次不用 LUT。
@@ -288,25 +330,42 @@ export class GradePreview {
     gl.uniform1f(this.uni.u_tint, n(tm?.tint) / 200);
     gl.uniform1f(this.uni.u_shadowGamma, 1 + n(tm?.shadows) / 200);
     gl.uniform1f(this.uni.u_vignette, n(tm?.vignette) / 100);
-    gl.uniform1f(this.uni.u_blur, n(tm?.blur) / 100);
-    gl.uniform2f(this.uni.u_texel, 1 / w, 1 / h);
+    // 模糊的两个 uniform 在上面 texImage2D 之后就写好了（要先决定 mip 过滤）
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  dispose() {
+  /**
+   * 彻底销毁：释放资源**并丢掉 WebGL 上下文**。
+   *
+   * ⚠️ 只能在 canvas 元素本身要消失时调用，**绝不能在"切镜头 / 关掉调色"时调用**。
+   * `loseContext()` 是不可逆的：同一个 canvas 上再 `getContext("webgl2")`
+   * 拿回来的还是那个已丢失的上下文，之后所有调用静默失败、画面永久全黑。
+   * 旧代码把它挂在 `active` 的 effect cleanup 上，配合"canvas 无条件挂载"就会
+   * 变成「关一次调色 = 这个播放器的 GPU 预览永久报废」。
+   *
+   * 保留 loseContext 本身是必要的：浏览器同时活跃的 WebGL 上下文有上限（约 16），
+   * 播放器反复挂载卸载而不释放，后续创建会静默失败。所以它的正确归属是
+   * **卸载**，不是**停用**。停用只需要不画，不需要拆上下文。
+   */
+  destroy() {
     const gl = this.gl;
     gl.deleteTexture(this.frameTex);
     if (this.lutTex) gl.deleteTexture(this.lutTex);
     if (this.dummyTex) gl.deleteTexture(this.dummyTex);
     gl.deleteProgram(this.prog);
-    // 主动释放上下文：浏览器同时活跃的 WebGL 上下文有数量上限（约 16），
-    // 反复挂载卸载不释放会让后续创建静默失败
     gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
 }
 
-/** 该 transform 是否需要 WebGL（有 LUT 或调色项时才值得开 GPU 管线） */
+/** 该 transform 是否需要 WebGL（有 LUT 或调色项时才值得开 GPU 管线）
+ *
+ *  ⚠️ **故意不含 `opacity`**，这不是遗漏：
+ *  不透明度是"整层与背景合成"，不是逐像素调色，shader 里做不划算
+ *  （canvas 建的是 `alpha:false` 上下文，输出 alpha 会被丢掉）。
+ *  它由 `Player.tsx` 直接写到 canvas 元素的 CSS `opacity` 上 —— 元素级
+ *  opacity 与 `filter: opacity()` 的合成结果等价，且 GPU/CSS 两条路径同样生效。
+ *  所以 opacity **不参与**是否开 GPU 的判断，也不会在 GPU 路径下丢失。 */
 export function needsGpuPreview(tm: TransformMeta | null | undefined): boolean {
   if (!tm) return false;
   return !!(tm.lut || tm.exposure || tm.contrast || tm.saturation
