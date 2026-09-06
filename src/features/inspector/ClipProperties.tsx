@@ -4,15 +4,19 @@
  * TB-03/TB-10 已落地：变换（位置/缩放/旋转/不透明度/镜像）、变速、音量与淡化
  * 全部落库到 Shot.transform_meta，导出时由 media.py 翻译成 ffmpeg filter 链。
  *
- * 保存时机：拖动滑块**即时**提交（预览器读的是落库后的 transform_meta，
- * 不实时提交就看不到画面变化 —— 主流剪辑软件都是拖到哪儿画面就到哪儿）。
- * 松手再补一次收尾提交。拖动期间用 dragging 标记跳过回显，
- * 否则父组件刷新回来会把滑块拉回旧值。
+ * 保存时机：拖动滑块**即时**生效（预览器读的是同一份 transform_meta，
+ * 不实时送出就看不到画面变化 —— 主流剪辑软件都是拖到哪儿画面就到哪儿）；
+ * 但真正的 PATCH 延后到松手（2.2，见 lib/stagedWrite.ts）——
+ * 改动前是每个 onChange 一次 PATCH，拖一次滑块几十上百笔请求。
+ * 拖动期间用 dragging 标记跳过回显，否则父组件刷新回来会把滑块拉回旧值。
  */
 
 import { useEffect, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
-import type { TransformMeta } from "../../api";
+import type { TransformMeta, TransformPatchOpts } from "../../api";
+import type { MosaicParams } from "../../render/model";
+import { rescaleMosaicsForSpeed } from "../../lib/keyframeEdit";
+import { TRIM_STEP_SEC, quantizeSec } from "../timeline/trim";
 import "./ClipProperties.css";
 
 export interface TransformState {
@@ -44,6 +48,11 @@ interface Props {
   durationSec: number;
   /** 单镜时长上限（秒），来自 detail.shot_duration_max。缺省 15。 */
   maxDurationSec?: number;
+  /** 3.1 取片窗口（后端 clip_in_sec / clip_dur_sec）。undefined = 整段使用。 */
+  clipInSec?: number;
+  clipDurSec?: number;
+  /** 3.1 取消入点（把窗口清回"从素材开头起算"，长度不变） */
+  onClearClipWindow?: () => void;
   order: number;
   disabled: boolean;
   /** 该镜已保存的调整参数（后端 transform_meta） */
@@ -51,8 +60,11 @@ interface Props {
   /** 是否为叠加层镜头（混合模式只对叠加层有意义） */
   isOverlay?: boolean;
   onPatchDuration: (sec: number) => void;
-  /** TB-03/TB-10：保存调整参数；传 {} 清空 */
-  onPatchTransform: (tm: TransformMeta | Record<string, never>) => void;
+  /** TB-03/TB-10：保存调整参数；传 {} 清空。
+   *  拖滑块的中间值带 `{ staged: true }`（本地即时生效、落库延后）。 */
+  onPatchTransform: (
+    tm: TransformMeta | Record<string, never>, opts?: TransformPatchOpts,
+  ) => void;
   onToast: (m: string) => void;
 }
 
@@ -87,10 +99,18 @@ export default function ClipProperties(p: Props) {
   }, [p.shotId, p.durationSec, p.transform]);
 
   /** 汇总三组本地 state → transform_meta 落库。
-   *  全是默认值时传 {}，后端会存 NULL，导出走"无调整"的快路径。 */
+   *  全是默认值时传 {}，后端会存 NULL，导出走"无调整"的快路径。
+   *
+   *  `staged`（2.2）：拖动中的中间值只在本地生效（画面照旧跟手 ——
+   *  App 会把未落库的值盖回 detail.shots），真正的 PATCH 延后到松手。
+   *  改动前这里是每个 onChange 一次 PATCH，拖一次滑块几十上百笔。 */
   const commit = (over?: Partial<{
     tf: TransformState; tm: TimeState; au: AudioState;
-  }>) => {
+    /** 5.6：变速会让马赛克关键帧的时刻整体错位，改速度时连同重算后的
+     *  区域一起提交。本面板平时**不碰** mosaics（它由马赛克面板拥有），
+     *  所以这里是显式覆盖而不是常规字段。 */
+    mosaics: MosaicParams[];
+  }>, staged = false) => {
     const T = over?.tf ?? tf, M = over?.tm ?? tm, A = over?.au ?? au;
 
     // ⚠️ 必须在**已有** transform_meta 上合并，不能从 {} 重建。
@@ -121,8 +141,39 @@ export default function ClipProperties(p: Props) {
     set("muted", true, !!A.muted);
     set("fadeIn", A.fadeIn, !!A.fadeIn);
     set("fadeOut", A.fadeOut, !!A.fadeOut);
+    if (over?.mosaics) out.mosaics = over.mosaics;
 
-    p.onPatchTransform(Object.keys(out).length ? out : {});
+    const payload = Object.keys(out).length ? out : {};
+    stagedRef.current = staged ? payload : null;
+    p.onPatchTransform(payload, staged ? { staged: true } : undefined);
+  };
+
+  /** 拖动中最后一次 stage 出去的值；松手时原样重发做真落库。
+   *  ⚠️ 不在松手回调里用 `commit()` 重算：拖动的 onChange 是连续事件，
+   *  React 可能把最后一次 setTf/setAu 推迟到 pointerup 之后，
+   *  那样收尾提交会漏掉最后一格 —— 「松手后的最终值确实落库」是本条的验收标准。 */
+  const stagedRef = useRef<TransformMeta | Record<string, never> | null>(null);
+  const commitStaged = () => {
+    const v = stagedRef.current;
+    stagedRef.current = null;
+    // 只按了一下没拖动 → 没有待落库的值，不平白多发一笔 PATCH
+    if (v) p.onPatchTransform(v);
+  };
+
+  /**
+   * 5.6：改变速 = 马赛克关键帧时刻整体错位，必须连带重算。
+   *
+   * `tSec` 存的是滤镜里的 `t`，也就是变速 `setpts` **之后**的输出时间；
+   * 1×→2× 时同一个画面出现的输出时刻减半。不重算的话用户一改速度，
+   * 所有遮挡都在错误的时刻开始动 —— 没有报错，只有"跟丢了"。
+   * 悄悄改用户的数据和不改一样糟，所以真动了才 toast。
+   */
+  const applySpeed = (next: number) => {
+    const n: TimeState = { ...tm, speed: next };
+    setTm(n);
+    const r = rescaleMosaicsForSpeed(p.transform?.mosaics, p.transform?.speed ?? 1, next);
+    commit({ tm: n, mosaics: r.changed ? r.mosaics : undefined });
+    if (r.changed > 0) p.onToast(`变速后已重算 ${r.changed} 个遮挡区域的关键帧时刻`);
   };
 
   if (p.tab === "basic") {
@@ -130,17 +181,17 @@ export default function ClipProperties(p: Props) {
       <div className="fw-cp">
         <Group title="位置">
           <Slider label="X" v={tf.x} min={-500} max={500} unit="px"
-            onChange={(v) => { setTf((s) => ({ ...s, x: v })); commit({ tf: { ...tf, x: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+            onChange={(v) => { setTf((s) => ({ ...s, x: v })); commit({ tf: { ...tf, x: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
           <Slider label="Y" v={tf.y} min={-500} max={500} unit="px"
-            onChange={(v) => { setTf((s) => ({ ...s, y: v })); commit({ tf: { ...tf, y: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+            onChange={(v) => { setTf((s) => ({ ...s, y: v })); commit({ tf: { ...tf, y: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
         </Group>
         <Group title="变换">
           <Slider label="缩放" v={tf.scale} min={10} max={400} unit="%"
-            onChange={(v) => { setTf((s) => ({ ...s, scale: v })); commit({ tf: { ...tf, scale: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+            onChange={(v) => { setTf((s) => ({ ...s, scale: v })); commit({ tf: { ...tf, scale: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
           <Slider label="旋转" v={tf.rotate} min={-180} max={180} unit="°"
-            onChange={(v) => { setTf((s) => ({ ...s, rotate: v })); commit({ tf: { ...tf, rotate: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+            onChange={(v) => { setTf((s) => ({ ...s, rotate: v })); commit({ tf: { ...tf, rotate: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
           <Slider label="不透明度" v={tf.opacity} min={0} max={100} unit="%"
-            onChange={(v) => { setTf((s) => ({ ...s, opacity: v })); commit({ tf: { ...tf, opacity: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+            onChange={(v) => { setTf((s) => ({ ...s, opacity: v })); commit({ tf: { ...tf, opacity: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
         </Group>
         <Group title="混合与镜像">
           <div className="fw-cp-row">
@@ -176,24 +227,48 @@ export default function ClipProperties(p: Props) {
   if (p.tab === "time") {
     // 上限跟项目的视频模型走（seedance-2.5 单镜 30s），不是常数 15。
     const maxDur = Math.round(p.maxDurationSec ?? 15);
+    // 3.2：步进 0.1s，与时间轴拖拽同源（features/timeline/trim.ts）。
+    // 原来这里 step=1 + Math.round：用户在时间轴上把镜头拖到 2.4s，
+    // 一打开这个面板再失焦，它就被"整理"回 2 —— 两个入口互相打架，
+    // 而用户以为是自己拖歪了。
+    const q1 = (v: number) => quantizeSec(v);
     return (
       <div className="fw-cp">
         <Group title="时长（可编辑）">
           <div className="fw-cp-row">
             <span className="fw-cp-k">时长</span>
             <span className="fw-cp-dur">
-              <input type="number" min={1} max={maxDur} step={1} value={durDraft}
+              <input type="number" min={1} max={maxDur} step={TRIM_STEP_SEC} value={durDraft}
                 onChange={(e) => setDurDraft(Number(e.target.value))}
                 onBlur={() => {
-                  const v = Math.max(1, Math.min(maxDur, Math.round(durDraft)));
+                  const v = Math.max(1, Math.min(maxDur, q1(durDraft)));
                   setDurDraft(v);
-                  if (v !== Math.round(p.durationSec)) p.onPatchDuration(v);
+                  if (v !== q1(p.durationSec)) p.onPatchDuration(v);
                 }} />
               <span className="fw-cp-unit">s</span>
             </span>
           </div>
-          <div className="fw-cp-hint">后端钳制 1–{maxDur} 秒，与时间轴拖拽同源</div>
+          <div className="fw-cp-hint">
+            后端钳制 1–{maxDur} 秒、按 0.1s 步进，与时间轴拖拽同源
+          </div>
         </Group>
+
+        {/* 3.1 取片窗口：只有真的修剪过（或被分割过）才显示。
+            没窗口的镜头显示"入点 0.0s"只是噪音，还会让人以为存在什么设置。 */}
+        {p.clipDurSec != null && p.clipDurSec > 0 && (
+          <Group title="取片窗口（素材上的哪一段）">
+            <Row k="入点" v={`${(p.clipInSec ?? 0).toFixed(1)}s`} />
+            <Row k="出点" v={`${((p.clipInSec ?? 0) + p.clipDurSec).toFixed(1)}s`} />
+            <div className="fw-cp-hint">
+              导出与字幕定时取的是这一段；时间轴上拖左/右边缘即可调整
+            </div>
+            {(p.clipInSec ?? 0) > 0 && p.onClearClipWindow && (
+              <button className="fw-cp-reset" onClick={p.onClearClipWindow}>
+                <RotateCcw size={12} /> 取消入点（从素材开头起算）
+              </button>
+            )}
+          </Group>
+        )}
 
         <Group title="位置">
           <Row k="序号" v={`#${p.order}`} />
@@ -204,14 +279,14 @@ export default function ClipProperties(p: Props) {
           <div className="fw-cp-speeds">
             {SPEEDS.map((s) => (
               <button key={s} className={tm.speed === s ? "on" : ""}
-                onClick={() => { const n = { ...tm, speed: s }; setTm(n); commit({ tm: n }); }}>
+                onClick={() => applySpeed(s)}>
                 {s}×
               </button>
             ))}
           </div>
           <div className="fw-cp-hint">变速同时改画面与声音（atempo），导出即生效</div>
         </Group>
-        <ResetBtn onClick={() => { setTm(DEF_TIME); commit({ tm: DEF_TIME }); }} />
+        <ResetBtn onClick={() => applySpeed(DEF_TIME.speed)} />
       </div>
     );
   }
@@ -220,7 +295,7 @@ export default function ClipProperties(p: Props) {
     <div className="fw-cp">
       <Group title="音量">
         <Slider label="音量" v={au.volume} min={0} max={200} unit="%"
-          onChange={(v) => { setAu((s) => ({ ...s, volume: v })); commit({ au: { ...au, volume: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+          onChange={(v) => { setAu((s) => ({ ...s, volume: v })); commit({ au: { ...au, volume: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
         <div className="fw-cp-row">
           <span className="fw-cp-k">静音</span>
           <button className={`fw-cp-switch ${au.muted ? "on" : ""}`}
@@ -231,9 +306,9 @@ export default function ClipProperties(p: Props) {
       </Group>
       <Group title="淡化">
         <Slider label="淡入" v={au.fadeIn} min={0} max={50} unit="×0.1s"
-          onChange={(v) => { setAu((s) => ({ ...s, fadeIn: v })); commit({ au: { ...au, fadeIn: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+          onChange={(v) => { setAu((s) => ({ ...s, fadeIn: v })); commit({ au: { ...au, fadeIn: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
         <Slider label="淡出" v={au.fadeOut} min={0} max={50} unit="×0.1s"
-          onChange={(v) => { setAu((s) => ({ ...s, fadeOut: v })); commit({ au: { ...au, fadeOut: v } }); }} onCommit={() => commit()} dragRef={dragging} />
+          onChange={(v) => { setAu((s) => ({ ...s, fadeOut: v })); commit({ au: { ...au, fadeOut: v } }, true); }} onCommit={commitStaged} dragRef={dragging} />
       </Group>
       <ResetBtn onClick={() => { setAu(DEF_AUDIO); commit({ au: DEF_AUDIO }); }} />
     </div>
@@ -254,7 +329,7 @@ function Group({ title, children }: { title: string; children: React.ReactNode }
 function Slider({ label, v, min, max, unit, onChange, onCommit, dragRef }: {
   label: string; v: number; min: number; max: number; unit: string;
   onChange: (v: number) => void;
-  /** 松手时的收尾提交（拖动中 onChange 已经在实时提交了） */
+  /** 松手时的收尾提交：拖动中只在本地生效，这一下才真正落库（2.2） */
   onCommit?: () => void;
   /** 拖动标记，交给父组件用来跳过回显（见 useEffect 里的说明） */
   dragRef?: React.MutableRefObject<boolean>;
@@ -266,9 +341,10 @@ function Slider({ label, v, min, max, unit, onChange, onCommit, dragRef }: {
         onPointerDown={() => { if (dragRef) dragRef.current = true; }}
         onChange={(e) => onChange(Number(e.target.value))}
         onPointerUp={() => { if (dragRef) dragRef.current = false; onCommit?.(); }}
-        onPointerCancel={() => { if (dragRef) dragRef.current = false; }}
+        // 拖出窗口、被系统手势打断等：同样要收尾，否则这次拖动只剩本地值
+        onPointerCancel={() => { if (dragRef) dragRef.current = false; onCommit?.(); }}
         onKeyUp={onCommit}
-        onBlur={() => { if (dragRef) dragRef.current = false; }} />
+        onBlur={() => { if (dragRef) dragRef.current = false; onCommit?.(); }} />
       <span className="fw-cp-v">{v}<em>{unit}</em></span>
     </div>
   );
