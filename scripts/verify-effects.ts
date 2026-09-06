@@ -88,7 +88,7 @@ function run(name: string, plan: RenderPlan, expect: number): boolean {
     const lst = join(work, `${tag}.txt`);
     writeFileSync(lst, files.map((f) => `file '${f}'`).join("\n") + "\n");
     const out = join(work, `${tag}_o.mp4`);
-    sh([...compileConcat(lst, out), "-loglevel", "error"]);
+    sh([...compileConcat(lst, out, { faststart: true }), "-loglevel", "error"]);
     const d = dur(out);
     const ok = Math.abs(d - expect) < 0.3;
     console.log(`  ${ok ? "✅" : "❌"} ${name.padEnd(16)} ${d.toFixed(2)}s (期望 ${expect}s)`);
