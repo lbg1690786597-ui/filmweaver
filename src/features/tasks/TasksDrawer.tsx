@@ -21,6 +21,9 @@ import {
 } from "lucide-react";
 import { api } from "../../api";
 import type { JobBrief } from "../../api";
+import {
+  useLoadState, describeLoadError, LOAD_LABELS,
+} from "../../stores/loadStateStore";
 import "./TasksDrawer.css";
 
 const KIND_LABEL: Record<string, string> = {
@@ -82,16 +85,32 @@ export default function TasksDrawer({ projectId, onRetry, onLocateShot, onClose 
   const [jobs, setJobs] = useState<JobBrief[] | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
 
   const load = async () => {
     try {
       // active=false：要全量历史，否则失败/已完成两组永远为空
       const r = await api.listProjectJobs(projectId, false, 80);
       setJobs(r.jobs);
-    } catch { setJobs([]); }
+      setLoadErr(null);
+      useLoadState.getState().noteLoaded("jobs");
+    } catch (e) {
+      // 2.4：以前是 `catch { setJobs([]) }` —— 于是抽屉里显示"本项目还没有任务记录"。
+      // 这句话在任务**正在跑**的时候尤其致命：用户以为刚才那次生成压根没发起，
+      // 于是再点一次「一键成片」。那是要花钱的，而且服务端会真的跑两遍。
+      // 现在保留上一次拿到的列表（有的话），并把"这份列表不可信"说出来。
+      setLoadErr(describeLoadError(e, LOAD_LABELS.jobs).message);
+      // 抽屉自己就在用户眼前，且下面会就地显示同一句话 + 重试，
+      // 所以这里不叠 toast，只登记（顶栏那条负责"抽屉关了也还记得"）。
+      useLoadState.getState().noteFailed("jobs", e);
+    }
   };
 
   useEffect(() => { void load(); }, [projectId]);
+
+  // 抽屉关掉时注销 + 清掉顶栏那条（空列表这句谎话随抽屉一起消失了）
+  useEffect(() => useLoadState.getState().registerRetry(
+    "jobs", () => { void load(); }), [projectId]);
 
   // 有任务在跑时定时刷新，跑完自动停——不然用户得手动点刷新才知道结束了
   useEffect(() => {
@@ -134,10 +153,23 @@ export default function TasksDrawer({ projectId, onRetry, onLocateShot, onClose 
         </div>
       </header>
 
-      {jobs === null ? (
-        <div className="fw-tasks-loading">
-          <Loader2 size={14} className="fw-spin" /> 加载中…
+      {loadErr && (
+        /* 2.4：这条**排在列表之上**而不是替换列表 —— 上一次拿到的任务仍然有参考
+           价值（"至少 3 分钟前它在跑"），但必须标明它可能已经过时。 */
+        <div className="fw-tasks-loadfail">
+          <span><AlertTriangle size={12} /> {loadErr}</span>
+          <button className="fw-tasks-retry" onClick={() => void load()}>
+            <RefreshCw size={11} /> 重试
+          </button>
         </div>
+      )}
+
+      {jobs === null ? (
+        loadErr ? null : (
+          <div className="fw-tasks-loading">
+            <Loader2 size={14} className="fw-spin" /> 加载中…
+          </div>
+        )
       ) : (
         <div className="fw-tasks-body">
           {running.length > 0 && (
@@ -191,7 +223,7 @@ export default function TasksDrawer({ projectId, onRetry, onLocateShot, onClose 
             </Group>
           )}
 
-          {!jobs.length && (
+          {!jobs.length && !loadErr && (
             <div className="fw-tasks-empty">本项目还没有任务记录</div>
           )}
         </div>
