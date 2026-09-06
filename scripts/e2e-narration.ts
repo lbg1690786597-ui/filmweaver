@@ -217,14 +217,17 @@ async function main() {
   const listPath = `${WORK}/list.txt`;
   writeFileSync(listPath, segFiles.map((f) => `file '${f}'`).join("\n") + "\n");
   let final = `${WORK}/merged.mp4`;
-  ok(ff(compileConcat(listPath, final, true), "concat"), "拼接成功");
+  // 这条 e2e 三道都会跑，故只有最后的烧字幕带 faststart（4.2）
+  ok(ff(compileConcat(listPath, final, { withAudio: true, faststart: false }),
+        "concat"), "拼接成功");
 
   // 混音（旁白）
   const mixClips = aTracks.filter((t) => !t.muted).flatMap((t) => t.clips).map((c) => ({
     path: ctx.localPath(c.mediaId),
     startSec: c.timelineStartSec, volume: c.audio.volume, muted: c.audio.muted,
   }));
-  const mixArgs = compileAudioMix(final, mixClips, `${WORK}/mixed.mp4`);
+  const mixArgs = compileAudioMix(final, mixClips, `${WORK}/mixed.mp4`,
+                                  { faststart: false });
   ok(!!mixArgs, "生成了混音命令", `${mixClips.length} 段旁白`);
   if (mixArgs) {
     ok(ff(mixArgs, "混音"), "混音成功");
@@ -300,8 +303,10 @@ async function main() {
   writeFileSync(srt, srtText);
 
   const outBurn = `${WORK}/final.mp4`;
-  const burnArgs = compileBurnSubtitles(final, srt, outBurn, "libx264", plan.output.crf,
-    style, plan.output.height, new URL("../src-tauri/resources/fonts", import.meta.url).pathname);
+  const burnArgs = compileBurnSubtitles(final, srt, outBurn, "libx264", plan.output.crf, {
+    style, videoH: plan.output.height, faststart: true,
+    fontsDir: new URL("../src-tauri/resources/fonts", import.meta.url).pathname,
+  });
   ok(ff(burnArgs, "烧字幕"), "字幕烧录成功", `${abs.length} 条`);
   final = outBurn;
   const burned = true;
