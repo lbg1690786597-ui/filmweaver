@@ -1,5 +1,11 @@
 /** FilmWeaver 后端 API 客户端（对接 backend /v2）。 */
 import pkg from "../package.json";
+import type { MosaicParams } from "./render/model";
+import { fetchTracked } from "./lib/trackedFetch";
+import { noteRequestOk, noteRequestFailed } from "./lib/backendReach";
+import { isUnreachable } from "./lib/appGate";
+// 2.3：写请求的错误要带上状态码，调用方才能把 409（并发冲突）与别的失败区分开
+import { SaveHttpError } from "./stores/saveStateStore";
 
 // T-R0-10: BASE 仅走环境变量，默认值在 .env.development / .env.production
 export const BASE = import.meta.env.VITE_FW_API_BASE || "http://127.0.0.1:8002";
@@ -16,8 +22,55 @@ const authHeaders = (): Record<string, string> => {
   return h;
 };
 
+/**
+ * 6.8 补发一笔离线队列里的写。返回 HTTP 状态码；`null` 表示**又断了**。
+ *
+ * 放在 api.ts 是因为 `authHeaders()` 只在这里 —— 队列里**刻意不存 token**
+ * （磁盘上的明文 JSON 不该有它，何况陈旧 token 补发也只会 401），
+ * 所以补发时必须现取。
+ *
+ * ⚠️ **刻意不走 `fetchTracked`**，这是承重的：
+ *   · 它的 catch 会把失败的这一笔**重新塞回队列**，而我们正在遍历这个队列 ——
+ *     一边发一边往里加，`replayQueue` 算出来的 remaining 就不是真的了；
+ *   · 它会把补发计进「保存中 / 保存失败」，于是用户离线期间攒的 5 笔改动
+ *     会在恢复的瞬间让顶栏连闪 5 次红 —— 而补发结果本来就要用一句话统一交代。
+ * 可达性照样上报（`noteRequestOk` / `noteRequestFailed`）：那是"后端在不在"，
+ * 与"这笔存没存上"无关，断在补发中途必须能立刻被察觉。
+ */
+export async function sendQueuedWrite(
+  w: { method: string; url: string; body: string | null },
+): Promise<number | null> {
+  try {
+    const resp = await fetch(w.url, {
+      method: w.method,
+      headers: w.body === null
+        ? authHeaders()
+        : { "Content-Type": "application/json", ...authHeaders() },
+      body: w.body,
+    });
+    noteRequestOk();
+    return resp.status;
+  } catch (e) {
+    noteRequestFailed(e);
+    // 连不上 → null（`replayQueue` 据此立刻停下，把剩下的原样留着）。
+    // 不是连不上却 reject（极少见，例如 URL 本身非法）→ 给一个非 2xx 的
+    // 数字让它按"其余 4xx"处理：丢弃并如实计入 rejected。**不能**也返回 null，
+    // 那会让这一笔永远卡在队头，每次恢复连接都重试同一个必失败的请求。
+    return isUnreachable(e) ? null : 0;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 写请求的唯一出口 —— 顶栏「已保存」的真实数据源（2.1）
+ *
+ * 本文件里**所有**写请求（POST/PATCH/PUT/DELETE）都必须走 `fetchTracked`，
+ * 直接 `fetch` 的写请求会让顶栏在它失败时依然显示「已保存」。
+ * 实现与豁免名单在 lib/trackedFetch.ts；`scripts/verify-save-state.ts`
+ * 会静态扫本文件，逮住任何漏网的写请求。
+ * ------------------------------------------------------------------ */
+
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, {
+  const resp = await fetchTracked(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
@@ -61,8 +114,15 @@ function toApiError(status: number, raw: string): ApiError {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, { headers: authHeaders() });
-  if (!resp.ok) throw new Error(`${resp.status}`);
+  // 6.7：读请求也走 `fetchTracked`。它对 GET **不计入保存状态**（`isTrackedWrite`
+  // 只认写方法），走这一趟只为了让读也成为「后端还连不连得上」的证据 ——
+  // 全软件绝大多数请求是读，只盯写的话，一个只在浏览的用户断了网也察觉不到。
+  const resp = await fetchTracked(`${BASE}${path}`, { headers: authHeaders() });
+  // 2.4：以前这里是 `throw new Error(String(resp.status))` —— 整条消息就是三个
+  // 数字，读路径的 catch 只能一律当"失败"处理，说不出"是接口不存在还是后端挂了"。
+  // 而这两件事用户能做的动作完全不同（前者是功能不可用，后者是稍后重试）。
+  // 改抛 ApiError 后状态码可编程读取，`describeLoadError` 才有分类的依据。
+  if (!resp.ok) throw toApiError(resp.status, await resp.text().catch(() => ""));
   return resp.json();
 }
 
@@ -169,8 +229,18 @@ export interface ShotInfo {
   is_special: boolean;
   /** 拆解阶段预生成的提示词（"拆解镜头并生成提示词"第二阶段产物） */
   gen_prompt: string | null;
-  /** 所属集剧本已修改 → 本镜拆解/提示词已过期 */
+  /** 本镜已过期，需要重做；**要做什么由 stale_reason 决定**，别自己推测 */
   stale: boolean;
+  /** 过期的原因，按「补救动作」命名（后端 app/stale.py 是唯一真源）：
+   *  rebreak  本集正文改了 → 镜头切分已失效，需**重新拆解本集**
+   *  reprompt 本镜 script_ref/场景/衔接改了 → 需**重新生成提示词**再出片
+   *           （出片时后端会自动弃用旧 gen_prompt、从 script_ref 重优化）
+   *  regen    只是旁白时长变了 → 画面依据没变，**重出片即可**，出完自动清标记
+   *  null     本字段上线前的老数据，原因未知，按最保守的 rebreak 提示 */
+  stale_reason?: "rebreak" | "reprompt" | "regen" | null;
+  /** 后端按 stale_reason 出的那句人话（文案在后端，避免前后端各拼一份漂移）。
+   *  老后端/老数据拿不到 → 回落 staleHint() 的兜底文案 */
+  stale_hint?: string | null;
   /** gen_prompt 这一稿是怎么来的（镜头卡据此打标，避免误以为卡片上的就是最终下发稿）：
    *  draft   拆解初稿——那会儿资产还没生成，服装与人称都是凭剧本猜的
    *  aligned 已按当前资产（参考图造型 + 人物档案）重新对齐
@@ -206,11 +276,42 @@ export interface ShotInfo {
   overlay_start_sec?: number | null;
   /** TB-03/TB-10 画面与音频调整（缩放/旋转/位移/不透明度/镜像/变速/音量/淡化） */
   transform_meta?: TransformMeta | null;
+  /** 2.3 乐观锁：`transform_meta` 的版本号（服务端按内容算）。
+   *  写回时原样带上，服务端发现已被别处改过就回 409 而不是静默覆盖。
+   *  读取方一律通过 `lib/shotRev.ts`，不要在别处直接用它比较。 */
+  transform_rev?: string | null;
 }
+
+/**
+ * 写 transform_meta 时的落库时机（2.2）。
+ *
+ * `staged: true` —— 拖动/滑动**过程中**的中间值：本地立即生效（画面跟手），
+ * 真正的 PATCH 按尾防抖延后，见 `lib/stagedWrite.ts`。
+ * 缺省（或 `staged: false`）—— 离散操作（点按钮、选下拉、双击还原）与
+ * 松手时的收尾提交：立即落库。
+ *
+ * ⚠️ 默认是**立即落库**，所以忘了传 `staged` 只会退化成"和以前一样每帧一次
+ * PATCH"，不会丢数据；反过来把离散操作标成 staged 才是错的（用户点完就
+ * 可能立刻关窗口，得不到 250ms 的宽限）。
+ */
+export interface TransformPatchOpts { staged?: boolean }
 
 /** TB-03/TB-10：与后端 Shot.transform_meta 同构；缺键 = 该项不处理 */
 export interface TransformMeta {
-  scale?: number; rotate?: number; x?: number; y?: number;
+  scale?: number; rotate?: number;
+  /**
+   * 画面中心相对画布中心的偏移，单位是**画布宽/高的百分比**（不是像素）。
+   *
+   * ⚠️ 这里必须是分辨率无关的量，原因是硬的：**编辑期根本不知道画布分辨率**——
+   * 导出宽高是在 ExportDialog 里当场选的（`App.tsx:588`），同一个项目可以
+   * 一会儿导 720p 一会儿导 1080p。若存像素，同一次拖拽在两种分辨率下会把画面
+   * 挪到不同的相对位置。
+   *
+   * 早先这里存的是**预览窗口的屏幕像素**（`CropZoomOverlay` 直接把鼠标位移
+   * `dx` 写进来），于是同一个拖动在大窗口和小窗口下存出不同的数——而导出侧
+   * 又按画布像素解释它。两头单位都不对，且互不相同。
+   */
+  x?: number; y?: number;
   /**
    * V2.3：非等比缩放（百分比，缺省跟随 scale）。
    * 拖边中点做单轴拉伸时才会写入；角点等比缩放只写 scale。
@@ -229,22 +330,27 @@ export interface TransformMeta {
   /** V2.2 逐帧特效（0..100 强度）；未列出的项 = 不启用 */
   blur?: number; vignette?: number; grain?: number; glitch?: number;
   shake?: number; zoomPulse?: number; flash?: number; glow?: number;
-  /** V2.3 区域马赛克（数组，允许多个区域） */
-  mosaics?: Array<{
-    x: number; y: number; w: number; h: number;
-    style: "pixel" | "gaussblur" | "blackbox";
-    intensity: number;
-    /** 形状；缺省 = rect（老数据兼容） */
-    shape?: "rect" | "ellipse" | "brush";
-    /** brush 形状的笔迹点（比例坐标） */
-    stroke?: { x: number; y: number }[];
-    /** brush 笔刷直径（相对画面宽度比例） */
-    brushSize?: number;
-  }>;
+  /**
+   * V2.3 区域马赛克（数组，允许多个区域）。
+   * 类型直接复用 render 层的 MosaicParams —— normalize.ts 就是原样铺进去的，
+   * 两边同构是硬约束，各写一份只会静默漂移（见 model.ts 的说明）。
+   * model.ts 零依赖、纯类型，这里是 type-only import，不产生运行时耦合。
+   */
+  mosaics?: MosaicParams[];
   /** V2.3 取景框裁切（相对原始画面的比例 0..1）；未设 = 不裁 */
   crop?: { left: number; top: number; right: number; bottom: number };
   /** V2.2 混合模式（仅叠加层生效） */
   blendMode?: "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten";
+  /**
+   * P2-7 留黑：画面变黑，**时长与声音照旧**。
+   * 与 `ShotTimelineIn.disabled`（停用：不占时间、不出画面、字幕合拢）是
+   * 两件不同的事，语义对照表见 `render/model.ts` 的 `RenderClip.blackout`。
+   *
+   * 放在 `transform_meta` 里而不是新加一列：后端 `routes_v2.py` 的
+   * `transform_meta: Optional[dict]` 原样透传，**零迁移**；代价是它会参与
+   * `transform_rev` 的内容哈希 —— 这恰恰是想要的，留黑本来就该受乐观锁保护。
+   */
+  blackout?: boolean;
 }
 
 /** Render V2 转场：挂在两个相邻镜头的接缝上 */
@@ -458,6 +564,11 @@ export interface AudioClipInfo {
   duration: number;
   start_shot_order: number;
   start_offset_sec: number;
+  /** 6.9 修剪窗口：在 url 这个音源里取 [clip_in_sec, +clip_dur_sec)。
+   *  null = 整段播放。**播放时长 = clip_dur_sec ?? duration**，
+   *  `duration` 始终是音源实测总长，修剪不会改它（见 db.py AudioClip）。 */
+  clip_in_sec?: number | null;
+  clip_dur_sec?: number | null;
   voice_ref_url: string | null;
   /** kind="shot" 时指向来源镜头。导出时据此静音该镜头的原音轨，
    *  避免同一段声音响两遍（视频自带一遍 + 音频轨一遍）。 */
@@ -564,7 +675,7 @@ export const api = {
     fd.append("file", file);
     if (projectId) fd.append("project_id", projectId);
     fd.append("confirm", String(confirm));
-    const resp = await fetch(`${BASE}/v2/script/import-file`, {
+    const resp = await fetchTracked(`${BASE}/v2/script/import-file`, {
       method: "POST", headers: authHeaders(), body: fd,
     });
     if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 300)}`);
@@ -578,7 +689,7 @@ export const api = {
 
   /** 保存某集正文；该集已有镜头被标记 stale（过期） */
   updateEpisodeContent: (projectId: string, order: number, content: string) =>
-    fetch(`${BASE}/v2/projects/${projectId}/episodes/${order}/content`, {
+    fetchTracked(`${BASE}/v2/projects/${projectId}/episodes/${order}/content`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ content }),
@@ -601,9 +712,14 @@ export const api = {
       script, model_id: modelId ?? null, project_id: projectId, episode,
     }),
 
-  /** 采用某个版本 */
+  /** 采用某个版本。
+   *
+   *  3.1：切版本 = 换素材，后端会顺手清掉取片窗口（否则旧的入点/出点落在
+   *  新素材上就是一段错的内容，导出黑帧）。`clip_window_cleared` 为真时
+   *  调用方应当提示用户"入点已重置"，别让这件事静默发生。 */
   adoptShot: (shotId: string, versionNo: number) =>
-    post<{ ok: boolean; video_url: string }>(`/v2/shots/${shotId}/adopt`, { version_no: versionNo }),
+    post<{ ok: boolean; video_url: string; clip_window_cleared?: boolean }>(
+      `/v2/shots/${shotId}/adopt`, { version_no: versionNo }),
 
   /** TB-01 在镜内第 atSec 秒把镜头分割为前后两段（时间轴 Ctrl+B） */
   // ---- TB-02 字幕轨 ----
@@ -620,7 +736,7 @@ export const api = {
     text?: string; kind?: string; start_shot_order?: number;
     start_offset_sec?: number; duration?: number; style?: Record<string, unknown>;
   }) =>
-    fetch(`${BASE}/v2/subtitle-clips/${clipId}`, {
+    fetchTracked(`${BASE}/v2/subtitle-clips/${clipId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(patch),
@@ -630,7 +746,7 @@ export const api = {
     }),
 
   deleteSubtitleClip: (clipId: string) =>
-    fetch(`${BASE}/v2/subtitle-clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
+    fetchTracked(`${BASE}/v2/subtitle-clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
 
   /** 批量写入字幕段（本地对齐产物的落库入口）。
@@ -660,7 +776,7 @@ export const api = {
       `/v2/projects/${projectId}/subtitle-style`),
 
   setSubtitleStyle: (projectId: string, style: Record<string, unknown> | null) =>
-    fetch(`${BASE}/v2/projects/${projectId}/subtitle-style`, {
+    fetchTracked(`${BASE}/v2/projects/${projectId}/subtitle-style`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ style }),
@@ -686,7 +802,7 @@ export const api = {
   patchTransition: (id: string, patch: {
     type?: string; duration?: number; params?: Record<string, unknown>;
   }) =>
-    fetch(`${BASE}/v2/transitions/${id}`, {
+    fetchTracked(`${BASE}/v2/transitions/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(patch),
@@ -696,7 +812,7 @@ export const api = {
     }),
 
   deleteTransition: (id: string) =>
-    fetch(`${BASE}/v2/transitions/${id}`, { method: "DELETE", headers: authHeaders() })
+    fetchTracked(`${BASE}/v2/transitions/${id}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
 
   /** 各外部通道的配置健康度（只回布尔，不回任何 key） */
@@ -720,7 +836,7 @@ export const api = {
           counts: { bgm: number; sfx: number; unsorted: number; total: number } }>(
       `/v2/projects/${projectId}/audio-library${kind ? `?kind=${kind}` : ""}`),
   setAudioTag: (clipId: string, tag: "bgm" | "sfx" | "unsorted") =>
-    fetch(`${BASE}/v2/clips/${clipId}/audio-tag`, {
+    fetchTracked(`${BASE}/v2/clips/${clipId}/audio-tag`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ tag }),
@@ -775,7 +891,7 @@ export const api = {
   /** 人工改一条场景归一映射（source=manual，AI 重跑不覆盖）。
    *  误合并的修法：把其中一个写法的 canonical 改回它自己的名字。 */
   patchSceneAlias: (projectId: string, rawName: string, canonical: string) =>
-    fetch(`${BASE}/v2/scenes/alias`, {
+    fetchTracked(`${BASE}/v2/scenes/alias`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ project_id: projectId, raw_name: rawName, canonical }),
@@ -792,14 +908,14 @@ export const api = {
 
   patchStage: (stageId: string, patch: Partial<Pick<StageInfo,
     "stage_name" | "ep_from" | "ep_to" | "shot_from" | "shot_to" | "description" | "image_url" | "status" | "location" | "scene_bound">>) =>
-    fetch(`${BASE}/v2/stages/${stageId}`, {
+    fetchTracked(`${BASE}/v2/stages/${stageId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(patch),
     }).then(async (r) => { if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`); return r.json() as Promise<StageInfo>; }),
 
   deleteStage: (stageId: string) =>
-    fetch(`${BASE}/v2/stages/${stageId}`, { method: "DELETE", headers: authHeaders() })
+    fetchTracked(`${BASE}/v2/stages/${stageId}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
 
   /** 生成候选定妆图（不落库，选定后 patchStage image_url） */
@@ -923,7 +1039,7 @@ export const api = {
     scriptRef?: string; characters?: string[];
     location?: string; linkToPrev?: "continuous" | "transition";
   }) =>
-    fetch(`${BASE}/v2/shots/${shotId}/breakdown`, {
+    fetchTracked(`${BASE}/v2/shots/${shotId}/breakdown`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
@@ -940,7 +1056,7 @@ export const api = {
   /** 保存手改的提示词。后端会同时写 profile_override.prompt——
    *  只写 gen_prompt 的话，有参考图时会被 AI 重新优化覆盖掉。 */
   patchShotPrompt: (shotId: string, genPrompt: string) =>
-    fetch(`${BASE}/v2/shots/${shotId}/prompt`, {
+    fetchTracked(`${BASE}/v2/shots/${shotId}/prompt`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ gen_prompt: genPrompt }),
@@ -951,7 +1067,7 @@ export const api = {
 
   /** 撤销手改，把提示词交还给 AI（清 override，下次生成重新优化） */
   resetShotPrompt: (shotId: string) =>
-    fetch(`${BASE}/v2/shots/${shotId}/prompt`, {
+    fetchTracked(`${BASE}/v2/shots/${shotId}/prompt`, {
       method: "DELETE", headers: { ...authHeaders() },
     }).then(async (r) => {
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -962,11 +1078,24 @@ export const api = {
     durationSec?: number; toOrder?: number; disabled?: boolean;
     /** TB-03/TB-10：传 {} 清除全部调整 */
     transformMeta?: TransformMeta | Record<string, never>;
+    /** 2.3 乐观锁：本次改动所基于的 transform_meta 版本号（见 lib/shotRev.ts）。
+     *  省略 = 不做并发校验；只改时长/顺序的调用不需要它。 */
+    baseTransformRev?: string;
     /** Render V2 多轨：移到第几条视频轨（0=主轨） */
     trackIndex?: number;
     overlayStartSec?: number;
+    /** 3.1 取片窗口：入点（秒，相对素材开头）。
+     *  与 clipDurSec 一起构成 `[in, in+dur)`，导出与字幕定时读的是它。 */
+    clipInSec?: number;
+    /** 3.1 取片窗口长度（秒）。后端会同步把 duration_sec 写成同值，
+     *  维持 `duration_sec == clip_dur_sec` 的不变式（见 db.py 的说明）。 */
+    clipDurSec?: number;
+    /** 3.1 取消入点：把窗口清回"整段使用"。
+     *  为什么要一个单独的布尔而不是传 null —— 本接口的每个字段 null 都表示
+     *  "本次不改这一项"，没有别的办法表达"改成空"。 */
+    clearClipWindow?: boolean;
   }) =>
-    fetch(`${BASE}/v2/shots/${shotId}/timeline`, {
+    fetchTracked(`${BASE}/v2/shots/${shotId}/timeline`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
@@ -974,17 +1103,32 @@ export const api = {
         to_order: patch.toOrder ?? null,
         disabled: patch.disabled ?? null,
         transform_meta: patch.transformMeta ?? null,
+        base_transform_rev: patch.baseTransformRev ?? null,
         track_index: patch.trackIndex ?? null,
         overlay_start_sec: patch.overlayStartSec ?? null,
+        clip_in_sec: patch.clipInSec ?? null,
+        clip_dur_sec: patch.clipDurSec ?? null,
+        clear_clip_window: patch.clearClipWindow ?? null,
       }),
     }).then(async (r) => {
-      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
-      return r.json() as Promise<{ ok: boolean; order: number; duration_sec: number | null; disabled: boolean }>;
+      // 2.3：这里必须抛 SaveHttpError（而不是裸 Error）——调用方要靠 status
+      // 认出 409 才能给出"被别人改过"这句人话，String(err) 里的 "409:" 前缀
+      // 是文本，靠正则去认它迟早被改坏。
+      if (!r.ok) throw new SaveHttpError(r.status, `${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{
+        ok: boolean; order: number; duration_sec: number | null; disabled: boolean;
+        /** 落库后的新版本号（老后端没有 → undefined） */
+        transform_rev?: string | null;
+        /** 3.1：落库后的取片窗口。连续拖左边缘时要用它做下一次的基准，
+         *  否则第二次拖动会从**过期的入点**开始算（老后端没有 → undefined）。 */
+        clip_in_sec?: number | null;
+        clip_dur_sec?: number | null;
+      }>;
     }),
 
   /** 删除镜头（仅外部素材镜头；AI 镜头请用停用） */
   deleteShot: (shotId: string) =>
-    fetch(`${BASE}/v2/shots/${shotId}`, { method: "DELETE", headers: authHeaders() })
+    fetchTracked(`${BASE}/v2/shots/${shotId}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => {
         if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
         return r.json() as Promise<{ ok: boolean }>;
@@ -1054,7 +1198,7 @@ export const api = {
     fd.append("file", file);
     if (projectId) fd.append("project_id", projectId);
     if (duration && duration > 0) fd.append("duration", String(duration));
-    const resp = await fetch(`${BASE}/v2/media/upload`, { method: "POST", headers: authHeaders(), body: fd });
+    const resp = await fetchTracked(`${BASE}/v2/media/upload`, { method: "POST", headers: authHeaders(), body: fd });
     if (!resp.ok) throw new Error(`${resp.status}: ${(await resp.text()).slice(0, 200)}`);
     return resp.json();
   },
@@ -1067,7 +1211,7 @@ export const api = {
   /** P1-3 从素材池删除（连文件本体一起删）。
    *  force=false 时若素材仍被镜头/旁白/资产引用，后端回 409 + 引用清单（B23）。 */
   deleteClip: (clipId: string, force = false) =>
-    fetch(`${BASE}/v2/clips/${clipId}${force ? "?force=true" : ""}`,
+    fetchTracked(`${BASE}/v2/clips/${clipId}${force ? "?force=true" : ""}`,
           { method: "DELETE", headers: authHeaders() })
       .then(async (r) => {
         if (!r.ok) throw toApiError(r.status, await r.text());
@@ -1076,7 +1220,7 @@ export const api = {
 
   /** R2 重命名素材池里的素材（改 name，不影响 url / 镜头关联）。 */
   renameClip: (clipId: string, name: string) =>
-    fetch(`${BASE}/v2/clips/${clipId}`, {
+    fetchTracked(`${BASE}/v2/clips/${clipId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ name }),
@@ -1147,7 +1291,7 @@ export const api = {
 
   /** 设置/清除解说音色（整片共用一个解说声，挂项目而非角色）。 */
   setNarrationVoice: (projectId: string, voiceUrl: string | null) =>
-    fetch(`${BASE}/v2/projects/${projectId}/narration-voice`, {
+    fetchTracked(`${BASE}/v2/projects/${projectId}/narration-voice`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ voice_url: voiceUrl }),
@@ -1197,14 +1341,25 @@ export const api = {
 
   patchAudioClip: (clipId: string, patch: {
     startShotOrder?: number; startOffsetSec?: number; text?: string;
+    clipInSec?: number; clipDurSec?: number; clearClip?: boolean;
   }) =>
-    fetch(`${BASE}/v2/audio-clips/${clipId}`, {
+    fetchTracked(`${BASE}/v2/audio-clips/${clipId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
+      // ⚠️ 只发**真的要改**的键。原来这里是无条件 `patch.x ?? null` 三件套，
+      // 当时无害（后端一律 `is not None` 跳过），但 6.9 之后 null 在这条路上
+      // 有了第二种读法："把修剪窗口清空"。继续无条件发 null，就会变成
+      // "改一下偏移顺手把用户的修剪抹了"，而且抹得悄无声息。
+      // 清空窗口有专门的 clearClip，不靠 null 表达（PATCH 里 null 只能是"不改"）。
       body: JSON.stringify({
-        start_shot_order: patch.startShotOrder ?? null,
-        start_offset_sec: patch.startOffsetSec ?? null,
-        text: patch.text ?? null,
+        ...(patch.startShotOrder !== undefined
+          ? { start_shot_order: patch.startShotOrder } : {}),
+        ...(patch.startOffsetSec !== undefined
+          ? { start_offset_sec: patch.startOffsetSec } : {}),
+        ...(patch.text !== undefined ? { text: patch.text } : {}),
+        ...(patch.clipInSec !== undefined ? { clip_in_sec: patch.clipInSec } : {}),
+        ...(patch.clipDurSec !== undefined ? { clip_dur_sec: patch.clipDurSec } : {}),
+        ...(patch.clearClip ? { clear_clip: true } : {}),
       }),
     }).then(async (r) => {
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -1212,7 +1367,7 @@ export const api = {
     }),
 
   deleteAudioClip: (clipId: string) =>
-    fetch(`${BASE}/v2/audio-clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
+    fetchTracked(`${BASE}/v2/audio-clips/${clipId}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
 
   /** TTS 批量合成 job（缺省合成全部 pending/failed 段；参考音色同批只上传一次） */
@@ -1284,7 +1439,7 @@ export const api = {
   /** 改资产（kind=拖拽重分类 custom→character/location；imageUrl=换图；voiceUrl=换音色；
    *  prompt=造型/场景文字描述，出片时作为参考图的文字锚点喂给提示词优化器） */
   patchAsset: (assetId: string, patch: { kind?: string; name?: string; imageUrl?: string; voiceUrl?: string; prompt?: string }) =>
-    fetch(`${BASE}/v2/assets/${assetId}`, {
+    fetchTracked(`${BASE}/v2/assets/${assetId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
@@ -1299,7 +1454,7 @@ export const api = {
     }),
 
   deleteAsset: (assetId: string) =>
-    fetch(`${BASE}/v2/assets/${assetId}`, { method: "DELETE", headers: authHeaders() })
+    fetchTracked(`${BASE}/v2/assets/${assetId}`, { method: "DELETE", headers: authHeaders() })
       .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
 
   /** 按 (kind,name) 换图/换音色/改造型描述（拖资产卡到场景轨段=替换参考图；无行则建） */
