@@ -1,7 +1,11 @@
 # 字体二进制**不进 git**：两个 .ttc 合计 46MB，而整个仓库的 .git 只有 20MB，
 # 提交进去等于让每个 clone 永久多背 46MB（git 里删不掉历史）。
-# 需要时用 scripts/fetch-fonts.sh 取回；缺失时 renderer 的
-# resolveResource 会拿不到目录 → fontsDir 传 null → 回落系统字体，不会崩。
+# 用 scripts/fetch-fonts.sh 取回——CI 出包前会**强制**跑一遍并断言到位。
+#
+# ⚠️ 此处原先写着「缺失时 resolveResource 会拿不到目录 → fontsDir 传 null」，
+# 这是**错的**：README 与 LICENSE 是入 git 的，目录永远存在，resolveResource
+# 只拼路径不校验内容，于是 fontsdir 照传、libass 静默换字形。真正的兜底在
+# src/render/bundledFonts.ts（逐文件校验存在且够大）。
 *.ttc
 *.otf
 *.ttf
