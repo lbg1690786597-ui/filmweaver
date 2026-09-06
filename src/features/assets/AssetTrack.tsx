@@ -27,6 +27,8 @@ import {
 import { api } from "../../api";
 import type { ShotInfo, StageInfo, LocationInfo, AssetInfo, AssetDragData } from "../../api";
 import ContextMenu, { MenuItem } from "../../components/ContextMenu/ContextMenu";
+import { inSpan } from "../timeline/virtual";
+import type { SpanRange } from "../timeline/virtual";
 import "./AssetTrack.css";
 
 export type AssetTrackKind = "character" | "location" | "reference";
@@ -81,9 +83,16 @@ interface Props {
   /** 定位线所在镜头 order（联动高亮） */
   cursorOrder: number | null;
   rowHeight: number;
+  /** 3.10：可见区间（lane 内像素）。资产段最坏是「每隔一镜出现一次」，
+   *  段数与镜头数同量级，同样要虚拟化。 */
+  span: SpanRange;
 
   onChanged: () => void;
-  onPushUndo: (label: string, undo: () => Promise<void>) => void;
+  /** 3.7：redo 现在是**必传**的。缺了它 useUndo 会塞一个只弹
+   *  「暂不支持重做」的桩，重做按钮亮着却点了没反应。 */
+  onPushUndo: (
+    label: string, undo: () => Promise<void>, redo: () => Promise<void>,
+  ) => void;
   onToast: (m: string) => void;
   onSelectRun: (run: AssetRun & { rowName: string; kind: AssetTrackKind }) => void;
   onRegenerate: (shotIds: string[]) => void;
@@ -193,6 +202,11 @@ export default function AssetTrack(p: Props) {
           await api.refOverrides(p.projectId, row.name,
             { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
           p.onChanged();
+        },
+        async () => {
+          await api.refOverrides(p.projectId, row.name,
+            { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
+          p.onChanged();
         });
       p.onToast(`「${row.name}」生效范围改为 #${nf}-#${nt}`);
       p.onChanged();
@@ -248,10 +262,15 @@ export default function AssetTrack(p: Props) {
     const isLoc = p.kind === "location";
     try {
       await api.refOverrides(p.projectId, name, { addShotIds: [sh.id], isLocation: isLoc });
-      p.onPushUndo(`「${name}」注入镜头 #${order}`, async () => {
-        await api.refOverrides(p.projectId, name, { removeShotIds: [sh.id], isLocation: isLoc });
-        p.onChanged();
-      });
+      p.onPushUndo(`「${name}」注入镜头 #${order}`,
+        async () => {
+          await api.refOverrides(p.projectId, name, { removeShotIds: [sh.id], isLocation: isLoc });
+          p.onChanged();
+        },
+        async () => {
+          await api.refOverrides(p.projectId, name, { addShotIds: [sh.id], isLocation: isLoc });
+          p.onChanged();
+        });
       p.onToast(`「${name}」已注入镜头 #${order}（Ctrl+Z 可撤销）`);
       p.onChanged();
     } catch (err) { p.onToast(String(err)); }
@@ -276,10 +295,15 @@ export default function AssetTrack(p: Props) {
     const isLoc = p.kind === "location";
     try {
       await api.refOverrides(p.projectId, row.name, { removeShotIds: ids, isLocation: isLoc });
-      p.onPushUndo(`删除「${row.name}」#${run.from}-#${run.to} 注入段`, async () => {
-        await api.refOverrides(p.projectId, row.name, { addShotIds: ids, isLocation: isLoc });
-        p.onChanged();
-      });
+      p.onPushUndo(`删除「${row.name}」#${run.from}-#${run.to} 注入段`,
+        async () => {
+          await api.refOverrides(p.projectId, row.name, { addShotIds: ids, isLocation: isLoc });
+          p.onChanged();
+        },
+        async () => {
+          await api.refOverrides(p.projectId, row.name, { removeShotIds: ids, isLocation: isLoc });
+          p.onChanged();
+        });
       p.onToast(`已删除「${row.name}」#${run.from}-#${run.to} 注入段（Ctrl+Z 可撤销）`);
       p.onChanged();
     } catch (e) { p.onToast(String(e)); }
@@ -324,6 +348,15 @@ export default function AssetTrack(p: Props) {
               p.kind === "location" ? "location" : "character", row.name, prevImg);
           } else {
             await api.patchStage(stageId!, { image_url: prevImg ?? "" });
+          }
+          p.onChanged();
+        },
+        async () => {
+          if (isVirtual) {
+            await api.upsertAssetImage(p.projectId,
+              p.kind === "location" ? "location" : "character", row.name, d.imageUrl!);
+          } else {
+            await api.patchStage(stageId!, { image_url: d.imageUrl! });
           }
           p.onChanged();
         });
@@ -409,6 +442,11 @@ export default function AssetTrack(p: Props) {
           async () => {
             await api.refOverrides(p.projectId, row.name,
               { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
+            p.onChanged();
+          },
+          async () => {
+            await api.refOverrides(p.projectId, row.name,
+              { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
             p.onChanged();
           });
         p.onToast(`「${row.name}」已平移到 #${nf}-#${nt}`);
@@ -496,6 +534,11 @@ export default function AssetTrack(p: Props) {
               const left = (p.offsetMap.get(from) ?? 0) * p.pxPerSec;
               const endStart = p.offsetMap.get(to) ?? 0;
               const width = Math.max(16, (endStart + durOf(to)) * p.pxPerSec - left);
+              // 3.10：视口外的段不进 DOM。正在拖边缘的那个例外——它可能被拖出
+              // 视口，卸载了预览就没了（拖拽本身挂在 window 上不会断，
+              // 于是表现为"段凭空消失、松手又回来"，不报任何错）。
+              if (edge?.runId !== run.id
+                && !inSpan([left, left + width], p.span)) return null;
               const hasCursor = p.cursorOrder != null
                 && p.cursorOrder >= from && p.cursorOrder <= to;
 
