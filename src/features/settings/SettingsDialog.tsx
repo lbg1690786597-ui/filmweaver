@@ -11,13 +11,19 @@
  * 不给输入框：密钥落到客户端就等于泄露，改 key 走服务端环境变量。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Keyboard, Sparkles, HardDrive, Settings as Cog, AlertTriangle } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../../api";
 import { listCommandKeys } from "../../commands";
 import { ZOOM_DEFAULT } from "../../types/timeline";
 import { IS_TAURI } from "../export/ExportDialog";
 import { readPref, writePref, clearPrefs } from "../../lib/prefs";
+import { localCacheStats, clearLocalCache } from "../../lib/mediaCache";
+import type { LocalCacheStats } from "../../lib/mediaCache";
+import {
+  forgetLocalRoot, getLocalRoots, grantLocalRoots, subscribeLocalRoots,
+} from "../../lib/localRootStore";
 import "./SettingsDialog.css";
 import { productionModeLabel } from "../../lib/modelLabels";
 
@@ -47,9 +53,46 @@ export default function SettingsDialog(p: Props) {
     { items: { key: string; label: string; files: number; bytes: number;
                clearable: boolean }[]; total_bytes: number } | null>(null);
   const [clearing, setClearing] = useState(false);
+  // 4.5 本机（AppData）素材缓存。与上面那组**不是一回事**：上面统计的是服务端
+  // 的成片/素材，这里是 Tauri 客户端自己下载的副本，只有桌面端才存在。
+  const [local, setLocal] = useState<LocalCacheStats | null>(null);
+  const [clearingLocal, setClearingLocal] = useState(false);
   const [filling, setFilling] = useState(false);
   const [health, setHealth] = useState<Awaited<
     ReturnType<typeof api.providersHealth>> | null>(null);
+  // 6.6 本次启动已授权的素材根。**不持久化**（授权本身就不跨重启），
+  // 所以这里读的是进程级登记簿而不是 localStorage —— 见 lib/localRootStore.ts。
+  const roots = useSyncExternalStore(subscribeLocalRoots, getLocalRoots);
+  const [picking, setPicking] = useState(false);
+
+  /**
+   * 选一个（或多个）素材目录。
+   *
+   * ⚠️ `recursive: true` 是**必需**的，不是顺手加的选项：不加的话插件只把选中的
+   * 那一层加进 scope，子目录里的素材一律读不到 —— 而用户选的往往正是根目录，
+   * 素材躺在 `第01集/` 之类的子目录里。表现是"明明选了却还是读不到"。
+   * 这条也是本条目扩权面的**唯一**来源：授的是用户亲手选的这棵子树，
+   * capabilities 里的静态 scope 一个字没动（仍只有 `$APPDATA/**`）。
+   */
+  const pickRoots = async () => {
+    setPicking(true);
+    try {
+      const picked = await open({
+        directory: true, multiple: true, recursive: true,
+        title: "选择素材目录",
+      });
+      const list = Array.isArray(picked) ? picked : picked ? [picked] : [];
+      if (!list.length) return;      // 用户点了取消
+      const changed = grantLocalRoots(list, Date.now());
+      p.onToast(changed
+        ? `已授权 ${getLocalRoots().length} 个素材目录（关闭软件后需重新选择）`
+        : "这些目录已经在授权列表里了");
+    } catch (e) {
+      p.onToast(`选择目录失败：${String(e)}`);
+    } finally {
+      setPicking(false);
+    }
+  };
 
   useEffect(() => {
     if (tab === "ai" && !health) {
@@ -62,6 +105,12 @@ export default function SettingsDialog(p: Props) {
     catch (e) { p.onToast(String(e)); }
   };
   useEffect(() => { if (tab === "cache") void loadCache(); }, [tab]);
+  useEffect(() => {
+    // 只在桌面端拉：浏览器里没有 appDataDir，调了必抛。
+    if (tab !== "cache" || !IS_TAURI) return;
+    localCacheStats().then(setLocal).catch(() => setLocal(
+      { projects: 0, files: 0, bytes: 0, parts: 0 }));
+  }, [tab]);
 
   const fmtBytes = (b: number) =>
     b > 1e9 ? `${(b / 1e9).toFixed(2)} GB`
@@ -279,8 +328,81 @@ export default function SettingsDialog(p: Props) {
 
                 {IS_TAURI && (
                   <Group title="本机缓存">
+                    {!local ? (
+                      <div className="fw-set-note">读取中…</div>
+                    ) : (
+                      <>
+                        <Field label="已缓存素材">
+                          <span className="fw-set-ro">
+                            {local.files} 个 · {local.projects} 个项目 · {fmtBytes(local.bytes)}
+                          </span>
+                        </Field>
+                        {local.parts > 0 && (
+                          <Field label="未完成的残留">
+                            <span className="fw-set-ro">{local.parts} 个（下次导出时自动清理）</span>
+                          </Field>
+                        )}
+                        <Field label="清空本机素材缓存">
+                          <button className="fw-set-btn danger" disabled={clearingLocal}
+                            onClick={async () => {
+                              setClearingLocal(true);
+                              try {
+                                const r = await clearLocalCache();
+                                p.onToast(r.removed === 0
+                                  ? "本机缓存已经是空的"
+                                  : `已删除 ${r.removed} 个文件，释放 ${fmtBytes(r.freed)}`);
+                                setLocal(await localCacheStats());
+                              } catch (e) { p.onToast(String(e)); }
+                              finally { setClearingLocal(false); }
+                            }}>
+                            {clearingLocal ? "清理中…" : "清空"}
+                          </button>
+                        </Field>
+                      </>
+                    )}
                     <div className="fw-set-note">
-                      本机渲染会把素材缓存到应用数据目录，重复导出时可跳过下载
+                      本机渲染会把素材缓存到应用数据目录，重复导出时可跳过下载。
+                      清空只是让下次导出重新下载一遍，不影响任何项目数据；
+                      硬件编码器的探测结果会保留（它只有几 KB，删了要多等几秒重探）。
+                    </div>
+                  </Group>
+                )}
+
+                {IS_TAURI && (
+                  <Group title="本地素材目录">
+                    {roots.length === 0 ? (
+                      <div className="fw-set-note">本次启动还没有授权任何素材目录</div>
+                    ) : (
+                      <ul className="fw-set-mats">
+                        {roots.map((r) => (
+                          <li key={r.path} className="fw-set-mat">
+                            {/* title 里才给全路径：列表上摊开绝对路径既长，
+                                又会把用户的目录结构（常含真名、公司名）带进截图 */}
+                            <span className="fw-set-mat-name" title={r.path}>{r.label}</span>
+                            <button className="fw-set-mat-x"
+                              onClick={() => {
+                                forgetLocalRoot(r.path);
+                                p.onToast(`已把「${r.label}」移出列表`);
+                              }}>移出列表</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <Field label="添加素材目录">
+                      <button className="fw-set-btn" disabled={picking}
+                        onClick={() => void pickRoots()}>
+                        {picking ? "选择中…" : "选择…"}
+                      </button>
+                    </Field>
+                    <div className="fw-set-note">
+                      选中的目录（含子目录）在<b>本次启动内</b>可直接读取，用它们里的素材
+                      编辑和导出都不会产生下载。授权由系统对话框当场授予，
+                      <b>关闭软件时释放</b>——下次打开老项目若提示读不到素材，
+                      重新选一次目录即可，不是项目损坏。
+                    </div>
+                    <div className="fw-set-note">
+                      「移出列表」后本软件不再读取该目录；系统层面的授权仍要到
+                      关闭软件时才真正释放，这里做不到当场收回。
                     </div>
                   </Group>
                 )}
