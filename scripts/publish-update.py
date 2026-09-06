@@ -34,10 +34,13 @@ from pathlib import Path
 # 依据: CI(build-windows.yml)按 tag 是否含 -beta 给两个软件写死了各自的 appcast
 # 端点, 客户端各读各的。此前本脚本只有一组常量, 不带 --beta 发布时会把正式版
 # manifest 写进 beta 目录 —— 正式用户根本读不到, 反而污染了 beta 通道。
-APPCAST_BETA = Path("/root/filmweaver-data/appcast")
-APPCAST_PROD = Path("/root/filmweaver-prod-data/appcast")
-BASE_URL_BETA = "http://118.196.33.51:9080/fw/media/appcast"
-BASE_URL_PROD = "http://118.196.33.51:9080/fwp/media/appcast"
+#
+# ⚠️ 上面这段修复**只修了本脚本**：孪生的 `sync_appcast.py` 至今仍是一组常量,
+# 同一个 bug 在那边一直活着（详见 appcast_channel.py 文件头）。所以常量不再
+# 各写一份, 统一从下面这个模块取 —— 两个脚本、两个仓从此不可能各自漂移。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from appcast_channel import channel_for, guard  # noqa: E402
+
 # CI 产物的实际大小约 30 MB；低于此值说明没下完
 MIN_SIZE = 25 * 1024 * 1024
 
@@ -58,11 +61,12 @@ def main() -> None:
     # beta 与正式版是**两个软件**（productName / identifier 都不同），
     # 产物名因此也不同：NSIS 把 "FilmWeaver Beta" 里的空格写成点。
     # 目录/URL 也必须跟着切，否则会发到对方的通道里。
-    appcast = APPCAST_BETA if beta else APPCAST_PROD
-    base_url = BASE_URL_BETA if beta else BASE_URL_PROD
-    stem = f"FilmWeaver.Beta_{ver}" if beta else f"FilmWeaver_{ver}"
-    exe = appcast / f"{stem}_x64-setup.exe"
-    sig = appcast / f"{stem}_x64-setup.exe.sig"
+    ch = channel_for(beta=beta)
+    guard(ch)          # 常量自相矛盾、或目录不存在 → 当场停，不 mkdir 生产目录
+    appcast = ch.dir
+    base_url = ch.base_url
+    exe = appcast / ch.setup_name(ver)
+    sig = appcast / f"{ch.setup_name(ver)}.sig"
     live = appcast / "latest.json"
 
     # ---- 发布前校验：宁可不发，也不能发半截包 ----
@@ -104,7 +108,7 @@ def main() -> None:
         print(f"  已备份旧 manifest: {prev.get('version')}")
 
     live.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(f"  ✅ 已发布 {ver} 到{'测试版(/fw)' if beta else '正式版(/fwp)'}通道")
+    print(f"  ✅ 已发布 {ver} 到 {ch.label} 通道")
     print(f"     包大小 {size/1048576:.1f} MB · 签名 {len(signature)} 字符")
     print(f"     {url}")
 
