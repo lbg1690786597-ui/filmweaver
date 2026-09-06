@@ -12,11 +12,22 @@ import type {
   ShotInfo, AudioClipInfo, StageInfo, LocationInfo, AssetInfo, SubtitleClipInfo,
 } from "../api";
 import type { Clip, Track, Timeline, AssetSegment } from "../types/timeline";
+import { audioTrackKindOf } from "../render/trackFlags";
+import { audioPlaySec } from "../lib/audioClip";
 
 /** 未指定时长时的兜底（后端 duration_sec 可能为 null） */
 const DEFAULT_SHOT_SEC = 5;
 
 export function shotDuration(s: ShotInfo): number {
+  // 3.1：优先取片窗口长度，与导出（render/normalize.ts 的
+  // `clip_dur_sec ?? duration_sec`）和字幕定时（后端 effective_shot_sec）同口径。
+  //
+  // 后端已经把 `duration_sec == clip_dur_sec` 作为不变式强制维持
+  // （split / unsplit / patch_shot_timeline 三处写入者），所以今天这一行
+  // 取哪个都一样（dev 库实测 0 行不一致）。写成这样是为了**结构上**与导出一致：
+  // 万一将来哪条路径又把两者写岔，时间轴显示的会是真正出片的那个长度，
+  // 而不是"轨上 2.4s、成片 5s"。
+  if (s.clip_dur_sec != null && s.clip_dur_sec > 0) return s.clip_dur_sec;
   return s.duration_sec != null && s.duration_sec > 0 ? s.duration_sec : DEFAULT_SHOT_SEC;
 }
 
@@ -32,6 +43,74 @@ export function buildOrderOffsetMap(shots: ShotInfo[]): Map<number, number> {
     if (!s.disabled) acc += shotDuration(s);
   }
   return map;
+}
+
+/**
+ * 3.3：时间轴上的**片段边界**（升序、去重），供 ↑/↓ 跳边界与 Home/End 用。
+ *
+ * 直接由 `buildOrderOffsetMap` 派生，与画线、`secToPosition` 同源 ——
+ * 理由见本文件末尾 `secToPosition` 的长注释：这条时间轴上曾同时存在**三套**
+ * 累加算法，"线画在一处、跳到的是另一处"。跳边界是第四个需要绝对秒的地方，
+ * 绝不能再自己写一遍累加。
+ *
+ * 末元素 = 最后一个**启用**镜头的结尾，也就是播放头能到的最远处
+ * （再往后没有画面可预览，End 停在这里才有意义）。
+ * 停用镜头在 map 里占位但不推进时间轴，所以它不产生新的边界。
+ */
+export function buildEdgeSecs(shots: ShotInfo[]): number[] {
+  const map = buildOrderOffsetMap(shots);
+  const out: number[] = [];
+  let end = 0;
+  for (const s of [...shots].sort((a, b) => a.order - b.order)) {
+    if ((s.track_index ?? 0) > 0) continue;
+    if (s.disabled) continue;
+    const start = map.get(s.order);
+    if (start === undefined) continue;
+    out.push(start);
+    end = start + shotDuration(s);
+  }
+  if (!out.length) return [0];
+  out.push(end);
+  // 0 时长的脏数据会让相邻两个边界重合，去重后 ↑/↓ 才不会"按了没动"
+  return [...new Set(out.map((x) => Math.round(x * 100) / 100))]
+    .sort((a, b) => a - b);
+}
+
+/**
+ * 7.2：把主轨上的停用镜头折叠成标记。
+ *
+ * ## 折叠之前是什么样
+ *
+ * `buildOrderOffsetMap` 里 `if (!s.disabled) acc += …` —— 停用镜头**不推进**
+ * 累加，所以它拿到的 `startSec` 与**后继镜头完全相同**。而 `shotToClip` 又照
+ * 原时长给它 `durationSec`，于是它被整格画在后继镜头的位置上，且因为 DOM 里
+ * 排在前面，后继镜头把它**整块盖住**：用户看不见它、点不到它，也就**没有任何
+ * 路径能再把它启用回来**（右键菜单要先点中才出得来）。停用是可逆操作，却在
+ * UI 上变成了单向的 —— 这正是本条要修的。
+ *
+ * ## 为什么是「时长置 0 + 像素层错开」，而不是给它分配一点秒数
+ *
+ * 停用镜头**真的**不占时间：`buildOrderOffsetMap` 与 `render/normalize.ts` 都
+ * 这么算，成片里它一帧都不出现。所以 `durationSec: 0` 是这条数据的真话，
+ * 顺带修掉一串把它当成「有长度的格子」的地方（播放头落在哪一镜、框选范围、
+ * 吸附点、在播放头处分割 —— 今天这些都会先命中那个看不见的停用镜头）。
+ *
+ * 反过来，"给它 0.3 秒好腾个位置"会推动 `buildOrderOffsetMap` 的累加值，
+ * 而音频/字幕锚点、播放头边界、接缝位置全都由它派生，**导出侧却不会跟着动**
+ * ——时间轴与成片当场分家，且不报错。所以位置只能在像素层解决。
+ *
+ * ## 为什么要 `collapsedIndex` 而不是一个布尔
+ *
+ * 连续停用三镜时，三个标记的 `startSec` 一模一样。只给布尔的话它们会叠在同一
+ * 个像素上，三个只看得见一个（还是"看不见 = 启用不回来"那个老问题，只是从
+ * 被后继盖住变成被同伴盖住）。下标让它们依次往左排开。
+ */
+export function collapseDisabled(clips: Clip[]): Clip[] {
+  let run = 0;
+  return clips.map((c) => {
+    if (!c.disabled) { run = 0; return c; }
+    return { ...c, durationSec: 0, collapsedIndex: run++ };
+  });
 }
 
 /** ShotInfo → Clip */
@@ -56,12 +135,19 @@ export function shotToClip(s: ShotInfo, startSec: number, trackId: string): Clip
     startSec,
     durationSec: shotDuration(s),
     shotId: s.id,
+    entity: "shot",
     shotOrder: s.order,
     episode: s.episode,
     mediaUrl: s.video_url ?? undefined,
     thumbUrl: s.thumb_url ?? undefined,
+    clipInSec: s.clip_in_sec ?? undefined,
+    clipDurSec: s.clip_dur_sec ?? undefined,
     label: s.is_special ? (s.special_name || "外部素材") : `#${s.order}`,
     disabled: s.disabled,
+    // P2-7：留黑存在 transform_meta 里（不是顶层字段），这里镜像一份给
+    // ClipView 画角标用。`=== true` 不是多余的：transform_meta 是后端原样
+    // 透传的 JSON 口袋，老数据里没有这个键，拿到的是 undefined。
+    blackout: s.transform_meta?.blackout === true,
     isSpecial: s.is_special,
     status,
     currentVersion: s.adopted_version ?? undefined,
@@ -82,8 +168,17 @@ export function audioToClip(
   return {
     id: a.id,
     trackId,
+    entity: "audio",
     startSec: base + a.start_offset_sec,
-    durationSec: a.duration > 0 ? a.duration : 3,
+    // 6.9：播放时长是**算出来的** —— 剪过就用窗口长度，没剪过才用素材总长。
+    // 读反了（直接用 a.duration）的症状是：剪完右边缘、时间轴上那一格立刻
+    // 弹回原长，而导出出来的确实是剪过的 —— 界面和成片各说各话。
+    durationSec: audioPlaySec(a),
+    clipInSec: a.clip_in_sec ?? undefined,
+    clipDurSec: a.clip_dur_sec ?? undefined,
+    sourceDurSec: a.duration > 0 ? a.duration : undefined,
+    anchorOrder: a.start_shot_order,
+    anchorOffsetSec: a.start_offset_sec,
     mediaUrl: a.url ?? undefined,
     label: a.kind === "tts" ? (a.text?.slice(0, 20) || "旁白") : "配乐",
     disabled: false,
@@ -178,8 +273,13 @@ export function subtitleToClip(
   return {
     id: sub.id,
     trackId,
+    entity: "subtitle",
     startSec: base + sub.start_offset_sec,
+    // 字幕没有素材，`duration` 本身就是播放时长（不像音频要和源长区分），
+    // 所以既没有 clipInSec/clipDurSec，也没有 sourceDurSec。
     durationSec: sub.duration > 0 ? sub.duration : 3,
+    anchorOrder: sub.start_shot_order,
+    anchorOffsetSec: sub.start_offset_sec,
     label: sub.text.slice(0, 24),
     disabled: false,
     isSpecial: false,
@@ -233,8 +333,10 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   const overlayShots = shots.filter((s) => (s.track_index ?? 0) > 0);
 
   const videoTrack = emptyTrack("track-video-1", "video", "视频 1", 64);
-  videoTrack.clips = mainShots.map((s) =>
-    shotToClip(s, offsetMap.get(s.order) ?? 0, videoTrack.id));
+  // 7.2：主轨的停用镜头折叠成标记。**只折叠主轨** —— 叠加层的位置由
+  // `overlay_start_sec` 决定，它本来就不与谁共用起点，没有被盖住的问题。
+  videoTrack.clips = collapseDisabled(mainShots.map((s) =>
+    shotToClip(s, offsetMap.get(s.order) ?? 0, videoTrack.id)));
 
   const overlayTracks: Track[] = [];
   const byIndex = new Map<number, ShotInfo[]>();
@@ -265,8 +367,13 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     // 它既不是旁白也不是配乐，且与视频一一对应，单独一轨才看得清对位关系。
     // kind="narration"（解说剧的剧本旁白）归「旁白」轨——它就是旁白，
     // 和手工 TTS 同性质，混在一起看反而清楚（都是"人在说话"那一层）。
-    const t = a.kind === "music" ? musicTrack
-      : a.kind === "shot" ? audioTrack
+    //
+    // 4.6：这套对应关系被提到 `render/trackFlags.ts` 由编辑侧与导出侧共用。
+    // 各写一份的话，将来后端加一种 kind、这边归了轨而那边漏了静音，
+    // 表现就是"点了静音但那一类音频还在"，且只在有那种 kind 的项目上复现。
+    const byKind = audioTrackKindOf(a.kind);
+    const t = byKind === "music" ? musicTrack
+      : byKind === "audio" ? audioTrack
         : voiceTrack;
     t.clips.push(audioToClip(a, offsetMap, t.id));
   }
