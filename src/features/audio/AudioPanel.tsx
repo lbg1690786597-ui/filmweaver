@@ -17,6 +17,9 @@ import {
 import type { AudioClipInfo, AssetInfo } from "../../api";
 import { api } from "../../api";
 import { fmtTime } from "../../types";
+import {
+  useLoadState, describeLoadError, LOAD_LABELS,
+} from "../../stores/loadStateStore";
 import "./AudioPanel.css";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -55,11 +58,30 @@ export default function AudioPanel(p: Props) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  const [libError, setLibError] = useState<string | null>(null);
+
   const loadLib = async () => {
-    try { setLib(await api.audioLibrary(p.projectId)); }
-    catch { setLib({ items: [], counts: { bgm: 0, sfx: 0, unsorted: 0, total: 0 } }); }
+    try {
+      setLib(await api.audioLibrary(p.projectId));
+      setLibError(null);
+      useLoadState.getState().noteLoaded("audioLib");
+    } catch (e) {
+      // 2.4：以前这里 catch 之后把 lib 设成**空库**，界面于是显示"音效库里什么都
+      // 没有"，与真的空库一模一样 —— 用户据此再上传一遍已经有的音效。
+      // 现在既不伪造空库、也不停在"读取中…"（那是第二个谎话），而是就地说明失败，
+      // 同时挂到顶栏（顶栏那条是持久的，面板关了再打开也还在）。
+      setLibError(describeLoadError(e, LOAD_LABELS.audioLib).message);
+      if (useLoadState.getState().noteFailed("audioLib", e)) {
+        p.onToast(`⚠️ ${useLoadState.getState().failures.audioLib?.message ?? "音效素材库没能加载"}`);
+      }
+    }
   };
   useEffect(() => { if (tab === "bgm") void loadLib(); }, [tab, p.projectId]);
+
+  // 顶栏「重试」只在面板还开着时有意义；关掉面板即注销并清掉该条提示
+  // （留着一个按了没反应的重试按钮，比不显示更糟）
+  useEffect(() => useLoadState.getState().registerRetry(
+    "audioLib", () => { void loadLib(); }), [p.projectId]);
 
   const voiceClips = p.audioClips.filter((c) => c.kind === "tts");
   const musicClips = p.audioClips.filter((c) => c.kind === "music");
@@ -346,7 +368,15 @@ export default function AudioPanel(p: Props) {
               ))}
             </div>
 
-            {!lib ? (
+            {libError ? (
+              /* 2.4：失败时既不装成空库、也不停在"读取中…"。就地说明 + 就地重试。 */
+              <div className="fw-audio-loadfail">
+                <span>⚠️ {libError}</span>
+                <button className="fw-audio-btn" onClick={() => void loadLib()}>
+                  <RefreshCw size={12} /> 重试
+                </button>
+              </div>
+            ) : !lib ? (
               <div className="fw-audio-empty">读取中…</div>
             ) : lib.items.length === 0 ? (
               <div className="fw-audio-empty">
