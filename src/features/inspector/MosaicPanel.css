@@ -1,4 +1,9 @@
-/* MosaicPanel.css — 马赛克区域编辑器 */
+/* MosaicPanel.css — 马赛克面板（V2.4）
+ *
+ * 视觉语言刻意与 MosaicOverlay.css（画面上的工具条/气泡）保持一致：
+ * 同一套 accent 高亮、同样的圆角与描边。面板和画面是一个编辑器的两个视图，
+ * 长得不像会让用户以为是两套互不相干的功能——上一版就是这个问题。
+ */
 
 .fw-mp {
   display: flex;
@@ -8,70 +13,71 @@
   color: var(--c-text);
 }
 
-.fw-mp-empty {
-  padding: var(--sp-3) var(--sp-2);
-  color: var(--c-muted);
-  font-size: var(--fs-xs);
-  text-align: center;
-}
-
-/* 区域卡片 */
-.fw-mp-region {
-  border: 1px solid var(--c-border);
-  border-radius: var(--r-md);
-  overflow: hidden;
-}
-.fw-mp-region.open {
-  border-color: var(--c-accent-dim);
-}
-
-.fw-mp-region-head {
+/* ---- 分区标题 ---- */
+.fw-mp-sec-title {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--sp-2);
-  width: 100%;
-  padding: var(--sp-2) var(--sp-3);
-  background: transparent;
-  border: none;
-  color: var(--c-text);
-  cursor: pointer;
+  margin-top: var(--sp-1);
   font-size: var(--fs-xs);
-  text-align: left;
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: 0.02em;
 }
-.fw-mp-region-head:hover { background: oklch(from var(--c-surface) calc(l + 0.04) c h); }
+.fw-mp-sec-title:first-child { margin-top: 0; }
 
-.fw-mp-region-label {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.fw-mp-sec-note {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
   font-variant-numeric: tabular-nums;
 }
 
-.fw-mp-del {
-  margin-left: auto;
-  padding: 2px 4px;
-  background: transparent;
-  border: none;
-  color: var(--c-muted);
-  cursor: pointer;
-  border-radius: var(--r-sm);
-  display: flex;
-  align-items: center;
+/* ---- 绘制工具（矩形 / 圆形 / 画笔）---- */
+.fw-mp-tools {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--sp-1);
 }
-.fw-mp-del:hover { color: var(--c-danger, oklch(65% 0.22 20)); background: oklch(65% 0.22 20 / 0.12); }
 
-/* 展开体 */
-.fw-mp-region-body {
-  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+.fw-mp-tool {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  border-top: 1px solid var(--c-border);
-  background: oklch(from var(--c-surface) calc(l + 0.02) c h);
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: var(--sp-2) 0;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color 80ms, color 80ms, background 80ms;
+}
+.fw-mp-tool:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+.fw-mp-tool.on {
+  border-color: var(--c-accent);
+  color: var(--c-accent-hi);
+  background: oklch(from var(--c-accent) l c h / 0.14);
 }
 
-/* 样式行 */
+/* 操作提示：绘制态下点亮，否则是灰的静默提示 */
+.fw-mp-tip {
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: oklch(from var(--c-surface) calc(l + 0.03) c h);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.fw-mp-tip.on {
+  background: oklch(from var(--c-accent) l c h / 0.10);
+  color: var(--c-accent-hi);
+}
+
+/* ---- 效果样式行 ---- */
 .fw-mp-style-row {
   display: flex;
   gap: var(--sp-1);
@@ -95,14 +101,14 @@
   background: oklch(from var(--c-accent) l c h / 0.12);
 }
 
-/* 字段行 */
+/* ---- 通用字段行 ---- */
 .fw-mp-field {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
 }
 .fw-mp-field-label {
-  width: 44px;
+  width: 32px;
   flex-shrink: 0;
   font-size: var(--fs-xs);
   color: var(--c-muted);
@@ -114,11 +120,141 @@
   width: 28px;
   text-align: right;
 }
-
 .fw-mp-slider {
   flex: 1;
   accent-color: var(--c-accent);
   cursor: pointer;
+}
+
+/* ---- 一键遮挡预设 ---- */
+.fw-mp-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.fw-mp-preset-btn {
+  padding: 3px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 80ms, color 80ms;
+}
+.fw-mp-preset-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
+
+/* ---- 区域清单 ---- */
+.fw-mp-empty {
+  padding: var(--sp-3) var(--sp-2);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  text-align: center;
+  line-height: 1.6;
+  border: 1px dashed var(--c-border);
+  border-radius: var(--r-md);
+}
+
+.fw-mp-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.fw-mp-item {
+  position: relative;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.fw-mp-item.active { border-color: var(--c-accent); }
+
+.fw-mp-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2);
+  padding-right: 26px;         /* 给右上角的删除按钮让位 */
+  background: transparent;
+  border: none;
+  color: var(--c-text);
+  cursor: pointer;
+  text-align: left;
+}
+.fw-mp-item-head:hover { background: oklch(from var(--c-surface) calc(l + 0.04) c h); }
+
+/* 缩略图：按真实比例画出该区域在画面里的位置和形状 */
+.fw-mp-thumb {
+  flex-shrink: 0;
+  border-radius: 2px;
+}
+.fw-mp-thumb-bg {
+  fill: oklch(from var(--c-surface) calc(l - 0.04) c h);
+  stroke: var(--c-border);
+  stroke-width: 1;
+}
+
+.fw-mp-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.fw-mp-item-title {
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.fw-mp-item.active .fw-mp-item-title { color: var(--c-accent-hi); }
+.fw-mp-item-sub {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.fw-mp-del {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-1);
+  padding: 2px 4px;
+  background: transparent;
+  border: none;
+  color: var(--c-muted);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+}
+.fw-mp-del:hover {
+  color: var(--c-danger, oklch(65% 0.22 20));
+  background: oklch(65% 0.22 20 / 0.12);
+}
+
+.fw-mp-item-body {
+  padding: var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  border-top: 1px solid var(--c-border);
+  background: oklch(from var(--c-surface) calc(l + 0.02) c h);
+}
+
+/* 画笔区域的说明条：解释为什么这里没有宽高输入框 */
+.fw-mp-brush-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.4;
 }
 
 /* 数值输入网格 */
@@ -140,32 +276,16 @@
 }
 .fw-mp-num-input:focus { outline: none; border-color: var(--c-accent); }
 
-/* 预设区 */
-.fw-mp-presets-label {
-  font-size: var(--fs-xs);
-  color: var(--c-muted);
+/* ---- 底部操作 ---- */
+.fw-mp-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
   margin-top: var(--sp-1);
 }
-.fw-mp-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-}
-.fw-mp-preset-btn {
-  padding: 3px var(--sp-2);
-  border: 1px solid var(--c-border);
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--c-muted);
-  font-size: var(--fs-xs);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: border-color 80ms, color 80ms;
-}
-.fw-mp-preset-btn:hover { color: var(--c-text); border-color: var(--c-accent-dim); }
 
-/* 操作按钮 */
 .fw-mp-add-btn {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -189,6 +309,171 @@
   color: var(--c-muted);
   font-size: var(--fs-xs);
   cursor: pointer;
-  align-self: flex-end;
+  white-space: nowrap;
 }
 .fw-mp-clear-btn:hover { color: oklch(65% 0.22 20); border-color: oklch(65% 0.22 20 / 0.5); }
+
+/* ── 5.6 关键帧 ───────────────────────────────────────────────
+   缩略图里的运动轨迹：一眼看出"它在动、往哪动"。
+   轨迹画在形状之上，用 accent 色区别于区域本身的描边。 */
+.fw-mp-thumb-traj {
+  fill: none;
+  stroke: var(--c-accent);
+  stroke-width: 1;
+  stroke-opacity: 0.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 2 1.5;
+}
+.fw-mp-thumb-tdot {
+  fill: var(--c-accent);
+  fill-opacity: 0.95;
+}
+
+/* 列表行上的「动 · N帧」/「◇ 1帧」徽标 */
+.fw-mp-badge {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--c-accent-dim);
+  border-radius: var(--r-sm);
+  background: oklch(from var(--c-accent) l c h / 0.12);
+  color: var(--c-accent-hi);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 关键帧行：菱形按钮 + 迷你时间条 + 状态文字 */
+.fw-mp-kfrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.fw-mp-kfbtn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 80ms, border-color 80ms;
+}
+.fw-mp-kfbtn:hover:not(:disabled) { color: var(--c-accent); border-color: var(--c-accent-dim); }
+/* 实心 = 播放头正落在某条关键帧上，点下去是**删除**；空心是插入。
+   两种语义共用一个按钮，所以颜色差异必须明显。 */
+.fw-mp-kfbtn.on { color: var(--c-accent-hi); border-color: var(--c-accent); }
+.fw-mp-kfbtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.fw-mp-kfbar {
+  position: relative;
+  flex: 1;
+  height: 16px;
+  min-width: 60px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: oklch(from var(--c-surface) calc(l - 0.03) c h);
+  cursor: pointer;
+}
+/* 播放头标记：细竖线，不吃鼠标事件（点它应该等于点条的空白处） */
+.fw-mp-kfhead {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--c-accent-hi);
+  pointer-events: none;
+}
+/* 菱形 = 旋转 45° 的小方块。命中判定要够大（触点 10px），
+   否则密集关键帧上根本点不中，而这是本条唯一的删除入口之一。 */
+.fw-mp-kfdot {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  padding: 0;
+  border: 1px solid var(--c-accent-dim);
+  border-radius: 1px;
+  background: var(--c-surface);
+  transform: rotate(45deg);
+  cursor: ew-resize;
+  touch-action: none;
+}
+.fw-mp-kfdot:hover { border-color: var(--c-accent); }
+.fw-mp-kfdot.on { background: var(--c-accent); border-color: var(--c-accent-hi); }
+
+.fw-mp-kfhint {
+  flex-shrink: 0;
+  min-width: 30px;
+  text-align: right;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 跟踪行：三态（可跟 / 跟踪中 / 已跟踪），与关键帧行同一节奏 */
+.fw-mp-trkrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.fw-mp-trk-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 80ms, border-color 80ms;
+}
+.fw-mp-trk-btn:hover:not(:disabled) { color: var(--c-accent); border-color: var(--c-accent-dim); }
+.fw-mp-trk-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 进度占满剩余宽度，数字用等宽字形——否则 9%→10% 时整行会跳一下 */
+.fw-mp-trk-prog {
+  flex: 1;
+  color: var(--c-accent-hi);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.fw-mp-trk-cancel,
+.fw-mp-trk-clear {
+  flex-shrink: 0;
+  padding: 2px var(--sp-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 80ms, border-color 80ms;
+}
+.fw-mp-trk-cancel:hover,
+.fw-mp-trk-clear:hover { color: var(--c-danger); border-color: var(--c-danger); }
+
+.fw-mp-trk-ok {
+  flex: 1;
+  color: var(--c-accent-hi);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
