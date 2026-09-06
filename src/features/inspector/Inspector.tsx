@@ -13,9 +13,12 @@ import {
   Layers, Clock, Volume2, Sparkles, Info, ImageIcon, RefreshCw, Gem, History,
   Scissors, Undo2, Blend, ScanEye,
 } from "lucide-react";
-import type { ShotInfo, TransformMeta, AssetInfo } from "../../api";
+import type { ShotInfo, TransformMeta, TransformPatchOpts, AssetInfo } from "../../api";
 import { api } from "../../api";
 import { shotDuration } from "../../adapters/shotToClip";
+import { outputSec, shotSecOf } from "../../lib/keyframeEdit";
+import { staleHint } from "../../lib/stale";
+import { useCanvasToolStore } from "../../stores/canvasToolStore";
 import ClipProperties from "./ClipProperties";
 import MosaicPanel from "./MosaicPanel";
 import CropZoomPanel from "./CropZoomPanel";
@@ -60,8 +63,13 @@ export interface InspectorProps {
   onUpgrade: (s: ShotInfo) => void;
   /** Phase 3：时长编辑（后端 patch_shot_timeline，1-15s 钳制） */
   onPatchDuration: (shotId: string, sec: number) => void;
+  /** 3.1：取消入点，把取片窗口清回"从素材开头起算"（长度不变） */
+  onClearClipWindow: (shotId: string) => void;
   /** TB-03/TB-10：保存画面与音频调整（传 {} 清空） */
-  onPatchTransform: (shotId: string, tm: TransformMeta | Record<string, never>) => void;
+  onPatchTransform: (
+    shotId: string, tm: TransformMeta | Record<string, never>,
+    opts?: TransformPatchOpts,
+  ) => void;
   /** Phase 3：版本切换（后端 adopt） */
   onSwitchVersion: (shot: ShotInfo, verNo: number) => void;
   /** 修正镜头拆解结果（script_ref / 角色 / 场景 / 连接方式） */
@@ -75,11 +83,37 @@ export interface InspectorProps {
   onResetPrompt: (shotId: string) => Promise<void>;
   /** 按当前拆解与资产重算本镜提示词（异步 job） */
   onRepromptOne: (shotId: string) => void;
+  /** 5.6：播放头落在**本镜**时的镜内秒（素材口径，未除变速）；不在本镜为 null。
+   *  马赛克面板的迷你时间条据此显示菱形与播放头。 */
+  playheadShotSec?: number | null;
+  /** 5.6：把播放头挪到本镜的第 `sec` 秒（镜内素材秒）。 */
+  onSeekShotSec?: (sec: number) => void;
   onToast: (m: string) => void;
 }
 
 export default function Inspector(p: InspectorProps) {
   const [tab, setTab] = useState<Tab>("ai");
+
+  // 检查器页签 ↔ 画面覆盖层联动。
+  //
+  // 此前两者完全没关系：点开「马赛克」页签，画面上什么都不会发生，
+  // 绘制工具只能从预览窗口下方那个小按钮进入 —— 用户找到了小按钮（"比较好用"），
+  // 却在页签里看到一堆读不懂的百分比，以为这才是马赛克的全部功能。
+  //
+  // 现在双向绑定：进这两个页签即激活对应覆盖层；反过来点小按钮时，
+  // 检查器也自动翻到对应页签，两边永远说的是同一件事。
+  const overlayMode = useCanvasToolStore((s) => s.overlayMode);
+  const setOverlayMode = useCanvasToolStore((s) => s.setOverlayMode);
+
+  useEffect(() => {
+    if (overlayMode === "mosaic" || overlayMode === "cropzoom") setTab(overlayMode);
+  }, [overlayMode]);
+
+  function selectTab(id: Tab) {
+    if (id === "mosaic" || id === "cropzoom") setOverlayMode(id);
+    else if (tab === "mosaic" || tab === "cropzoom") setOverlayMode(null);
+    setTab(id);
+  }
 
   // 拆解编辑本地状态
   const [bdScript, setBdScript] = useState("");
@@ -187,7 +221,7 @@ export default function Inspector(p: InspectorProps) {
       <div className="fw-insp-tabs">
         {TABS.map(({ id, label, Icon }) => (
           <button key={id} className={`fw-insp-tab ${tab === id ? "active" : ""}`}
-            onClick={() => setTab(id)} title={label}>
+            onClick={() => selectTab(id)} title={label}>
             <Icon size={13} /> {label}
           </button>
         ))}
@@ -225,7 +259,7 @@ export default function Inspector(p: InspectorProps) {
               )}
               {s.stale && (
                 <div className="fw-insp-alert">
-                  ⚠ 所属集剧本已修改，本镜拆解已过期
+                  ⚠ {staleHint(s)}
                 </div>
               )}
             </Section>
@@ -418,11 +452,14 @@ export default function Inspector(p: InspectorProps) {
         {tab === "time" && (
           <ClipProperties tab="time" shotId={s.id} durationSec={shotDuration(s)}
             maxDurationSec={p.maxDurationSec}
+            clipInSec={s.clip_in_sec ?? undefined}
+            clipDurSec={s.clip_dur_sec ?? undefined}
+            onClearClipWindow={() => p.onClearClipWindow(s.id)}
             order={s.order} disabled={s.disabled}
             transform={s.transform_meta ?? null}
             isOverlay={(s.track_index ?? 0) > 0}
             onPatchDuration={(sec) => p.onPatchDuration(s.id, sec)}
-            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            onPatchTransform={(tm, o) => p.onPatchTransform(s.id, tm, o)}
             onToast={p.onToast} />
         )}
 
@@ -432,7 +469,7 @@ export default function Inspector(p: InspectorProps) {
             transform={s.transform_meta ?? null}
             isOverlay={(s.track_index ?? 0) > 0}
             onPatchDuration={(sec) => p.onPatchDuration(s.id, sec)}
-            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            onPatchTransform={(tm, o) => p.onPatchTransform(s.id, tm, o)}
             onToast={p.onToast} />
         )}
 
@@ -442,7 +479,7 @@ export default function Inspector(p: InspectorProps) {
             transform={s.transform_meta ?? null}
             isOverlay={(s.track_index ?? 0) > 0}
             onPatchDuration={(sec) => p.onPatchDuration(s.id, sec)}
-            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            onPatchTransform={(tm, o) => p.onPatchTransform(s.id, tm, o)}
             onToast={p.onToast} />
         )}
 
@@ -450,7 +487,20 @@ export default function Inspector(p: InspectorProps) {
           <MosaicPanel
             shotId={s.id}
             transform={s.transform_meta ?? null}
-            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            /* 关键帧存的是**输出秒**，而播放头 / shotDuration 都是素材秒，
+               两者只在 1× 时相等。换算只此一份（outputSec），画面覆盖层
+               走的是同一个函数 —— 否则同一个播放头在两处算出两个 tSec。 */
+            playheadSec={p.playheadShotSec == null
+              ? null : outputSec(p.playheadShotSec, s.transform_meta?.speed)}
+            durationSec={outputSec(shotDuration(s), s.transform_meta?.speed)}
+            onSeekSec={(sec) =>
+              p.onSeekShotSec?.(shotSecOf(sec, s.transform_meta?.speed))}
+            /* 跟踪要读素材的本地副本并逐帧 seek；换算「输出秒 → 素材秒」
+               在抽帧那一侧做（lib/track/frameSource.ts），所以入点与变速原样传下去。 */
+            videoUrl={s.video_url ?? null}
+            clipInSec={s.clip_in_sec ?? 0}
+            speed={s.transform_meta?.speed}
+            onPatchTransform={(tm, o) => p.onPatchTransform(s.id, tm, o)}
             onToast={p.onToast} />
         )}
 
@@ -458,7 +508,8 @@ export default function Inspector(p: InspectorProps) {
           <CropZoomPanel
             shotId={s.id}
             transform={s.transform_meta ?? null}
-            onPatchTransform={(tm) => p.onPatchTransform(s.id, tm)}
+            baseAspect={p.baseAspect}
+            onPatchTransform={(tm, o) => p.onPatchTransform(s.id, tm, o)}
             onToast={p.onToast} />
         )}
       </div>
