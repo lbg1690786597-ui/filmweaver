@@ -42,6 +42,34 @@
 
 .fw-clip.disabled { opacity: 0.4; }
 
+/* P2-7 留黑：**只压暗缩略图那一块，不动整格**。
+   这是与上面 `.disabled` 刻意拉开的差别——停用把整格连同标签、时长、角标一起
+   压到 0.4（"它不在成片里"），留黑的格子必须保持正常亮度，因为它仍然占着时长、
+   声音照放；变黑的只是画面。整格一起压的话，用户在时间轴上会把留黑读成停用。
+   留 0.08 而不是 0：全黑的方块与"缩略图没加载出来"长得一样，留一点点余晖
+   才看得出这里原本有画面。 */
+.fw-clip.blackout .fw-clip-thumb { filter: brightness(0.08); }
+/* 角标本身不能跟着变黑（那就看不见了），所以它排除在上面那条之外，
+   用前景色画一个实心方块表示"这一块是黑的"。 */
+.fw-clip-badge.black { color: var(--c-text); }
+
+/* 7.2 停用镜头的折叠标记。
+   只占下半格：它画在接缝左侧，会横向压住前一镜的尾巴，而前一镜的右缘 trim
+   手柄是整格高的——让标记退到下半格，那个手柄的上半段仍然点得到。
+   z-index 高于普通片段：标记只有 14px，被任何一侧盖住就又回到"看不见 =
+   启用不回来"的老问题（那正是本条要修的）。
+   opacity 比 .disabled 的 0.4 高一些：0.4 的 14px 竖条在深色轨上几乎看不见。 */
+.fw-clip.collapsed {
+  top: 50%;
+  z-index: 3;
+  opacity: 0.75;
+  border-style: dashed;
+  border-color: var(--c-muted);
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
 /* 状态色 */
 .fw-clip.st-done { background: color-mix(in oklch, var(--c-accent) 18%, var(--c-raised)); }
 .fw-clip.st-failed { background: color-mix(in oklch, var(--c-danger) 18%, var(--c-raised)); }
@@ -120,6 +148,8 @@
 .fw-clip-badge.dim { color: var(--c-muted); }
 .fw-clip-badge.warn { color: var(--c-warning); }
 .fw-clip-badge.bad { color: var(--c-danger); }
+/* 3.1：已修剪入点。用强调色而非警告色——这是用户主动做的编辑，不是异常 */
+.fw-clip-badge.cut { color: var(--c-accent); }
 
 /* trim 手柄（右边缘）*/
 .fw-clip-trim {
@@ -138,6 +168,26 @@
 }
 .fw-clip:hover .fw-clip-trim { opacity: 1; }
 .fw-clip.selected .fw-clip-trim { opacity: 1; background: linear-gradient(to right, transparent, var(--c-accent)); }
+
+/* 3.1 trim 手柄（左边缘 = 修剪入点）。
+   与右手柄镜像：渐变方向相反，命中区同为 8px（60px/s 缩放下 ≈ 0.13s，
+   够点中又不至于挡住片段本体的拖动区）。 */
+.fw-clip-trim-in {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 4;
+  background: linear-gradient(
+    to left, transparent, color-mix(in oklch, var(--c-accent) 30%, transparent)
+  );
+  opacity: 0;
+  transition: opacity var(--t-fast);
+}
+.fw-clip:hover .fw-clip-trim-in { opacity: 1; }
+.fw-clip.selected .fw-clip-trim-in { opacity: 1; background: linear-gradient(to left, transparent, var(--c-accent)); }
 
 /* 音频波形容器（占满 clip，居中） */
 .fw-clip-wave {
