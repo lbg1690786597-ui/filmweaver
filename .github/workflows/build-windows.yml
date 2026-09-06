@@ -261,6 +261,20 @@ jobs:
         run: npm run verify:render
         continue-on-error: true
 
+      # ---- 内置字幕字体（思源黑体/宋体，SIL OFL 1.1）----
+      # 字体二进制 46MB，刻意不进 git（见 src-tauri/resources/fonts/.gitignore），
+      # 所以 CI 的 clone 里**没有**它们。而这一步在 2026-09-06 之前根本不存在：
+      # 打出的安装包里 resources/fonts/ 只有 README + LICENSE，运行时
+      # resolveResource 又只拼路径不校验存在 → libass 找不到 Noto 就静默换字形。
+      # 用户选了「思源黑体（内置）」、导出成功、字幕却是别的字体，零提示。
+      #
+      # fetch-fonts.sh 末尾自带体积断言（<1MB 即 exit 1），所以这一步失败
+      # 就是**挡住发布**——宁可不出包，也不出一个"内置字体"是空壳的包。
+      # shell: bash 用的是 runner 自带的 Git Bash（curl 可用）。
+      - name: 取回内置字体（缺失即中止发布）
+        shell: bash
+        run: bash scripts/fetch-fonts.sh
+
       # tauri-action：编译 + 用私钥给更新包签名 + 发 Release（含安装包与 latest.json，供应用内自动更新）
       - name: 编译并发布（含自动更新产物）
         uses: tauri-apps/tauri-action@v0
