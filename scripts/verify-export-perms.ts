@@ -10,9 +10,20 @@
  * 这类问题的特征是**只在打包后的桌面端复现**：浏览器预览走服务端导出通道，
  * 根本不碰这段代码；类型检查也看不出来（API 用法完全合法，是运行时被拒）。
  * 只能靠断言"落盘必须走 Rust 命令，不能走 fs 插件"。
+ *
+ * ## ③c 是后加的，管的是另一件事：**授权面有没有被改宽**
+ *
+ * 前面几节问的是"权限够不够用"（不够就静默失灵）。③c 反过来问"权限是不是给多了"，
+ * 因为批次 6 的批次级验收第 4 条「fs scope：确认无法访问素材根之外的路径」
+ * 在此之前**一条断言都没有** —— 唯一写下这件事的地方是 `lib/localRoot.ts:22`
+ * 的一句注释，而注释不会变红。
+ *
+ * ⚠️ 它**不证明**越权读不到（那是 Rust 侧插件的裁决，前端断言不了），
+ * 只证明**这个仓里能看到的授权面没被人动过**。两者别混为一谈，
+ * 具体哪几句测不了、欠什么实测，记在 ③c 末尾。
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -90,6 +101,88 @@ for (const { call, perm } of SHELL_API) {
 const dupes = perms.filter((p, i) => perms.indexOf(p) !== i);
 ok(dupes.length === 0, "无重复的权限 identifier",
    `重复项: ${[...new Set(dupes)].join(", ")}`);
+
+// ---- ③c fs 的**静态授权面**：没有人偷偷放宽过 ----
+//
+// 批次 6 的批次级验收第 4 条是「fs scope：确认无法访问素材根之外的路径」。
+// 查下来这一条在此之前**一条断言都没有**：`verify-localroot.ts` 的文件头
+// 明说「本脚本不验证安全性」（它验的是挑对根、话说得对不对），而
+// `lib/localRoot.ts:22` 那句「capabilities 里 fs 的静态 scope 至今仍只有
+// `$APPDATA/**`，6.6 一个字都没加」是**散文**——写在注释里，没人核对。
+// 谁往 capabilities 里加一行 `$HOME/**`，全套脚本照样全绿。
+//
+// 所以这一节钉的不是"越权能不能发生"（那由 Rust 侧的插件裁决，前端断言不了），
+// 而是**授权面有没有被改宽**——这是本仓能验、且一旦变了必须有人过目的那部分。
+console.log("\n③c fs 静态 scope（批次 6 验收第 4 条）");
+
+interface CapEntry { identifier: string; allow?: Array<{ path?: string }> }
+const capObjs: CapEntry[] = caps.permissions.filter(
+  (p: unknown): p is CapEntry => typeof p === "object" && p !== null);
+
+// 带路径授权的 fs 条目：逐条列出它到底放开了哪些路径。
+const fsGrants = capObjs
+  .filter((p) => p.identifier.startsWith("fs:"))
+  .flatMap((p) => (p.allow ?? []).map((a) => ({ id: p.identifier, path: a.path ?? "" })));
+
+ok(fsGrants.length > 0 && fsGrants.every((g) => g.path === "$APPDATA/**"),
+   "★ fs 的每一条路径授权都恰好是 $APPDATA/**",
+   `实际: ${JSON.stringify(fsGrants)}\n`
+   + "      多出来的任何一条都意味着素材根之外的路径变成了可读/可写——"
+   + "而这正是批次 6 验收第 4 条要拦的");
+ok(fsGrants.length === 2,
+   "  且只有读、写两条（多一条就说明有人加了新授权而没在这里过目）",
+   `实际 ${fsGrants.length} 条: ${fsGrants.map((g) => g.id).join(", ")}`);
+
+// 不带 `allow` 块的 fs 权限里，有一类**自带 scope**（`fs:allow-desktop-read-recursive`
+// 之类的目录预设），加进来等于凭空放开一整个目录，且从 `allow` 字段上完全看不出来。
+// 所以裸声明的 fs 权限必须逐个白名单化，不能只看"有没有 allow"。
+const BARE_FS_OK = ["fs:default"];
+const bareFs = perms.filter((p) => p.startsWith("fs:")
+  && !capObjs.some((o) => o.identifier === p && o.allow));
+ok(bareFs.every((p) => BARE_FS_OK.includes(p)),
+   "★ 裸声明的 fs 权限仍只有 fs:default",
+   `多出: ${bareFs.filter((p) => !BARE_FS_OK.includes(p)).join(", ")}\n`
+   + "      `fs:allow-<目录>-read-recursive` 这类预设自带 scope，"
+   + "不出现在 allow 字段里，只能靠白名单拦");
+
+// asset protocol 一旦打开，`convertFileSrc()` 就能把本地文件喂进 <img>/<video>，
+// 那是与 fs scope **并行的第二条读盘通道**。6.6 刻意没走这条路（blob 方案零配置），
+// 这里钉住它没被顺手打开。
+const secConf = JSON.parse(read("src-tauri/tauri.conf.json")).app?.security ?? {};
+ok(secConf.assetProtocol?.enable !== true,
+   "★ assetProtocol 未启用（否则多出一条绕过 fs scope 的读盘通道）",
+   `实际: ${JSON.stringify(secConf.assetProtocol)}`);
+
+// 「授权不跨重启」是 6.6 明写的特性而非缺陷（见 lib/localRoot.ts 文件头）：
+// 官方的持久化方案 tauri-plugin-persisted-scope 会把"这次选了这个目录"
+// 变成重启后依然有效的常驻授权，那正是风险表第 12 行要拦的安全面扩大。
+// 它是 Rust 依赖，加了本机（无 cargo）根本验不了，只能靠这条挡在入口。
+const cargo = read("src-tauri/Cargo.toml");
+ok(!cargo.includes("persisted-scope"),
+   "★ 未引入 tauri-plugin-persisted-scope（授权不跨重启是特性，不是缺陷）");
+
+// 运行期唯一能把新路径加进 scope 的入口是 dialog 的 `open()`。
+// 每多一个调用点就多一个授权入口，必须有人过目——所以这里钉的是**入口集合**，
+// 不是某一处的写法（那一处的 directory/recursive 由 verify-localroot [6] 钉）。
+const OPEN_SITES = ["src/App.tsx", "src/features/settings/SettingsDialog.tsx"];
+const walk = (rel: string): string[] => readdirSync(join(ROOT, rel), { withFileTypes: true })
+  .flatMap((e) => (e.isDirectory() ? walk(`${rel}/${e.name}`)
+    : /\.tsx?$/.test(e.name) ? [`${rel}/${e.name}`] : []));
+const openSites = walk("src").filter((f) => {
+  const imp = /import\s*\{([^}]*)\}\s*from\s*"@tauri-apps\/plugin-dialog"/.exec(read(f));
+  return !!imp && imp[1].split(",").some((s) => s.trim().split(/\s+as\s+/)[0] === "open");
+}).sort();
+ok(JSON.stringify(openSites) === JSON.stringify(OPEN_SITES),
+   "★ 能扩大 scope 的 dialog.open() 入口仍只有已知的两处",
+   `实际: ${JSON.stringify(openSites)}\n`
+   + "      新增一处就是新增一个授权入口；它该不该带 recursive、"
+   + "选进来的目录会不会被当素材根，都得当场想清楚，不能顺手加");
+
+// ⚠️ 这一节**不能**断言的部分，如实记在这里而不是假装测过：
+//   · `fs:default` 具体展开成哪些权限，要靠 `src-tauri/gen/schemas/` —— 本机没有
+//     cargo，那个目录不存在，所以"它有没有夹带路径授权"只能等 CI 或真机确认；
+//   · 插件真的会拒掉 scope 外的 readFile，是 Rust 侧行为，前端断言不了。
+//     批次 6 验收第 4 条里"真的读不到"那半句，仍欠一次桌面端实测。
 
 // ---- ④ sidecar 配置 ----
 console.log("\n④ ffmpeg sidecar");
