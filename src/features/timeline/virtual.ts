@@ -1,7 +1,7 @@
 /**
  * virtual.ts — 时间轴横向虚拟化的纯逻辑（3.10）
  *
- * 抽出来的理由与 `selection.ts` / `waveform.ts` 同：判据要能在 node 下直接跑断言，
+ * 抽出来的理由与 `selection.ts` / `waveformPeaks.ts` 同：判据要能在 node 下直接跑断言，
  * 而 `Timeline.tsx` 里全是 DOM 与滚动。
  *
  * ## 要解决的是什么
