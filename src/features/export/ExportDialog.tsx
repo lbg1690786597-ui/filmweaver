@@ -22,11 +22,15 @@ import { fmtSec } from "../../types/timeline";
 // 选了 3:4 的项目会静默落到 9:16 的档位上）
 import { resListOf } from "../../lib/resolutions";
 import { safeFileName, pad2, episodeFileName } from "../../lib/filename";
+import { IS_TAURI } from "../../lib/isTauri";
 import "./ExportDialog.css";
 
-/** 是否运行在 Tauri 容器内（网页预览下为 false） */
-export const IS_TAURI = typeof window !== "undefined"
-  && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+/** 是否运行在 Tauri 容器内（网页预览下为 false）。
+ *
+ *  6.2 起判据搬到了 `lib/isTauri.ts`：本文件 `import "./ExportDialog.css"`，
+ *  非 UI 模块（预取接线）只为问一句"在不在桌面端"就得把整个导出对话框
+ *  连同它的 CSS 一起拖进依赖图。这里 re-export，保持既有 7 个 import 一行不改。 */
+export { IS_TAURI };
 
 /**
  * 输出范围。前三档决定"取哪些镜头拼成一个文件"；`episode` 是另一种形态——
@@ -46,9 +50,12 @@ interface EpStat {
 }
 
 const FPS_OPTIONS = [24, 25, 30, 60];
+// 4.4 起这个选择**真的生效**了（此前 plan.output.vcodec 无人读取，选 H.265
+// 拿到的一直是 H.264）。随之而来的代价必须写在标签上：没有 HEVC 硬件编码的
+// 机器会真的走 libx265 软件编码，比硬件 H.264 慢一个数量级。
 const CODECS = [
   { id: "libx264", label: "H.264 (通用兼容)" },
-  { id: "libx265", label: "H.265 (体积小，兼容性差)" },
+  { id: "libx265", label: "H.265 (体积小，兼容性差，无硬件加速时较慢)" },
 ];
 const BITRATES = [
   { id: "crf20", label: "高质量 (CRF 20)" },
@@ -98,6 +105,11 @@ interface Props {
     path: string; segments: number; encoder: string; elapsedMs: number;
     /** 按集导出时产出的文件数（>1 时"打开所在文件夹"落在整个目录上） */
     files?: number;
+    /**
+     * 降级提示（5.8）：导出**成功**了，但有东西没按用户设置的样子出来。
+     * 放在结果面板而不是 toast —— 见 ExportDialog.css 的 `.fw-ex-notices`。
+     */
+    notices?: string[];
   } | null;
   /** 在系统文件管理器里选中成片 */
   onReveal: (path: string) => void;
@@ -231,6 +243,14 @@ export default function ExportDialog(p: Props) {
                 <div className="fw-ex-done-title">导出完成</div>
                 <div className="fw-ex-done-path" title={done.path}>{done.path}</div>
               </div>
+            </div>
+          )}
+
+          {done && !!done.notices?.length && (
+            <div className="fw-ex-notices">
+              {done.notices.map((n) => (
+                <div className="fw-ex-notice" key={n}>{n}</div>
+              ))}
             </div>
           )}
 
@@ -376,7 +396,8 @@ export default function ExportDialog(p: Props) {
             </Field>
             <div className="fw-ex-note">
               本机渲染使用 Render Engine V2（分段合成），支持多轨、转场、字幕烧录
-              与画面调整；有可用硬件编码器时自动启用
+              与画面调整；有可用硬件编码器时自动启用（会优先选与上面「编码」
+              同格式的那个，实际用到的编码器名会在导出完成时显示）
             </div>
           </Section>
         </div>
