@@ -65,6 +65,34 @@ export function transformToFilter(tm: TransformMeta | null | undefined): string 
   return f.join(" ");
 }
 
+/** 裁切后仍保留的画面比例（宽、高），已做下限保护 */
+function cropVisible(c: NonNullable<TransformMeta["crop"]>) {
+  return {
+    w: Math.max(0.01, 1 - (c.left || 0) - (c.right || 0)),
+    h: Math.max(0.01, 1 - (c.top || 0) - (c.bottom || 0)),
+  };
+}
+
+/**
+ * 取景框裁切的预览裁剪区（clip-path）。
+ *
+ * ⚠️ 这条此前**完全缺失** —— crop 只在 ffmpegCompiler 里被实现（导出时真裁），
+ * 预览层一行都没读。于是用户拖"裁切边距"滑块，画面纹丝不动，导出后却突然
+ * 被裁掉一块（用户原话："操作裁切功能滑块看不到任何反馈"）。
+ *
+ * clip-path 作用在元素的 border-box 上、且**先于 transform 生效**，
+ * 正好对应 ffmpeg 里 crop 排在 scale/rotate 之前的顺序。
+ */
+export function transformToClipPath(tm: TransformMeta | null | undefined): string {
+  if (!tm?.crop) return "";
+  const c = tm.crop;
+  const l = c.left || 0, r = c.right || 0, t = c.top || 0, b = c.bottom || 0;
+  if (l <= 0 && r <= 0 && t <= 0 && b <= 0) return "";
+  // inset() 的参数顺序是 上 右 下 左
+  return `inset(${(t * 100).toFixed(3)}% ${(r * 100).toFixed(3)}% `
+       + `${(b * 100).toFixed(3)}% ${(l * 100).toFixed(3)}%)`;
+}
+
 /** 生成 CSS transform（缩放/旋转/位移/镜像） */
 export function transformToTransform(tm: TransformMeta | null | undefined): string {
   if (!tm) return "";
@@ -73,8 +101,17 @@ export function transformToTransform(tm: TransformMeta | null | undefined): stri
   //   scale 存的是**百分比**（100 = 原尺寸），normalize.ts 里也是 /100 后再用；
   //         此前这里直接写 scale(tm.scale)，scale=100 就成了放大 100 倍 ——
   //         用户一点缩放手柄画面就炸开，且边框与实际画面完全错位。
-  //   x / y 存的是**像素**（相对画布中心的偏移），不是百分比。
-  if (tm.x || tm.y) t.push(`translate(${tm.x || 0}px, ${tm.y || 0}px)`);
+  //   x / y 存的是**画布宽/高的百分比**（见 api.ts 的 TransformMeta.x）。
+  //         此前这里写的是 `translate(${tm.x}px)` —— 那是**屏幕 CSS 像素**，
+  //         与导出侧按画布像素解释同一个数差了整个预览缩放倍数（常见 3~5×）。
+  //         CSS 的百分比位移正好按**元素自身盒子**解析，而在本项目的心智模型里
+  //         <video> 元素盒 ≡ 画布（CropZoomOverlay 头注释、Player.tsx:80 都据此
+  //         测量），所以百分比在这里是**精确**的，不是又一次近似。
+  //         同理它也必须排在 scale 之前（CSS 变换列表右侧先作用）：
+  //         位移是在画布坐标系里发生的，不该被画面自身的缩放放大。
+  if (tm.x || tm.y) {
+    t.push(`translate(${(tm.x || 0).toFixed(4)}%, ${(tm.y || 0).toFixed(4)}%)`);
+  }
   const s = tm.scale ?? 100;
   // 非等比缩放（拖边中点单轴拉伸时产生）；缺省跟随 scale
   const sx = tm.scaleX ?? s;
@@ -88,6 +125,31 @@ export function transformToTransform(tm: TransformMeta | null | undefined): stri
   // 镜像用 scale 负值；与上面的 scale 相乘不冲突（CSS 按顺序应用）
   if (tm.mirrorH) t.push("scaleX(-1)");
   if (tm.mirrorV) t.push("scaleY(-1)");
+
+  // ---- 裁切后"放大铺满画布"----
+  //
+  // clip-path 只把画面切掉一块，留下的部分**不会**自己撑满 —— 但 ffmpeg 那边
+  // crop 之后紧跟 scale + pad，裁出来的区域会被等比放大到画布里。少了这一步，
+  // 预览会显示成"原位置挖了一块"，跟成片完全不是一回事。
+  //
+  // 追加在数组**末尾**：CSS transform 列表最右侧的先作用，正好对应
+  // ffmpeg 里 crop 排在最前面的顺序。
+  if (tm.crop) {
+    const { w: visW, h: visH } = cropVisible(tm.crop);
+    if (visW < 0.999 || visH < 0.999) {
+      // 等比放大到"刚好装下"，与 ffmpeg 的 force_original_aspect_ratio=decrease
+      // 一致 —— 是**贴合**不是拉伸，比例不同的裁切会留黑边，成片也是这样。
+      const k = Math.min(1 / visW, 1 / visH);
+      // 保留区中心相对画面中心的偏移，先平移把它挪到中心，再放大
+      const dx = ((tm.crop.left || 0) + visW / 2 - 0.5) * 100;
+      const dy = ((tm.crop.top || 0) + visH / 2 - 0.5) * 100;
+      if (k > 1.0001) t.push(`scale(${k.toFixed(4)})`);
+      if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+        t.push(`translate(${(-dx).toFixed(3)}%, ${(-dy).toFixed(3)}%)`);
+      }
+    }
+  }
+
   return t.join(" ");
 }
 
