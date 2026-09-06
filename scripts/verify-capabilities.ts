@@ -22,6 +22,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HW_PAIRS, SW_CANDIDATES, qualityArgs } from "../src/render/encoderArgs";
 
 /** ffmpeg 可执行文件：CI 里指向刚打包的 Windows sidecar 二进制，
  *  本地缺省用 PATH 上的。验证"打进安装包的那个 ffmpeg"才有意义。 */
@@ -31,11 +32,26 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, "..", "src", "render");
 
 function ff(args: string[]): string {
+  return ffRun(args).out;
+}
+
+/**
+ * 带**退出码**的版本。④ 段必须用它。
+ *
+ * ⚠️ 只看 stderr 文本判成败会误报成功，这是 4.4 当场逮到的一次：
+ * 本机 build 根本没编进 `h264_amf`，于是 `-qp_i` 成了未知选项，ffmpeg 打的是
+ * 「Unrecognized option 'qp_i'. / Error splitting the argument list: Option not found」
+ * ——这两句**不在**下面那条 bad 正则里，于是 amf 被打上了 ✓。
+ * 判据必须与 capabilities.ts 的 encoderWorks 同口径：**先看退出码**。
+ */
+function ffRun(args: string[]): { code: number; out: string } {
   try {
-    return execFileSync(FFMPEG, ["-hide_banner", ...args],
+    const out = execFileSync(FFMPEG, ["-hide_banner", ...args],
       { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { code: 0, out };
   } catch (e: any) {
-    return `${e.stdout ?? ""}\n${e.stderr ?? ""}`;
+    return { code: typeof e.status === "number" ? e.status : -1,
+             out: `${e.stdout ?? ""}\n${e.stderr ?? ""}` };
   }
 }
 
@@ -99,12 +115,21 @@ if (trMissing.length) {
 // `-encoders` 列出 h264_nvenc 不代表能用：没显卡驱动时实跑报
 // "Cannot load libcuda.so.1"。这是本项目要分发到大量异构 Windows 机器的关键。
 console.log("\n④ 编码器实跑验证");
-const ENCODERS = ["libx264", "h264_nvenc", "h264_qsv", "h264_amf"];
+// 4.4：清单从 encoderArgs.ts 取，且**带着真正会下发的质量参数一起实跑**——
+// 与 capabilities.ts 的 encoderWorks 同一口径。这台开发机没有 GPU，所以
+// 硬件那几行必然是 ✗；有意义的是「本机 build 编进了它、而且我们下发的
+// 选项不会让它当场拒绝」这件事在有硬件的机器上才判得出来。
+const ENCODERS = [...SW_CANDIDATES, ...HW_PAIRS.flatMap((p) => [p.h264, p.hevc])];
 for (const enc of ENCODERS) {
-  const out = ff(["-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=0.1",
-                  "-c:v", enc, "-frames:v", "1", "-f", "null", "-"]);
-  const bad = /Cannot load|not supported|Error initializing|Unknown encoder|No such/i.test(out);
-  console.log(`   ${bad ? "✗" : "✓"} ${enc}${bad ? "  （本机不可用，属正常——无对应硬件/驱动）" : ""}`);
+  const qa = qualityArgs(enc, 23);
+  const { code, out } = ffRun(["-f", "lavfi",
+                  "-i", "testsrc=size=320x240:rate=30:duration=0.1",
+                  "-c:v", enc, ...qa, "-frames:v", "1", "-f", "null", "-"]);
+  // 退出码优先（见 ffRun 的注释）；正则只用来在退出码为 0 的边缘情况下补刀。
+  const bad = code !== 0
+    || /Cannot load|not supported|Error initializing|Unknown encoder|No such/i.test(out);
+  console.log(`   ${bad ? "✗" : "✓"} ${enc}  [${qa.join(" ")}]`
+    + `${bad ? "  （本机不可用，属正常——无对应硬件/驱动）" : ""}`);
 }
 
 // 只有静态核对失败才算构建级错误：它是代码 bug。
