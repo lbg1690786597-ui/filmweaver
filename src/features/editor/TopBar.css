@@ -44,15 +44,91 @@
   flex-shrink: 0;
 }
 
-.fw-tb-saved {
+/* ---- 保存状态（SaveIndicator.tsx；批次 2 / 2.1）----
+   三态共用同一套盒模型，只换颜色 —— 切换时宽度会变但不跳行。
+   error 态是 <button>，所以要显式清掉浏览器默认按钮样式。 */
+.fw-tb-save {
   display: flex;
   align-items: center;
   gap: 3px;
   font-size: var(--fs-xs);
-  color: var(--c-success);
   flex-shrink: 0;
-  opacity: 0.85;
+  /* 失败文案可能较长（如"登录已失效，改动未保存 —— 请重新登录"），
+     给它一个上限，超出用省略号；完整文案在 title 里。
+     不设上限的话顶栏会被一句错误提示挤到把「AI 生产」按钮顶偏。 */
+  max-width: 260px;
 }
+.fw-tb-save.saved   { color: var(--c-success); opacity: 0.85; }
+.fw-tb-save.saving  { color: var(--c-muted); }
+.fw-tb-save.error {
+  /* button reset */
+  margin: 0;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  color: var(--c-danger);
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+  border: 1px solid var(--c-danger);
+  border-radius: 4px;
+}
+.fw-tb-save.error:hover {
+  background: color-mix(in oklch, var(--c-danger) 22%, transparent);
+}
+.fw-tb-save-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-tb-save-n {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: var(--c-danger);
+  color: #fff;
+}
+
+/* ---- 未加载指示器（LoadIndicator.tsx；批次 2 / 2.4）----
+   与保存状态并排，盒模型刻意与 .fw-tb-save.error 一致 —— 两者是同一类"顶栏告警"，
+   长得不一样只会让人以为是两种严重程度。
+   但用 warning 而非 danger：读失败**没有造成损失**，只是屏幕上的信息不完整；
+   用红色会让用户以为已经出事了，反而更容易去做那个真会造成损失的动作（重做/重生成）。 */
+.fw-tb-load {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  max-width: 240px;
+  margin: 0;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  color: var(--c-warning);
+  background: color-mix(in oklch, var(--c-warning) 12%, transparent);
+  border: 1px solid var(--c-warning);
+  border-radius: 4px;
+}
+.fw-tb-load:hover {
+  background: color-mix(in oklch, var(--c-warning) 22%, transparent);
+}
+/* 无重试可用（面板已关等）时不装成可点 */
+.fw-tb-load:disabled { cursor: default; opacity: 0.75; }
+/* 登录失效要显眼一档：它不会自愈，用户必须去重新登录 */
+.fw-tb-load.auth {
+  color: var(--c-danger);
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+  border-color: var(--c-danger);
+}
+.fw-tb-load.auth:hover {
+  background: color-mix(in oklch, var(--c-danger) 22%, transparent);
+}
+.fw-tb-load-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-tb-load-retry { flex-shrink: 0; opacity: 0.8; }
 
 .fw-tb-divider {
   width: 1px;
