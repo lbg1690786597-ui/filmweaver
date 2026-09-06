@@ -11,30 +11,49 @@
  *   - 新建区域后**自动选中并弹出设置气泡**（样式 + 强度），不用去侧边栏
  *   - 已有区域：点选 → 8 个控制点缩放 + 拖动移动 + 右上角删除
  *   - Delete/Backspace 删除选中；Escape 取消选中或退出绘制
+ *
+ * ## 落库时机（2.2）
+ *
+ * 移动 / 缩放区域、拖强度滑块这三条是**每个 pointermove 一次**的路径，
+ * 改动前每一次都发一笔 PATCH（外加一次全项目详情 GET），拖 3 秒上百组请求。
+ * 现在拖动中只 `staged` —— 本地即时生效（画面照旧跟手，App 会把未落库的值
+ * 盖回 detail.shots），真正的落库在松手那一下。见 `lib/stagedWrite.ts`。
+ * 新建区域（拖框 / 涂抹）本来就只在松手时写一次，不属于这条路径。
  */
 
 import { useRef, useState, useCallback, useEffect } from "react";
 import { X, Square, Circle, Brush } from "lucide-react";
-import type { TransformMeta } from "../../api";
+import type { TransformMeta, TransformPatchOpts } from "../../api";
+import type { MosaicParams, MosaicStyle } from "../../render/model";
+import { useCanvasToolStore } from "../../stores/canvasToolStore";
+import { strokeBounds, MIN_REGION_SIZE, regionShapeAt } from "../../lib/regionShape";
+import type { Box } from "../../lib/regionShape";
+import { regionBoxAt } from "../../render/maskGroups";
+import { applyRegionBox, kfCount } from "../../lib/keyframeEdit";
 import "./MosaicOverlay.css";
 
-type Style = "pixel" | "gaussblur" | "blackbox";
-type Shape = "rect" | "ellipse" | "brush";
-
-interface MosaicRegion {
-  x: number; y: number; w: number; h: number;
-  style: Style;
-  intensity: number;
-  shape?: Shape;
-  stroke?: { x: number; y: number }[];
-  brushSize?: number;
-}
+/** 区域类型来自 render/model.ts（唯一一份），本文件不再自抄一遍 */
+type MosaicRegion = MosaicParams;
 
 interface Props {
   vrect: { left: number; top: number; width: number; height: number };
   transform: TransformMeta | null;
-  onPatchTransform: (tm: TransformMeta | Record<string, never>) => void;
+  /** 落库回调。拖动中的中间值传 `{ staged: true }`（本地即时生效、落库延后），
+   *  松手时不带 opts 再发一次做真落库。 */
+  onPatchTransform: (
+    tm: TransformMeta | Record<string, never>, opts?: TransformPatchOpts,
+  ) => void;
   active: boolean;
+  /**
+   * 播放头在**该镜头内**的秒数（输出时间）。
+   *
+   * 有关键帧的区域按这个时刻插值出当帧的框来画 —— 走的是
+   * `lib/regionShape.regionShapeAt`，**与导出的光栅化器同一个函数**。
+   * 在这里另写一份插值就会回到「预览对、导出错」那条老路，而且两边各自看都自洽，
+   * 没有任何断言会自然发现（见 `verify-kfedit.ts` 第 [8] 节）。
+   */
+  tSec: number;
+  onToast: (m: string) => void;
 }
 
 type HandleId = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -42,56 +61,71 @@ type HandleId = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type DragState =
   | { kind: "draw"; startX: number; startY: number }
   | { kind: "paint" }
-  | { kind: "move"; startX: number; startY: number; idx: number; orig: MosaicRegion }
-  | { kind: "resize"; startX: number; startY: number; idx: number; orig: MosaicRegion; handle: HandleId }
+  /** `box` 是**按下那一刻画面上的框**（动画区域即当帧插值结果，静态区域即 x/y/w/h）；
+   *  `kfToast` 保证一次拖动只提示一次，而不是每个 pointermove 都弹。 */
+  | { kind: "move"; startX: number; startY: number; idx: number; orig: MosaicRegion; box: Box; kfToast?: boolean }
+  | { kind: "resize"; startX: number; startY: number; idx: number; orig: MosaicRegion; box: Box; handle: HandleId; kfToast?: boolean }
   | null;
 
 const HANDLE_SIZE = 9;
-const MIN_SIZE = 0.02;
+/** 区域最小边长。与导出侧同一个常量（`lib/regionShape`），不再各写一份。 */
+const MIN_SIZE = MIN_REGION_SIZE;
 
-const STYLE_LABEL: Record<Style, string> = {
+const STYLE_LABEL: Record<MosaicStyle, string> = {
   pixel: "马赛克", gaussblur: "模糊", blackbox: "遮挡",
 };
 
 function clamp(v: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, v)); }
 
-/** 由笔迹点集算出包围盒（含笔刷半径外扩） */
-function strokeBounds(stroke: { x: number; y: number }[], brushSize: number, aspect: number) {
-  const r = brushSize / 2;
-  const ry = r * aspect;   // Y 方向半径按宽高比换算，保证笔刷是圆的
-  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
-  for (const p of stroke) {
-    x0 = Math.min(x0, p.x - r); y0 = Math.min(y0, p.y - ry);
-    x1 = Math.max(x1, p.x + r); y1 = Math.max(y1, p.y + ry);
-  }
-  x0 = clamp(x0, 0, 1); y0 = clamp(y0, 0, 1);
-  x1 = clamp(x1, 0, 1); y1 = clamp(y1, 0, 1);
-  return { x: x0, y: y0, w: Math.max(x1 - x0, MIN_SIZE), h: Math.max(y1 - y0, MIN_SIZE) };
-}
-
-export default function MosaicOverlay({ vrect, transform, onPatchTransform, active }: Props) {
+export default function MosaicOverlay({
+  vrect, transform, onPatchTransform, active, tSec, onToast,
+}: Props) {
   const tm = transform ?? {};
-  const mosaics: MosaicRegion[] = (tm.mosaics as MosaicRegion[] | undefined) ?? [];
+  const mosaics: MosaicRegion[] = tm.mosaics ?? [];
 
   const boxRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState>(null);
 
-  const [tool, setTool] = useState<Shape>("rect");
-  const [style, setStyle] = useState<Style>("pixel");
-  const [intensity, setIntensity] = useState(60);
-  const [brushSize, setBrushSize] = useState(0.10);
+  // 工具 / 样式 / 强度 / 笔刷 / 选中 —— 这些原本是本组件的 useState，
+  // 于是侧边栏的 MosaicPanel 既看不见也改不了（用户："预设几何形、画笔都没在这里展示"）。
+  // 提到 canvasToolStore 后，面板与画面成为同一个编辑器的两个视图：
+  // 面板点「圆形」画面立刻切到圆形，画面上选中区域面板同步高亮。
+  const tool = useCanvasToolStore((s) => s.mosaicTool);
+  const setTool = useCanvasToolStore((s) => s.setMosaicTool);
+  const style = useCanvasToolStore((s) => s.mosaicStyle);
+  const setStyle = useCanvasToolStore((s) => s.setMosaicStyle);
+  const intensity = useCanvasToolStore((s) => s.mosaicIntensity);
+  const setIntensity = useCanvasToolStore((s) => s.setMosaicIntensity);
+  const brushSize = useCanvasToolStore((s) => s.brushSize);
+  const setBrushSize = useCanvasToolStore((s) => s.setBrushSize);
+  const selIdx = useCanvasToolStore((s) => s.mosaicSel);
+  const setSelIdx = useCanvasToolStore((s) => s.setMosaicSel);
 
   const [drawBox, setDrawBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [paintPts, setPaintPts] = useState<{ x: number; y: number }[]>([]);
-  const [selIdx, setSelIdx] = useState<number | null>(null);
   /** 新建后自动展开设置气泡 */
   const [popover, setPopover] = useState(false);
 
   const aspect = vrect.width / Math.max(vrect.height, 1);
 
-  const save = useCallback((next: MosaicRegion[]) => {
-    onPatchTransform({ ...tm, mosaics: next } as TransformMeta);
+  /** 拖动中最后一次 stage 出去的值；松手时原样重发一遍做真落库（2.2）。
+   *  ⚠️ 不在松手回调里从 mosaics 现算：拖动结束时 dragRef 已清空、
+   *  且 React 可能把最后一次渲染推迟到 pointerup 之后，重算会漏掉最后一格。 */
+  const stagedRef = useRef<TransformMeta | Record<string, never> | null>(null);
+
+  const save = useCallback((next: MosaicRegion[], staged = false) => {
+    const payload = { ...tm, mosaics: next };
+    stagedRef.current = staged ? payload : null;
+    onPatchTransform(payload, staged ? { staged: true } : undefined);
   }, [tm, onPatchTransform]);
+
+  /** 松手 / 拖动被打断 / 滑块失焦：把 stage 的值真正落库一次 */
+  const commitStaged = useCallback(() => {
+    const v = stagedRef.current;
+    stagedRef.current = null;
+    // 只点了一下没拖动 → 没有待落库的值，不平白多发一笔 PATCH
+    if (v) onPatchTransform(v);
+  }, [onPatchTransform]);
 
   /** 屏幕坐标 → 画面比例坐标 */
   const toRatio = useCallback((clientX: number, clientY: number) => {
@@ -101,6 +135,27 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
       y: clamp((clientY - r.top) / vrect.height, 0, 1),
     };
   }, [vrect]);
+
+  /**
+   * 拖动 / 缩放的落点：把新框交给 `applyRegionBox`，由它决定这是
+   * 「改静态框」还是「在播放头处写一条关键帧」。
+   *
+   * 这两种情况在**组件里不分岔**是有意的：分岔一旦写在这儿，
+   * 「什么时候算动画」就有了第二个定义，迟早与 `regionBoxAt`/`kfExpr` 漂移。
+   * 组件只负责算出"用户把框拖到哪了"，语义全在 `lib/keyframeEdit`（有单测）。
+   */
+  const commitBox = useCallback((
+    d: { idx: number; orig: MosaicRegion; kfToast?: boolean }, box: Box,
+  ) => {
+    const cur = mosaics[d.idx] ?? d.orig;
+    // 有关键帧的区域，这一拖是在播放头处记一笔 —— 必须说出来，
+    // 否则用户会以为自己"把整个区域挪走了"，而实际只改了这一个时刻。
+    if (!d.kfToast && kfCount(cur) > 0) {
+      d.kfToast = true;
+      onToast(`已在 ${tSec.toFixed(1)}s 记录关键帧`);
+    }
+    save(mosaics.map((m, i) => (i === d.idx ? applyRegionBox(d.orig, tSec, box) : m)), true);
+  }, [mosaics, save, tSec, onToast]);
 
   // ---- 在空白处按下：开始绘制 ----
   const onCanvasDown = useCallback((e: React.PointerEvent) => {
@@ -148,39 +203,37 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
 
     if (d.kind === "move") {
       const dx = p.x - d.startX, dy = p.y - d.startY;
-      const o = d.orig;
-      const moved: MosaicRegion = {
-        ...o,
+      const o = d.box;
+      // ⚠️ 笔迹**不再**单独写 `s.x + dx`。那条式子与上面的 clamp 会分叉：
+      // 框被夹到画面边缘停住了，笔迹还在跟着指针走，当场跑出包围盒 ——
+      // 而导出是按「笔迹相对包围盒」算 alpha 的，遮的就不是用户看到的那块。
+      // 现在统一交给 `applyRegionBox` → `remapStroke` 做仿射映射。
+      commitBox(d, {
         x: clamp(o.x + dx, 0, 1 - o.w),
         y: clamp(o.y + dy, 0, 1 - o.h),
-        // 笔迹要跟着整体平移
-        stroke: o.stroke?.map((s) => ({ x: s.x + dx, y: s.y + dy })),
-      };
-      save(mosaics.map((m, i) => (i === d.idx ? moved : m)));
+        w: o.w, h: o.h,
+      });
       return;
     }
 
     if (d.kind === "resize") {
       const dx = p.x - d.startX, dy = p.y - d.startY;
-      const o = d.orig;
+      const o = d.box;
       let { x, y, w, h } = o;
       if (d.handle.includes("n")) { y = clamp(o.y + dy, 0, o.y + o.h - MIN_SIZE); h = o.h - (y - o.y); }
       if (d.handle.includes("s")) { h = clamp(o.h + dy, MIN_SIZE, 1 - o.y); }
       if (d.handle.includes("w")) { x = clamp(o.x + dx, 0, o.x + o.w - MIN_SIZE); w = o.w - (x - o.x); }
       if (d.handle.includes("e")) { w = clamp(o.w + dx, MIN_SIZE, 1 - o.x); }
-      // 笔迹按包围盒等比缩放，保持形状
-      const sx = w / Math.max(o.w, 1e-6), sy = h / Math.max(o.h, 1e-6);
-      const stroke = o.stroke?.map((s) => ({
-        x: x + (s.x - o.x) * sx,
-        y: y + (s.y - o.y) * sy,
-      }));
-      save(mosaics.map((m, i) => (i === d.idx ? { ...o, x, y, w, h, stroke } : m)));
+      commitBox(d, { x, y, w, h });
     }
-  }, [toRatio, tool, aspect, brushSize, mosaics, save]);
+  }, [toRatio, tool, aspect, brushSize, commitBox]);
 
   const onCanvasUp = useCallback(() => {
     const d = dragRef.current;
     dragRef.current = null;
+
+    // 移动 / 缩放：拖动期间只 stage 了，这一下才真正落库（2.2）
+    if (d?.kind === "move" || d?.kind === "resize") commitStaged();
 
     if (d?.kind === "draw" && drawBox && drawBox.w > MIN_SIZE && drawBox.h > MIN_SIZE) {
       const r: MosaicRegion = {
@@ -205,14 +258,19 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
 
     setDrawBox(null);
     setPaintPts([]);
-  }, [drawBox, paintPts, style, intensity, tool, brushSize, aspect, mosaics, save]);
+  }, [drawBox, paintPts, style, intensity, tool, brushSize, aspect, mosaics, save, commitStaged]);
 
   // ---- 选中区域上按下：移动 ----
   function onRegionDown(e: React.PointerEvent, idx: number) {
     if (!active) return;
     e.stopPropagation();
     const p = toRatio(e.clientX, e.clientY);
-    dragRef.current = { kind: "move", startX: p.x, startY: p.y, idx, orig: { ...mosaics[idx] } };
+    // 起始框取**画面上看到的那个**：动画区域是当帧插值结果，静态区域就是 x/y/w/h。
+    // 拿 orig.x 当起点的话，动画区域一按下就会跳回静态框的位置。
+    dragRef.current = {
+      kind: "move", startX: p.x, startY: p.y, idx,
+      orig: { ...mosaics[idx] }, box: regionBoxAt(mosaics[idx], tSec),
+    };
     setSelIdx(idx);
     setPopover(true);
     boxRef.current!.setPointerCapture(e.pointerId);
@@ -221,17 +279,21 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
   function onHandleDown(e: React.PointerEvent, idx: number, handle: HandleId) {
     e.stopPropagation();
     const p = toRatio(e.clientX, e.clientY);
-    dragRef.current = { kind: "resize", startX: p.x, startY: p.y, idx, orig: { ...mosaics[idx] }, handle };
+    dragRef.current = {
+      kind: "resize", startX: p.x, startY: p.y, idx,
+      orig: { ...mosaics[idx] }, box: regionBoxAt(mosaics[idx], tSec), handle,
+    };
     setSelIdx(idx);
     boxRef.current!.setPointerCapture(e.pointerId);
   }
 
-  /** 改当前选中区域的样式/强度；没选中就只改"下次新建"的默认值 */
-  function patchSel(patch: Partial<MosaicRegion>) {
+  /** 改当前选中区域的样式/强度；没选中就只改"下次新建"的默认值。
+   *  `staged`：强度是滑块，拖动中的中间值只在本地生效，松手由 commitStaged 落库。 */
+  function patchSel(patch: Partial<MosaicRegion>, staged = false) {
     if (patch.style !== undefined) setStyle(patch.style);
     if (patch.intensity !== undefined) setIntensity(patch.intensity);
     if (selIdx === null) return;
-    save(mosaics.map((m, i) => (i === selIdx ? { ...m, ...patch } : m)));
+    save(mosaics.map((m, i) => (i === selIdx ? { ...m, ...patch } : m)), staged);
   }
 
   // ---- 键盘 ----
@@ -249,14 +311,16 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [active, selIdx, mosaics, save]);
+  }, [active, selIdx, mosaics, save, setSelIdx, setTool]);
 
   // ---- 滚轮调笔刷大小 ----
+  // store 的 setBrushSize 只收具体数值（没有函数式更新），上下限也在 store 里统一夹紧，
+  // 这里直接按当前值算增量即可。
   const onWheel = useCallback((e: React.WheelEvent) => {
     if (!active || tool !== "brush") return;
     e.preventDefault();
-    setBrushSize((s) => clamp(s + (e.deltaY < 0 ? 0.01 : -0.01), 0.02, 0.4));
-  }, [active, tool]);
+    setBrushSize(brushSize + (e.deltaY < 0 ? 0.01 : -0.01));
+  }, [active, tool, brushSize, setBrushSize]);
 
   if (!active && mosaics.length === 0) return null;
 
@@ -275,13 +339,21 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
       onPointerDown={onCanvasDown}
       onPointerMove={onCanvasMove}
       onPointerUp={onCanvasUp}
+      // 拖出窗口、被系统手势打断：同样要收尾，否则 dragRef 卡住、
+      // 且这次移动/缩放的最终值只剩本地（要等 250ms 兜底计时器才落库）
+      onPointerCancel={onCanvasUp}
       onWheel={onWheel}
     >
       {/* ---- 已有区域 ---- */}
       {mosaics.map((r, idx) => {
         const sel = selIdx === idx;
         const shape = r.shape ?? "rect";
-        const L = px(r.x), T = py(r.y), W = px(r.w), H = py(r.h);
+        // 当帧形状：与导出的光栅化器共用 `regionShapeAt`（见 Props.tSec 的注释）。
+        // 静态区域下它逐点恒等于 `regionShapeOf(r)`，老数据零影响。
+        const shp = regionShapeAt(r, tSec);
+        const b = shp.box;
+        const drawStroke = shp.kind === "brush" ? shp.stroke : null;
+        const L = px(b.x), T = py(b.y), W = px(b.w), H = py(b.h);
 
         return (
           <div key={idx}
@@ -303,14 +375,14 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
                 // 于是裁剪区退化成路径自身轮廓，自我重叠处还会按 fill-rule 被挖空
                 // （用户实测："画笔轨迹重叠处马赛克失效"）。
                 // mask 走的是亮度通道，白色描边即可见，重叠只会更白，不会互相抵消。
-                ...(shape === "brush" && r.stroke
+                ...(shape === "brush" && drawStroke
                   ? { mask: `url(#fw-mso-mask-${idx})`, WebkitMask: `url(#fw-mso-mask-${idx})` }
                   : {}),
               }}
             />
 
             {/* 画笔形状的裁剪路径 */}
-            {shape === "brush" && r.stroke && (
+            {shape === "brush" && drawStroke && (
               <svg className="fw-mso-svg" width={W} height={H}>
                 <defs>
                   <mask id={`fw-mso-mask-${idx}`} maskUnits="userSpaceOnUse"
@@ -318,7 +390,7 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
                     {/* 白 = 保留。描边宽度即笔刷直径，圆头圆角保证笔迹平滑，
                         重叠处仍是白色，不会像 clipPath 那样被挖空。 */}
                     <path
-                      d={r.stroke.map((p, i) =>
+                      d={drawStroke.map((p, i) =>
                         `${i ? "L" : "M"}${(px(p.x) - L).toFixed(1)},${(py(p.y) - T).toFixed(1)}`).join("")}
                       stroke="#fff"
                       strokeWidth={px(r.brushSize ?? 0.1)}
@@ -392,7 +464,7 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
           <div className="fw-mso-sep" />
 
           <div className="fw-mso-styles">
-            {(["pixel", "gaussblur", "blackbox"] as Style[]).map((s) => (
+            {(["pixel", "gaussblur", "blackbox"] as MosaicStyle[]).map((s) => (
               <button key={s}
                 className={`fw-mso-style${(selIdx !== null ? mosaics[selIdx]?.style : style) === s ? " on" : ""}`}
                 onClick={() => patchSel({ style: s })}>
@@ -415,19 +487,21 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
       {/* ---- 选中区域的设置气泡（新建后自动弹出）---- */}
       {active && popover && selIdx !== null && mosaics[selIdx] && (() => {
         const r = mosaics[selIdx];
-        const L = px(r.x), T = py(r.y), W = px(r.w);
+        // 气泡跟着**画面上的**框走，动画区域随播放头移动，否则气泡会停在静态框那儿
+        const pb = regionBoxAt(r, tSec);
+        const L = px(pb.x), T = py(pb.y), W = px(pb.w);
         // 气泡放区域下方；贴近画面底部时翻到上方
-        const below = T + py(r.h) + 92 < vrect.height;
+        const below = T + py(pb.h) + 92 < vrect.height;
         return (
           <div className="fw-mso-popover"
             style={{
               left: clamp(L + W / 2 - 108, 4, Math.max(4, vrect.width - 220)),
-              top: below ? T + py(r.h) + 10 : Math.max(4, T - 88),
+              top: below ? T + py(pb.h) + 10 : Math.max(4, T - 88),
             }}
             onPointerDown={(e) => e.stopPropagation()}
           >
             <div className="fw-mso-pop-row">
-              {(["pixel", "gaussblur", "blackbox"] as Style[]).map((s) => (
+              {(["pixel", "gaussblur", "blackbox"] as MosaicStyle[]).map((s) => (
                 <button key={s}
                   className={`fw-mso-style${r.style === s ? " on" : ""}`}
                   onClick={() => patchSel({ style: s })}>
@@ -442,7 +516,12 @@ export default function MosaicOverlay({ vrect, transform, onPatchTransform, acti
               <div className="fw-mso-pop-row">
                 <span className="fw-mso-pop-label">强度</span>
                 <input type="range" min={10} max={100} step={5} value={r.intensity}
-                  onChange={(e) => patchSel({ intensity: Number(e.target.value) })} />
+                  onChange={(e) => patchSel({ intensity: Number(e.target.value) }, true)}
+                  onPointerUp={commitStaged}
+                  onPointerCancel={commitStaged}
+                  // 键盘调节（←→）没有 pointer 事件，靠 keyup / blur 收尾
+                  onKeyUp={commitStaged}
+                  onBlur={commitStaged} />
                 <span className="fw-mso-pop-val">{r.intensity}</span>
               </div>
             )}
