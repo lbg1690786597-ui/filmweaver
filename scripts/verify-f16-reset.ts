@@ -37,7 +37,7 @@ const fakeTimeline: Timeline = {
     muted: false, solo: false, collapsed: false, height: 80,
     clips: [{
       id: "c1", trackId: "v1", startSec: 0, durationSec: 5,
-      shotId: "s1", shotOrder: 1, label: "#1",
+      entity: "shot", shotId: "s1", shotOrder: 1, label: "#1",
       disabled: false, isSpecial: false, status: "done",
       refsStale: false, characters: [],
     }],
