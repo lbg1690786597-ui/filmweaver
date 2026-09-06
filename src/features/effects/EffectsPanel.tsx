@@ -34,7 +34,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Info, Upload, Loader2 } from "lucide-react";
 import { api } from "../../api";
 import { probeCapabilities } from "../../render/capabilities";
-import type { TransformMeta } from "../../api";
+import type { TransformMeta, TransformPatchOpts } from "../../api";
 import "./EffectsPanel.css";
 
 export type EffectKind = "transition" | "effect" | "filter";
@@ -128,8 +128,9 @@ interface Props {
   projectId: string;
   /** 当前选中镜头已保存的调整（滤镜面板据此回显） */
   transform: TransformMeta | null;
-  /** 保存调色/LUT 到选中镜头 */
-  onPatchTransform: (tm: TransformMeta) => void;
+  /** 保存调色/LUT 到选中镜头。
+   *  拖滑块的中间值传 `{ staged: true }`（本地即时生效、落库延后，见 lib/stagedWrite.ts）， */
+  onPatchTransform: (tm: TransformMeta, opts?: TransformPatchOpts) => void;
   /** Render V2：把转场加在选中镜头之后的接缝上 */
   onApplyTransition?: (type: string) => void;
   onToast: (m: string) => void;
@@ -184,19 +185,39 @@ export default function EffectsPanel({
     setApplied(null);
   }, [transform, shotId]);
 
+  /** 拖动中最后一次 stage 出去的值。松手时原样重发一遍做真落库。
+   *  ⚠️ 不在松手回调里从 `adj` 现算：拖动的 onChange 属于连续事件，
+   *  React 可能把最后一次 setAdj 推迟到 pointerup 之后，那样收尾提交
+   *  会漏掉最后一格 —— 而"松手后的值必须是最终值"正是本条的验收标准。 */
+  const stagedRef = useRef<TransformMeta | null>(null);
+
   /** 把当前滑块值合并进 transform_meta 并落库。
    *
    *  必须在**已有** transform_meta 上合并：这个面板只管调色那几项，
    *  从零重建会把 Inspector 写的位置/变速/音量全抹掉（后端是整体替换）。
-   *  默认值要显式 delete，否则清不掉旧值。 */
-  const pushAdj = (vals: Record<string, number>) => {
+   *  默认值要显式 delete，否则清不掉旧值。
+   *
+   *  `staged`（2.2）：拖动中的中间值只在本地生效，真正的 PATCH 延后到松手。
+   *  改动前这里是**每个 onChange 一次 PATCH**，拖一次滑块几十上百笔。 */
+  const pushAdj = (vals: Record<string, number>, staged = false) => {
     if (!hasSelection) return;
     const next = { ...(transform ?? {}) } as Record<string, unknown>;
     for (const a of ADJUSTMENTS) {
       if (vals[a.id] !== a.def) next[a.id] = vals[a.id];
       else delete next[a.id];
     }
-    onPatchTransform(next as TransformMeta);
+    const payload = next as TransformMeta;
+    stagedRef.current = staged ? payload : null;
+    onPatchTransform(payload, staged ? { staged: true } : undefined);
+  };
+
+  /** 松手 / 键盘调完 / 失焦：把 stage 的值真正落库一次 */
+  const commitAdj = () => {
+    dragging.current = false;
+    const v = stagedRef.current;
+    if (!v) return;             // 只按了一下没拖动 → 不必平白多发一笔
+    stagedRef.current = null;
+    onPatchTransform(v);
   };
 
   const apply = (it: Item) => {
@@ -273,25 +294,27 @@ export default function EffectsPanel({
               <div key={a.id} className="fw-fx-slider-row">
                 <span className="fw-fx-slider-label">{a.label}</span>
                 {/* 拖动即预览：onChange 立刻把新值送出去，画面跟着动
-                    （预览器读的是同一份 transform_meta）。
-                    落库放在 onPointerUp/onKeyUp —— 拖一次滑块会触发几十次
+                    （预览器读的是同一份 transform_meta —— App 会把还没落库的值
+                    盖在 detail.shots 上，见 hooks/useStagedTransform.ts）。
+                    真正的 PATCH 延后到松手/键盘调完：拖一次滑块会触发几十次
                     onChange，每次都 PATCH 会把后端刷爆，也会让撤销栈塞满噪声。 */}
                 <input type="range" min={a.min} max={a.max} value={adj[a.id]}
                   onPointerDown={() => { dragging.current = true; }}
                   onChange={(e) => {
                     const next = { ...adj, [a.id]: Number(e.target.value) };
                     setAdj(next);
-                    pushAdj(next);          // 实时预览
+                    pushAdj(next, true);    // 实时预览，落库延后
                   }}
-                  onPointerUp={() => { dragging.current = false; }}
-                  onPointerCancel={() => { dragging.current = false; }}
-                  // 键盘调节（←→）没有 pointer 事件，靠 blur 收尾
-                  onBlur={() => { dragging.current = false; }} />
+                  onPointerUp={commitAdj}
+                  onPointerCancel={commitAdj}
+                  // 键盘调节（←→）没有 pointer 事件，靠 keyup / blur 收尾
+                  onKeyUp={commitAdj}
+                  onBlur={commitAdj} />
                 <span className="fw-fx-slider-val">{adj[a.id]}</span>
               </div>
             ))}
             <div className="fw-fx-adjust-acts">
-              {/* 「应用到选中镜头」已移除：拖动滑块即时生效并落库，
+              {/* 「应用到选中镜头」已移除：拖动滑块即时生效、松手即落库，
                   留着那个按钮反而误导（让人以为不点就没保存）。 */}
               <button disabled={!hasSelection} onClick={() => {
                 const d = Object.fromEntries(ADJUSTMENTS.map((a) => [a.id, a.def]));
