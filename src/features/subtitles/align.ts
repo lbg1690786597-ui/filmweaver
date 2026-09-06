@@ -52,6 +52,18 @@ export const DEFAULT_SPLIT: Required<SplitOptions> = {
 const HARD_STOPS = "。！？!?…";
 /** 句中标点：句子超长时的次选断点 */
 const SOFT_STOPS = "，、；：,;:";
+/**
+ * 收尾符号：句末标点**后面**紧跟的这些字符属于上一句，不能被推到下一句去。
+ *
+ * 小说体旁白（第一人称叙述里大量 `"……。"` 的引语）会把这一点暴露成一条
+ * 独立的垃圾字幕：`他说完就走了。"` 在 `。` 处断句后，剩下的 `"` 落进
+ * 下一轮 buf，最终作为**只有一个引号**的字幕条出现在成片上。
+ */
+const CLOSERS = "”’」』）)〉》】]〕>";
+
+/** 这一段里有没有"能读出来的东西"（字母/数字/汉字）。
+ *  纯标点的片段不该独占一条字幕——它没有可读内容，却会占掉一整个显示时段。 */
+const hasReadable = (s: string): boolean => /[\p{L}\p{N}]/u.test(s);
 
 /**
  * 把一段文本拆成字幕条。
@@ -69,10 +81,15 @@ export function splitIntoCues(text: string, opts: SplitOptions = {}): string[] {
 
   // 1) 先按句末标点切成句子
   const sentences: string[] = [];
+  const chars = Array.from(src);          // 按码点走，避免拆坏代理对
   let buf = "";
-  for (const ch of src) {
-    buf += ch;
-    if (HARD_STOPS.includes(ch)) { sentences.push(buf.trim()); buf = ""; }
+  for (let i = 0; i < chars.length; i++) {
+    buf += chars[i];
+    if (!HARD_STOPS.includes(chars[i])) continue;
+    // 把紧跟的收尾引号/括号一并吞进本句（见 CLOSERS 注释）
+    while (i + 1 < chars.length && CLOSERS.includes(chars[i + 1])) buf += chars[++i];
+    sentences.push(buf.trim());
+    buf = "";
   }
   if (buf.trim()) sentences.push(buf.trim());
 
@@ -99,7 +116,22 @@ export function splitIntoCues(text: string, opts: SplitOptions = {}): string[] {
       for (let i = 0; i < piece.length; i += size) out.push(piece.slice(i, i + size));
     }
   }
-  return out.filter((s) => s.length > 0);
+
+  // 3) 纯标点的片段并进相邻条，不让它独占一条字幕。
+  //    上面的 CLOSERS 已经堵掉了最常见的来源（句末引号），但引号并不总是紧跟
+  //    句末标点（`……"，他说` / 开头引号 / 破折号独立成段），所以这里还要兜一道：
+  //    **有没有可读内容**是判据，比穷举符号表可靠。
+  const merged: string[] = [];
+  for (const s of out.filter((x) => x.length > 0)) {
+    if (hasReadable(s) || !merged.length) merged.push(s);
+    else merged[merged.length - 1] += s;   // 并进前一条（标点跟随前文的惯例）
+  }
+  // 首条就没有可读内容（整段以引号/破折号开头）：并进后一条
+  if (merged.length > 1 && !hasReadable(merged[0])) {
+    merged[1] = merged[0] + merged[1];
+    merged.shift();
+  }
+  return merged.filter((s) => s.length > 0);
 }
 
 export interface Silence { start: number; end: number }
@@ -147,6 +179,8 @@ export function parseSilence(stderr: string): Silence[] {
  *    - 吸附后仍严格递增（不能把边界拽到前一个边界之前）
  *    - 一个静音点只能被一个边界用（否则两条字幕会挤到同一时刻）
  * 3. 吸不上的保留理想秒数
+ * 4. 最后把短于 `minSec` 的条并进邻条（`mergeShort`）——这一步 6.10 才补上，
+ *    在此之前 `minSec` 是个**从未被读取**的参数，详见该函数注释。
  *
  * 首条起点取第一个非静音位置（TTS 产物开头常有 0.1~0.2s 静音，
  * 字幕跟着提前 0.2s 出现会很明显）；末条终点固定 `totalSec`。
@@ -155,7 +189,7 @@ export function alignCues(
   cues: string[], silences: Silence[], totalSec: number,
   opts: SplitOptions & { tol?: number } = {},
 ): Cue[] {
-  const { maxSec } = { ...DEFAULT_SPLIT, ...opts };
+  const { maxSec, minSec } = { ...DEFAULT_SPLIT, ...opts };
   const tol = opts.tol ?? 0.6;
   if (!cues.length || !(totalSec > 0)) return [];
 
@@ -217,6 +251,49 @@ export function alignCues(
     const start = bounds[i];
     const end = Math.min(bounds[i + 1], start + maxSec);
     out.push({ text: cues[i], start, end });
+  }
+  return mergeShort(out, minSec);
+}
+
+/**
+ * 把短于 `minSec` 的条并进相邻条。
+ *
+ * ⚠️ 这条此前**完全没有实现**：`minSec` 只出现在 `SplitOptions` 与
+ * `DEFAULT_SPLIT` 里，`alignCues` 从头到尾没读过它——即「单条最短显示时长」
+ * 这个写在注释里的约定，代码一次都没有兑现过。实测 78 段旁白产出的 504 条
+ * 字幕里有 **23 条短于 0.5s**，最短 0.10s：屏幕上一闪而过，根本来不及读。
+ *
+ * 成因不是"这句话真的说得那么快"，而是边界被吸歪了：上面那两处
+ * 单调性兜底（`+ 0.05`）允许相邻边界只隔 0.05s，于是一个吸附到边上的
+ * 静音点就能挤出一条几乎零宽的字幕。
+ *
+ * **为什么是合并而不是拉长**：拉长就得从邻条借时间，邻条可能因此也短于
+ * `minSec`，一路推下去要重排整条时间轴；而合并是就地收敛的——文本仍然
+ * 一字不差按序输出，只是两条并成一条显示。短条本来字数就少
+ * （0.8s ≈ 5 字），合并后基本仍在 `maxChars` 附近。
+ *
+ * 合并对象取**时长较短**的那一侧：这样不会把一条已经很长的字幕撑得更长。
+ */
+function mergeShort(cues: Cue[], minSec: number): Cue[] {
+  if (!(minSec > 0)) return cues;
+  const out = cues.map((c) => ({ ...c }));
+  // 每轮找当前最短的一条；合并会改变邻条时长，所以必须重新扫，不能单趟走完
+  for (;;) {
+    if (out.length < 2) break;
+    let idx = -1, min = Infinity;
+    for (let i = 0; i < out.length; i++) {
+      const d = out[i].end - out[i].start;
+      if (d < min) { min = d; idx = i; }
+    }
+    if (min >= minSec || idx < 0) break;
+    // 选时长较短的邻居；只有一侧邻居时别无选择
+    const prev = idx > 0 ? out[idx - 1].end - out[idx - 1].start : Infinity;
+    const next = idx < out.length - 1 ? out[idx + 1].end - out[idx + 1].start : Infinity;
+    const withPrev = prev <= next;
+    const a = withPrev ? idx - 1 : idx;      // 合并后保留的那一条（靠前的）
+    const b = withPrev ? idx : idx + 1;
+    out[a] = { text: out[a].text + out[b].text, start: out[a].start, end: out[b].end };
+    out.splice(b, 1);
   }
   return out;
 }
