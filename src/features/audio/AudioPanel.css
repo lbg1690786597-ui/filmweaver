@@ -44,6 +44,20 @@
   text-align: center;
 }
 
+/* 读失败（2.4）：与 .fw-audio-empty 占同一个位置，但**必须长得不一样** ——
+   两者的区别正是本条要传达的信息（"真的没有" vs "没查到"）。 */
+.fw-audio-loadfail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-3);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  text-align: center;
+  color: var(--c-warning);
+}
+
 .fw-audio-sec {
   padding: var(--sp-2) var(--sp-3) var(--sp-1);
   font-size: var(--fs-xs);
