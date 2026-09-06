@@ -110,6 +110,57 @@
 .fw-czo-h-w { left: -6px;   top: 50%;  margin-top: -5px;  cursor: ew-resize; }
 .fw-czo-h-e { right: -6px;  top: 50%;  margin-top: -5px;  cursor: ew-resize; }
 
+/* ---- 裁剪 / 画面 模式切换条 ---- */
+.fw-czo-mode-bar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: oklch(0% 0 0 / 0.62);
+  backdrop-filter: blur(6px);
+  pointer-events: all;
+  z-index: 7;
+}
+.fw-czo-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: oklch(78% 0 0);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fw-czo-mode-btn:hover { color: oklch(97% 0 0); }
+.fw-czo-mode-btn.on {
+  background: oklch(55% 0.16 220);
+  color: oklch(99% 0 0);
+}
+
+/* ---- 裁剪框 ---- */
+/* 框外压暗：超大 box-shadow 从框的边缘往外铺满，框内保持原样 */
+.fw-czo-crop-dim {
+  position: absolute;
+  box-shadow: 0 0 0 4000px oklch(0% 0 0 / 0.55);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.fw-czo-crop-frame {
+  position: absolute;
+  border: 1.5px solid oklch(99% 0 0 / 0.95);
+  z-index: 4;
+  pointer-events: none;   /* 子元素单独开 */
+}
+.fw-czo-crop-frame.dragging { border-color: oklch(80% 0.19 220); }
+
 /* ---- 状态角标 ---- */
 .fw-czo-badge {
   position: absolute;
