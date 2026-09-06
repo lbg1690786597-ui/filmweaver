@@ -111,6 +111,77 @@
 
 .fw-pl-spacer { flex: 1; }
 
+/* ---- 自带播控：进度条 + 音量 ----
+   GPU 调色路径下 <video> 是 visibility:hidden 的，原生播控条不可见，
+   「能看见并拖动进度」必须由这里提供（见 Player.tsx 里的说明）。
+   两条路径（GPU / CSS）都用这一套，手感一致。 */
+
+/* 进度条吃掉工具条的富余宽度（比 .fw-pl-spacer 优先，右侧按钮不被挤走）。
+   min-width 保证窄播放器下仍然拖得动。 */
+.fw-pl-seek {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 2 1 90px;
+  min-width: 60px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--c-border);
+  cursor: pointer;
+  outline: none;
+  margin: 0;
+}
+.fw-pl-seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--c-accent);
+  cursor: pointer;
+}
+.fw-pl-seek::-webkit-slider-thumb:hover { background: var(--c-accent-hi); }
+.fw-pl-seek::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: none;
+  border-radius: 50%;
+  background: var(--c-accent);
+  cursor: pointer;
+}
+.fw-pl-seek:disabled { opacity: 0.3; cursor: default; }
+
+/* 音量条固定窄宽：它是次要控件，不参与工具条的宽度竞争 */
+.fw-pl-vol {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 0 0 54px;
+  width: 54px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--c-border);
+  cursor: pointer;
+  outline: none;
+  margin: 0;
+}
+.fw-pl-vol::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--c-muted);
+  cursor: pointer;
+}
+.fw-pl-vol:hover::-webkit-slider-thumb { background: var(--c-text); }
+.fw-pl-vol::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border: none;
+  border-radius: 50%;
+  background: var(--c-muted);
+  cursor: pointer;
+}
+
 .fw-pl-label {
   font-size: var(--fs-xs);
   color: var(--c-text);
@@ -151,12 +222,27 @@
   border-radius: inherit;
 }
 
+/* P2-7 留黑：盖住画面那一块的不透明黑层。
+   `pointer-events: none` 与暗角同理 —— 它铺在画面上，不能吃掉 <video>
+   自带播控条的点击（留黑的镜头照样要能播、要能听声音）。
+   z-index:1 + DOM 上排在 canvas 之后 = 压住 canvas(1) 与 <video>，
+   但低于字幕层(2)：成片里字幕是烧在黑之上的，预览必须同序。 */
+.fw-pl-blackout {
+  position: absolute;
+  z-index: 1;
+  background: #000;
+  pointer-events: none;
+}
+
 /* "预览为近似效果" / "xx 仅渲染时生效" 的角标。
-   放右上角，避开 <video> 底部的原生控制条。 */
+   放右上角，避开 <video> 底部的原生控制条。
+   z-index 要压过 .fw-pl-canvas(1)：GPU 路径下 canvas 不透明，
+   不抬 z 序角标会被整块盖住 —— 而它恰恰是 GPU 路径下也要能看到的提示。 */
 .fw-pl-approx {
   position: absolute;
   top: 8px;
   right: 8px;
+  z-index: 4;
   padding: 3px 8px;
   border-radius: 4px;
   background: oklch(0% 0 0 / 0.62);
@@ -181,22 +267,34 @@
 
 /* ---- WebGL 调色输出层 ---- */
 
-/* GPU 路径下 <video> 仍然存在（解码源 + 音频 + 原生播控），
-   但画面交给上面的 canvas。这里让视频像素不可见、控件仍可用：
-   opacity:0 会连控件一起透明，所以只能靠 canvas 盖住，
-   video 保持原样但被 canvas 遮挡。z-index 决定层序。 */
-.fw-pl-video.gpu { position: relative; z-index: 0; }
+/* GPU 路径下 <video> 仍然存在（解码源 + 音频源），但画面交给上面的 canvas。
+   这里让视频**不出画**：
+   · opacity:0 不行 —— canvas 建的是 alpha:false 的不透明上下文，但一旦
+     用户把 transform.opacity 调到 <1，canvas 变半透明，下面那帧**未调色**的
+     原始画面就会透出来叠在一起。
+   · display:none 不行 —— 布局盒消失，Player 用 offsetLeft/Width 量出的 vrect
+     会全变 0，字幕/取景框/马赛克三个覆盖层连同 canvas 自身的定位一起塌掉。
+   visibility:hidden 同时满足：不绘制、保留布局盒、且解码与 texImage2D 照常。
+   播控由工具条上的 .fw-pl-seek / .fw-pl-vol 提供，不再依赖原生控件。 */
+.fw-pl-video.gpu { position: relative; z-index: 0; visibility: hidden; }
 
 .fw-pl-canvas {
   position: absolute;
-  /* 与 <video> 的 object-fit:contain 表现一致：等比缩放居中 */
+  /* 兜底：vrect 量出来之前没有显式 left/top/width/height，
+     靠这几条与 <video> 表现一致（等比缩放居中）。量到之后由内联样式钉死。 */
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
   z-index: 1;
-  /* 点击穿透到下层 <video> 的原生播控条，否则播放/进度条点不动 */
+  /* 点击穿透：画面上的取景框/马赛克覆盖层要能收到鼠标事件 */
   pointer-events: none;
 }
+
+/* 非 GPU 路径：canvas **仍然挂在 DOM 里**（否则形成自举死锁，
+   见 hooks/useGradePreview.ts 开头），只是不显示。
+   用 visibility 而不是 display:none —— 保留布局盒，clientWidth 才有效，
+   gradePreview 的模糊换算要用它把显示像素换算成源像素。 */
+.fw-pl-canvas.off { visibility: hidden; }
 
 /* 字幕叠加层。
    外层只负责"框住画面矩形"——内层的定位/字号/描边全部由
