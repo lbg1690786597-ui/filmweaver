@@ -20,6 +20,11 @@ export interface FontOption {
 }
 
 /** 随包分发的字体。名字必须是 **fontconfig 认得的家族名**，不是文件名。
+ *
+ *  家族名与随包文件名的对应关系在 `render/bundledFonts.ts`（唯一真源）。
+ *  中文标签只在这里，所以两处的家族名清单由 `scripts/verify-bundled-fonts.ts`
+ *  逐字钉死 —— 选择器里列了一款、包里其实没这个文件，症状是"选了内置字体
+ *  但字形不对"，静默且极难查。
  *  文件与许可见 `src-tauri/resources/fonts/README.md`。 */
 export const BUNDLED_FONTS: FontOption[] = [
   { name: "Noto Sans CJK SC", label: "思源黑体（内置）", source: "bundled" },
