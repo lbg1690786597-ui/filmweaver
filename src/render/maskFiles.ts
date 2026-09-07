@@ -60,8 +60,8 @@ export const WRITE_CHUNK_BYTES = 8 * 1024 * 1024;
 
 /** 超预算降级时给用户看的话。**不带数字**，好让多段之间自然去重。 */
 export const NOTICE_BUDGET =
-  "⚠️ 有动画遮挡的逐帧蒙版超出单段磁盘预算，已改用「整段范围」的静态遮挡："
-  + "只会多遮、不会漏遮，但遮挡不再跟着动画走。缩短镜头或缩小遮挡范围可恢复逐帧动画。";
+  "⚠️ 会动的遮挡范围太大，这一段改成了固定范围遮挡："
+  + "只会多遮、不会漏遮，但遮挡不再跟着画面动。把镜头改短或把遮挡范围缩小就能恢复。";
 
 const pad = (v: number, n: number) => String(Math.max(0, Math.trunc(v))).padStart(n, "0");
 
@@ -230,12 +230,12 @@ export function planSegmentMasks(
 }
 
 export const NOTICE_NO_ALPHAMERGE =
-  "⚠️ 本机 ffmpeg 缺少 alphamerge 滤镜：遮挡的**羽化**与**关键帧动画**本次不会生效"
-  + "（形状仍然保留）。请升级客户端内置的 ffmpeg。";
+  "⚠️ 当前版本不支持遮挡的羽化和跟随动画，这次导出只保留了形状。"
+  + "请把软件更新到新版本。";
 
 export const NOTICE_RECT_ONLY =
-  "⚠️ 本机 ffmpeg 同时缺少 alphamerge 与 geq 滤镜：椭圆 / 画笔遮挡本次退化为**矩形**，"
-  + "遮挡范围会比你画的大。请升级客户端内置的 ffmpeg。";
+  "⚠️ 当前版本不支持椭圆和画笔遮挡，这次导出用矩形代替，遮挡范围会比你画的大。"
+  + "请把软件更新到新版本。";
 
 /**
  * 降级提示（§5.3.1 的降级顺序：alphamerge 不可用 → 落回 geq，形状保住；
