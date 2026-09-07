@@ -135,13 +135,13 @@ export default function TopBar(p: TopBarProps) {
       {/* ---- 右段 ---- */}
       <div className="fw-tb-right">
         <span className={`fw-tb-dot ${p.backendOk === null ? "" : p.backendOk ? "ok" : "bad"}`}
-          title={p.backendOk ? "后端已连接" : "后端未连接"} />
+          title={p.backendOk ? "已连上服务器" : "未连上服务器"} />
         <span className="fw-tb-meta">
           {p.baseAspect ?? "-"} · {productionModeLabel(p.productionMode)}
         </span>
 
         <button className="fw-tb-btn" disabled={!p.fineCutEnabled}
-          title="精编：裁剪 / 字幕 / 版本回退 / 本机导出" onClick={p.onFineCut}>
+          title="精编：裁剪、字幕、退回旧版本、导出成片" onClick={p.onFineCut}>
           <Scissors size={14} /> 精编
         </button>
 
