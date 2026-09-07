@@ -62,8 +62,8 @@ export default function SaveIndicator() {
     <span
       className="fw-tb-save saved"
       title={lastSavedAt
-        ? `改动已自动保存到服务端 · 最近一次 ${hhmmss(lastSavedAt)}`
-        : "改动会自动保存到服务端（本次打开后尚无改动）"}
+        ? `改动已自动保存 · 最近一次 ${hhmmss(lastSavedAt)}`
+        : "改动会自动保存（本次打开后还没有改动）"}
     >
       <Check size={11} /> 已保存
     </span>
