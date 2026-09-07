@@ -67,10 +67,10 @@ check("403 同 401", describeSaveError(new SaveHttpError(403, "403")),
 check("409 → 让刷新后重做（2.3 的乐观锁会用它）",
       describeSaveError(new SaveHttpError(409, "409")),
       "该镜头已被其他窗口修改，改动未保存 —— 请刷新后重做");
-check("500 → 服务端错误", describeSaveError(new SaveHttpError(500, "500")),
-      "服务端错误（500），改动未保存");
-check("502 也算服务端错误", describeSaveError(new SaveHttpError(502, "502")),
-      "服务端错误（502），改动未保存");
+check("500 → 服务器出错", describeSaveError(new SaveHttpError(500, "500")),
+      "服务器出错了（500），改动未保存");
+check("502 也算服务器出错", describeSaveError(new SaveHttpError(502, "502")),
+      "服务器出错了（502），改动未保存");
 check("400 → 被拒绝", describeSaveError(new SaveHttpError(400, "400")),
       "保存被拒绝（400），改动未保存");
 // fetch 断网时抛的就是 TypeError: Failed to fetch，原文直接给用户等于没说
@@ -175,7 +175,7 @@ check("断网 → 顶栏必须是失败，不许是「已保存」", saveStatusO
  * 下面顺带补了 POST 那条对照 —— 它**没有**队列可进，所以必须仍然说"要联网"；
  * 两条一起才钉得住"暂存"这个词只在真暂存住时才出现。 */
 check("断网 → 文案说清已暂存、会补发", S.getState().lastError?.message,
-      "连不上服务器 —— 改动已暂存在本机，联网后会自动补发");
+      "连不上服务器 —— 改动已暂存在本地，联网后会自动补发");
 check("断网 → inFlight 归零（不会卡在保存中）", S.getState().inFlight, 0);
 check("断网的 PATCH 真的进了补发队列（文案不是空口说的）", getOutboxCount(), 1);
 
@@ -188,8 +188,8 @@ await withFetch(
     await fetchTracked("http://h/v2/shots", { method: "POST", body: "{}" }).catch(() => {});
   });
 check("断网的 POST 不入队", getOutboxCount(), 0);
-ok("★ POST 文案说「必须联网」而不是「已暂存」（说成暂存 = 又一个假的已保存）",
-   !!S.getState().lastError?.message.includes("必须联网")
+ok("★ POST 文案说清「要联网」而不是「已暂存」（说成暂存 = 又一个假的已保存）",
+   /必须联网|联网后再试/.test(S.getState().lastError?.message ?? "")
    && !S.getState().lastError!.message.includes("暂存"));
 resetOutbox();
 
@@ -201,7 +201,7 @@ const resp500 = await withFetch(
 check("500 → 失败态（fetch 本身没抛，光看 catch 会漏）",
       saveStatusOf(S.getState()), "error");
 check("500 → 文案带状态码", S.getState().lastError?.message,
-      "服务端错误（500），改动未保存");
+      "服务器出错了（500），改动未保存");
 ok("500 的 body 没被消费（调用方还要读它拼错误信息）", !resp500.bodyUsed);
 check("500 的响应原样返回给调用方", resp500.status, 500);
 
