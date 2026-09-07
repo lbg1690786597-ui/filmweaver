@@ -352,7 +352,9 @@ console.log("\n⑤ LUT 与降级边界");
   ok(!res.paths.has("lut0"), "LUT 下载失败 → 没有路径");
   check("  但导出继续（不抛）", res.paths.has("m0"), true);
   check("  出一条面向用户的降级提示", res.notices.length, 1);
-  ok(/LUT/.test(res.notices[0] ?? ""), `  提示说得清楚：「${res.notices[0]}」`);
+  // 文案已从「LUT」改成人话「调色文件」（用户不认识 LUT），判据跟着改，
+  // 守的仍是同一件事：提示必须点明是哪一类素材没用上。
+  ok(/调色文件|LUT/.test(res.notices[0] ?? ""), `  提示说得清楚：「${res.notices[0]}」`);
 }
 {
   const plan = mkPlan({ videoIds: ["m0"] });
