@@ -94,7 +94,7 @@ export default function FineCut(p: Props) {
     // 2.4：字幕没查到时导出会静默出一条字幕都没有的成片。本机渲染要几分钟，
     // 发现得晚、代价是重导一次。这里问一句就够了 —— 不阻止，只是不让它无声发生。
     if (srtErr && !window.confirm(
-      `字幕没能加载（${srtErr}）。\n\n现在导出的成片里**不会有任何字幕**。\n` +
+      `字幕没能加载（${srtErr}）。\n\n现在导出的成片里不会有任何字幕。\n` +
       "确定继续导出吗？（建议先点「重试」）")) return;
     const renderClips: RenderClip[] = clips.map((s) => ({
       url: s.video_url!,
@@ -114,7 +114,7 @@ export default function FineCut(p: Props) {
       p.onToast(out ? `✅ 已导出: ${out}` : "已取消导出");
     } catch (e) {
       setRendering("");
-      p.onToast(`本机渲染失败: ${String(e).slice(0, 150)}`);
+      p.onToast(`导出失败：${String(e).slice(0, 150)}`);
     }
   };
 
@@ -127,7 +127,7 @@ export default function FineCut(p: Props) {
           <span className="muted">{clips.length} 镜 · 画幅 {p.baseAspect}</span>
           <span style={{ flex: 1 }} />
           <button className="btn primary" disabled={!!rendering || !clips.length} onClick={doExport}>
-            {rendering || "💻 本机导出"}
+            {rendering || "💻 导出成片"}
           </button>
           <button className="btn ghost" onClick={p.onClose}>✕</button>
         </div>
