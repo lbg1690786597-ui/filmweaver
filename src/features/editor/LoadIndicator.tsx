@@ -32,10 +32,10 @@ import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useLoadState, loadSummaryOf } from "../../stores/loadStateStore";
 
 const KIND_HINT: Record<string, string> = {
-  network: "看起来是网络断了或服务端不可达。",
+  network: "网络不通，检查网络后重试。",
   auth: "登录状态已失效，重新登录后即可恢复。",
-  server: "服务端返回了错误，稍后重试通常可恢复。",
-  unsupported: "当前服务端版本没有这个接口，属功能不可用（不是你的数据丢了）。",
+  server: "服务器出错了，稍后重试通常就好。",
+  unsupported: "这个功能当前用不了，你的数据没有丢。",
   unknown: "",
 };
 
@@ -58,7 +58,7 @@ export default function LoadIndicator() {
     ...list.map((f) => `· ${f.message}${f.count > 1 ? `（已失败 ${f.count} 次）` : ""}`),
     "",
     KIND_HINT[kind ?? "unknown"],
-    "⚠️ 这些位置显示为空**不代表数据没了**，不要照这个状态重做或重新生成。",
+    "⚠️ 这些位置显示为空不代表数据没了，不要照这个状态重做或重新生成。",
     retriable > 0 ? "点击重试。" : "",
   ].filter(Boolean).join("\n");
 
