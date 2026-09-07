@@ -196,7 +196,7 @@ export function describeReplay(r: ReplayResult): string {
  */
 export function offlineBannerText(pending: number): string {
   const tail = pending > 0 ? `已暂存 ${pending} 处改动，` : "";
-  return `${tail}改动会先记在本机，联网后自动补发；补发结果会逐条告诉你。`;
+  return `${tail}改动会先存在本地，联网后自动补发。`;
 }
 
 /**
@@ -215,9 +215,9 @@ export function offlineWriteHint(
   unreachable: boolean, queued: boolean, method: string,
 ): string | undefined {
   if (!unreachable) return undefined;
-  if (queued) return "连不上服务器 —— 改动已暂存在本机，联网后会自动补发";
+  if (queued) return "连不上服务器 —— 改动已暂存在本地，联网后会自动补发";
   if (method.toUpperCase() === "POST") {
-    return "连不上服务器 —— 新建类操作必须联网（新条目的编号由服务端分配，无法离线补发），请连上后重试";
+    return "连不上服务器 —— 新建的内容要由服务器登记编号，联网后再试";
   }
   return "连不上服务器，改动未保存 —— 请检查网络";
 }
