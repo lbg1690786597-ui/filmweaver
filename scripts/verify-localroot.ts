@@ -313,7 +313,7 @@ const ROOTS = [R("/data/mat")];
     plan, io, downloadConcurrency: 4, probeConcurrency: 4, localRoots: ROOTS,
   });
   eq(r.notices.length, 1, "本地 LUT 读不到 → 一条降级提示");
-  ok(r.notices[0].includes("未应用该滤镜"), "  说清代价是少一层调色");
+  ok(r.notices[0].includes("没有套用它"), "  说清代价是少一层调色");
   ok(!rec.fetch.includes("https://cdn/x.cube"), "  但也不去下云端那份 LUT");
   eq(r.stats.hits, 1, "★ 读不到的 LUT 不算命中（否则「素材已在本地(2)」下面挂着降级提示，自相矛盾）");
 }
