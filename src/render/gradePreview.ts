@@ -154,7 +154,10 @@ function compile(gl: WebGL2RenderingContext, type: number, src: string) {
   if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
     const log = gl.getShaderInfoLog(sh);
     gl.deleteShader(sh);
-    throw new Error(`shader 编译失败: ${log}`);
+    // 这条会冒到调色面板的 toast 上：说清"预览不可用、但调色参数没丢"，
+    // 原始编译日志留给控制台，不塞给用户。
+    console.error("[gradePreview] shader compile failed:", log);
+    throw new Error("画面预览用不了（显卡或驱动不支持），调色参数已保存，导出不受影响");
   }
   return sh;
 }
