@@ -72,7 +72,7 @@ export function useAudioTrack(projectId: string | null, say: Say) {
           // 也**不**清 ttsJobId —— 任务在服务端是真的还在跑，网络恢复后会自愈。
           pollMisses.current += 1;
           if (pollMisses.current === POLL_MISS_LIMIT) {
-            say("⚠️ 暂时拿不到旁白合成进度（连不上服务器）—— 任务仍在服务端继续，网络恢复后会自动接上", 6000);
+            say("⚠️ 暂时看不到旁白合成进度（连不上服务器）—— 合成还在继续，网络恢复后会自动接上", 6000);
           }
         }
       }, 5000);
