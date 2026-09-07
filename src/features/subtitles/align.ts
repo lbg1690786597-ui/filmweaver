@@ -66,6 +66,34 @@ const CLOSERS = "”’」』）)〉》】]〕>";
 const hasReadable = (s: string): boolean => /[\p{L}\p{N}]/u.test(s);
 
 /**
+ * 出字幕前要洗掉的标点。
+ *
+ * **烧进画面的字幕不带标点**是短剧字幕的通行做法：一条只有十几个字、
+ * 停顿由分条本身表达，标点只是占位置的噪点。而旁白原文是小说体，
+ * 逗号句号引号一应俱全，原样烧上去满屏都是符号。
+ * 想要标点的用户可以在文本面板里自己加（手动添加的字幕一个字都不动）。
+ *
+ * 只洗"断句/引述"这一类。**刻意保留** `·`（人名间隔号）、`%`、`-`、`&`、
+ * `/`、字母与数字——那些是内容，不是标点。
+ */
+const DROP_PUNCT = "。！？!?…‥，、；：,;:—～﹏“”‘’\"'「」『』《》〈〉【】〔〕（）()[]{}";
+
+/**
+ * 洗掉标点，只留能读的内容。
+ *
+ * 标点位置换成一个空格而不是直接删：句中的停顿（「朋友啊，快坐」）删掉逗号后
+ * 要是粘成「朋友啊快坐」就读不出那个停顿了，留个空格正好是字幕里表达停顿的写法。
+ * 首尾空格随后被 trim 掉，所以「他说完就走了。」出来就是干净一句。
+ */
+export function washPunct(s: string): string {
+  return Array.from(s || "")
+    .map((ch) => (DROP_PUNCT.includes(ch) ? " " : ch))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * 把一段文本拆成字幕条。
  *
  * 优先级：句末标点 → 句中标点 → 硬断。标点**留在前一条**（中文字幕的惯例，
@@ -131,7 +159,12 @@ export function splitIntoCues(text: string, opts: SplitOptions = {}): string[] {
     merged[1] = merged[0] + merged[1];
     merged.shift();
   }
-  return merged.filter((s) => s.length > 0);
+
+  // 4) 洗标点。**必须排在最后**：标点是上面三步唯一的断句依据，
+  //    先洗就只剩按 maxChars 硬断了。洗完某条可能整条化为空（只有引号
+  //    且没能并进邻条），直接丢掉——下游 `alignCues` 按字数重新分配时间，
+  //    丢掉的那条不会在时间轴上留下空洞。
+  return merged.map(washPunct).filter((s) => s.length > 0);
 }
 
 export interface Silence { start: number; end: number }
@@ -273,6 +306,9 @@ export function alignCues(
  * （0.8s ≈ 5 字），合并后基本仍在 `maxChars` 附近。
  *
  * 合并对象取**时长较短**的那一侧：这样不会把一条已经很长的字幕撑得更长。
+ *
+ * ⚠️ 拼接要补空格：字幕已经洗掉标点（见 `washPunct`），两条直接相加会变成
+ * 「他说完就走了我知道」——原来是靠句末那个 `。` 分开的。
  */
 function mergeShort(cues: Cue[], minSec: number): Cue[] {
   if (!(minSec > 0)) return cues;
@@ -292,7 +328,12 @@ function mergeShort(cues: Cue[], minSec: number): Cue[] {
     const withPrev = prev <= next;
     const a = withPrev ? idx - 1 : idx;      // 合并后保留的那一条（靠前的）
     const b = withPrev ? idx : idx + 1;
-    out[a] = { text: out[a].text + out[b].text, start: out[a].start, end: out[b].end };
+    const glue = /\s$/.test(out[a].text) || /^\s/.test(out[b].text) ? "" : " ";
+    out[a] = {
+      text: out[a].text + glue + out[b].text,
+      start: out[a].start,
+      end: out[b].end,
+    };
     out.splice(b, 1);
   }
   return out;
