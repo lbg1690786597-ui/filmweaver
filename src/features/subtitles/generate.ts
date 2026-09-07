@@ -36,7 +36,9 @@ export interface GenerateResult {
 }
 
 export interface GenerateOptions extends SplitOptions {
-  /** 进度回调：(已处理段数, 总段数, 当前在做什么) */
+  /** 进度回调：(已处理段数, 总段数, 当前在做什么)。
+   *  ⚠️ `label` **不要带计数**——调用方（TextPanel）会自己拼上
+   *  `（done/total）`，两边都写就成了「分析停顿 1/21（0/21）」。 */
   onProgress?: (done: number, total: number, label: string) => void;
   /** 传 false 可跳过停顿探测（非 Tauri 环境没有 sidecar ffmpeg） */
   probe?: boolean;
@@ -60,7 +62,7 @@ export async function generateFromNarration(
   const { clips } = await api.listAudioClips(projectId);
   const sources = narrationClips(clips);
   if (!sources.length) {
-    throw new Error("没有可用的旁白音频——请先在「音频」面板合成解说旁白");
+    throw new Error("还没有旁白——请先到「音频」面板合成解说旁白");
   }
 
   const payload: {
@@ -71,7 +73,7 @@ export async function generateFromNarration(
 
   for (let i = 0; i < sources.length; i++) {
     const src = sources[i];
-    onProgress?.(i, sources.length, `分析停顿 ${i + 1}/${sources.length}`);
+    onProgress?.(i, sources.length, "分析旁白");
 
     // 探测失败返回空数组（不抛错）：退化为纯字符比例分配，实测误差 < 5%，
     // 不该让整个"生成字幕"因为一段音频探不动就全军覆没。
@@ -95,9 +97,9 @@ export async function generateFromNarration(
     }
   }
 
-  if (!payload.length) throw new Error("旁白文本剥离符号后为空，没有可生成的字幕");
+  if (!payload.length) throw new Error("旁白里没有可用的文字，生成不了字幕");
 
-  onProgress?.(sources.length, sources.length, `写入 ${payload.length} 条字幕`);
+  onProgress?.(sources.length, sources.length, "保存字幕");
   // 逐条 POST 不可接受：一段 205 字旁白约产 14 条 cue，21 段 ≈ 300 条。
   const r = await api.bulkSubtitleClips({
     project_id: projectId,
