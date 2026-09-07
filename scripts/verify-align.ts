@@ -44,6 +44,15 @@ function ok(cond: boolean, label: string, detail = "") {
   console.log(`  ✗ ${label}${detail ? `  — ${detail}` : ""}`);
 }
 
+/** 只留"能读出来的字"（汉字/字母/数字）。
+ *
+ * 自动字幕**洗掉标点**之后（2026-09-07 用户要求），"拆条不增不减一个字"
+ * 这条不变量不能再拿整串比——标点是**故意**没了的。真正要守的是
+ * **可读字符逐字一致**：一个汉字都不许丢、不许多、不许换顺序。 */
+const readable = (s: string): string => s.replace(/[^\p{L}\p{N}]/gu, "");
+/** 洗过之后画面上不该再出现的符号（与 align.ts 的 DROP_PUNCT 同集） */
+const PUNCT_RE = /[。！？!?…‥，、；：,;:—～﹏“”‘’"'「」『』《》〈〉【】〔〕（）()[\]{}]/u;
+
 // ---------------------------------------------------------------- 纯函数部分
 console.log("\n[1] 拆条规则（不依赖音频）");
 {
@@ -53,10 +62,14 @@ console.log("\n[1] 拆条规则（不依赖音频）");
   ok(cues.every((c) => c.length <= DEFAULT_SPLIT.maxChars),
      `每条 ≤${DEFAULT_SPLIT.maxChars} 字`,
      `最长 ${Math.max(...cues.map((c) => c.length))}`);
-  ok(cues.join("") === t.replace(/\s+/g, ""),
-     "拆条不增不减一个字",
-     `${cues.join("").length} vs ${t.length}`);
+  ok(readable(cues.join("")) === readable(t),
+     "拆条不增不减一个可读的字",
+     `${readable(cues.join("")).length} vs ${readable(t).length}`);
   ok(cues.length > 1, "确实拆开了", `${cues.length} 条`);
+  ok(!cues.some((c) => PUNCT_RE.test(c)),
+     "自动字幕不带标点（想要标点的用户自己手动加）", JSON.stringify(cues));
+  ok(cues.some((c) => c.includes(" ")),
+     "句中标点洗成空格，停顿感留住（不是粘成一坨）", JSON.stringify(cues));
 }
 
 console.log("\n[1.5] 小说体旁白：引号不能独占一条，短条不能一闪而过");
@@ -71,28 +84,37 @@ console.log("\n[1.5] 小说体旁白：引号不能独占一条，短条不能�
   ok(cues.every((c) => /[\p{L}\p{N}]/u.test(c)),
      "没有任何一条是纯标点（`”` 独占一条是 6.10 之前的真实产物）",
      JSON.stringify(cues));
-  ok(cues.join("") === quoted.replace(/\s+/g, ""),
-     "并标点不吞字：拆条后仍逐字一致", `${cues.join("")}`);
-  ok(cues.some((c) => c.endsWith("”")),
-     "句末标点后的收尾引号跟着**上一句**走，不被推到下一条开头",
+  ok(readable(cues.join("")) === readable(quoted),
+     "并标点不吞字：拆条后可读字符仍逐字一致", `${cues.join("|")}`);
+  // 原来这里断言「句末引号跟着上一句走」（`c.endsWith("”")`）。洗标点之后
+  // 引号根本不出现在画面上，那个断言已无对象；它要防的"`”` 独占一条"
+  // 由上面那条纯标点检查继续守着。这里改守**洗完的最终形态**：
+  // 引号消失，但引号里那句和后面那句没有被粘成一条。
+  ok(!cues.some((c) => PUNCT_RE.test(c)), "引号/冒号/句号全部洗掉",
      JSON.stringify(cues));
+  ok(cues.some((c) => c.includes("你不配")) && readable(cues.join("")).endsWith("我没有回答"),
+     "引语与后文各自成句，顺序不乱", JSON.stringify(cues));
 
   // 开头就是引号的段落：无前一条可并，必须并进后一条而不是独立成条
   const lead = splitIntoCues("“我回来了。”她说。");
-  ok(lead.every((c) => /[\p{L}\p{N}]/u.test(c)) && lead[0].startsWith("“"),
-     "整段以引号开头时并进后一条", JSON.stringify(lead));
+  ok(lead.every((c) => /[\p{L}\p{N}]/u.test(c)) && lead[0].startsWith("我回来了"),
+     "整段以引号开头时并进后一条（洗完就从开头消失）", JSON.stringify(lead));
 
   // ⚠️ 这一条只有"纯标点折叠"能救，CLOSERS 吸收救不了：`…` 自己就在
   // HARD_STOPS 里，所以 `……` 会被断成**两个都是纯标点**的句子。库里那条
   // 只写着一个 `…` 的字幕就是这么来的。
+  //
+  // 洗标点**不能**顶替这一步：折叠发生在洗之前，若不折叠，那条纯标点会在
+  // 洗完变成空串被丢掉 —— 字幕虽不脏，但它占掉的那段时间会连带丢掉。
   const ell = splitIntoCues("他沉默了。……然后转身走了。");
   ok(ell.every((c) => /[\p{L}\p{N}]/u.test(c)),
      "连续省略号不产出纯标点条（`…` 本身是句末标点，吸收收尾符号管不到它）",
      JSON.stringify(ell));
-  ok(ell.join("") === "他沉默了。……然后转身走了。", "折叠省略号不丢字", ell.join(""));
+  ok(readable(ell.join("")) === "他沉默了然后转身走了", "折叠省略号不丢字", ell.join("|"));
   // 破折号收尾同理：它不在 CLOSERS 里，也不是句末标点
   const dash = splitIntoCues("你怎么能——");
-  ok(dash.length === 1, "破折号跟着正文，不另起一条", JSON.stringify(dash));
+  ok(dash.length === 1 && dash[0] === "你怎么能",
+     "破折号跟着正文，不另起一条（且洗完不留尾巴）", JSON.stringify(dash));
 
   // minSec：构造一组会被吸出极短条的边界 —— 静音点紧贴前一个边界
   const shortCues = ["很长的一句话在这里", "短", "后面还有一段话"];
@@ -100,8 +122,12 @@ console.log("\n[1.5] 小说体旁白：引号不能独占一条，短条不能�
   ok(aligned.every((c) => c.end - c.start >= DEFAULT_SPLIT.minSec - 1e-6),
      `每条 ≥${DEFAULT_SPLIT.minSec}s（minSec 在 6.10 之前是个从未被读取的参数）`,
      aligned.map((c) => `${(c.end - c.start).toFixed(2)}s`).join(" "));
-  ok(aligned.map((c) => c.text).join("") === shortCues.join(""),
+  ok(readable(aligned.map((c) => c.text).join("")) === shortCues.join(""),
      "合并短条不丢字、不改顺序", aligned.map((c) => c.text).join("|"));
+  // 合并处要补空格：字幕已无标点，直接相加会粘成「短后面还有一段话」
+  ok(aligned.length === shortCues.length || aligned.some((c) => c.text.includes(" ")),
+     "确实发生了合并时，两句之间补了分隔（不粘成一坨）",
+     `${aligned.length} 条: ${aligned.map((c) => c.text).join("|")}`);
   // 反向承重：正常间距的一组**不该**被合并掉
   const normal = alignCues(["第一句话在这里啊", "第二句话在这里啊"], [], 10);
   ok(normal.length === 2, "间距正常时不合并（不是把所有条都并成一条）",
@@ -110,7 +136,7 @@ console.log("\n[1.5] 小说体旁白：引号不能独占一条，短条不能�
   const tiny = alignCues(["甲", "乙", "丙"], [], 0.5);
   ok(tiny.length >= 1 && tiny.every((c) => c.end > c.start),
      "总时长不足时收敛而不是死循环", `${tiny.length} 条`);
-  ok(tiny.map((c) => c.text).join("") === "甲乙丙", "收敛后仍不丢字");
+  ok(readable(tiny.map((c) => c.text).join("")) === "甲乙丙", "收敛后仍不丢字");
 }
 
 console.log("\n[2] 符号剥离（只删符号，一个汉字都不删）");
@@ -181,10 +207,14 @@ if (!hasFixture) {
   ok(cues.every((c) => c.end - c.start <= DEFAULT_SPLIT.maxSec + 1e-6),
      `单条不超过 ${DEFAULT_SPLIT.maxSec}s`,
      `最长 ${Math.max(...cues.map((c) => c.end - c.start)).toFixed(2)}s`);
-  // 文本完整性：对齐这一步不该动一个字
-  ok(cues.map((c) => c.text).join("")
-     === stripScriptMarkup(TEXT).replace(/\s+/g, "").replace(/ /g, ""),
-     "对齐后文本与剥离后原文逐字一致");
+  // 文本完整性：对齐这一步不该动一个字。标点是**故意**洗掉的
+  // （见 align.ts 的 washPunct），所以只比可读字符。
+  ok(readable(cues.map((c) => c.text).join("")) === readable(stripScriptMarkup(TEXT)),
+     "对齐后的可读字符与剥离后原文逐字一致",
+     `${readable(cues.map((c) => c.text).join("")).length} vs ${readable(stripScriptMarkup(TEXT)).length}`);
+  ok(!cues.some((c) => PUNCT_RE.test(c.text)),
+     "真实旁白产出的字幕一条也不带标点",
+     JSON.stringify(cues.filter((c) => PUNCT_RE.test(c.text)).map((c) => c.text)));
 
   console.log("\n  对齐结果预览：");
   for (const c of cues) {
