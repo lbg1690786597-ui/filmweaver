@@ -249,7 +249,7 @@ export default function ClipProperties(p: Props) {
             </span>
           </div>
           <div className="fw-cp-hint">
-            后端钳制 1–{maxDur} 秒、按 0.1s 步进，与时间轴拖拽同源
+            可填 1–{maxDur} 秒，每 0.1 秒一档，和在时间轴上拖是一样的
           </div>
         </Group>
 
