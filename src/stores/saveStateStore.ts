@@ -62,7 +62,7 @@ export function describeSaveError(err: unknown): string {
   if (err instanceof SaveHttpError) {
     if (err.status === 401 || err.status === 403) return "登录已失效，改动未保存 —— 请重新登录";
     if (err.status === 409) return "该镜头已被其他窗口修改，改动未保存 —— 请刷新后重做";
-    if (err.status >= 500) return `服务端错误（${err.status}），改动未保存`;
+    if (err.status >= 500) return `服务器出错了（${err.status}），改动未保存`;
     return `保存被拒绝（${err.status}），改动未保存`;
   }
   // TypeError 是 fetch 在网络层失败时的统一表现（断网/DNS/证书/被拦截）
