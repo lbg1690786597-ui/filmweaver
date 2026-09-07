@@ -24,7 +24,7 @@
 import { Command } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join, resolveResource } from "@tauri-apps/api/path";
-import { exists, mkdir, writeTextFile, writeFile, remove, stat } from "@tauri-apps/plugin-fs";
+import { mkdir, readDir, writeTextFile, writeFile, remove, stat } from "@tauri-apps/plugin-fs";
 import type { SubtitleStyleLike } from "../lib/subtitleStyle";
 import { retireFiles } from "../lib/retireFiles";
 import {
@@ -113,8 +113,12 @@ async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener("abort", onAbort);
       done(() => {
         if (data.code === 0) resolve();
-        // 只保留 stderr 尾部：ffmpeg 会刷几千行进度，全带上没法看
-        else reject(new Error(`ffmpeg 失败(${data.code}): ${stderr.slice(-500)}`));
+        // 只保留 stderr 尾部：ffmpeg 会刷几千行进度，全带上没法看。
+        // 这段原始输出用户读不懂，但**不能省** —— 出错时它是唯一的线索；
+        // 所以前面加一句人话，并说清这段是拿来发给我们的。
+        else reject(new Error(
+          `导出失败（错误码 ${data.code}）。如需帮助，请把下面这段一起发给我们：\n`
+          + stderr.slice(-400)));
       });
     });
     cmd.on("error", (e: string) => {
@@ -130,8 +134,8 @@ async function runFfmpeg(args: string[], signal?: AbortSignal): Promise<void> {
     cmd.spawn().then(
       (c) => { child = c; if (signal?.aborted) onAbort(); },
       (e) => done(() => reject(new Error(
-        `无法启动 ffmpeg：${String(e)}\n`
-        + "（若提示权限不足，说明安装包的 capabilities 缺 shell:allow-spawn）"))),
+        "导出组件没能启动，请把软件更新到新版本，或重新安装。\n"
+        + `（${String(e).slice(0, 120)}）`))),
     );
   });
 }
@@ -192,6 +196,50 @@ function prepIO(projectId: string): PrepIO {
   };
 }
 
+/** 认得出时间戳的工作目录，多久之后算"没人要了"。 */
+const STALE_RUN_MS = 2 * 3600_000;
+
+/**
+ * 清掉历史遗留的渲染工作目录（上次崩溃 / 断电 / 进程被杀留下的）。
+ *
+ * ## 为什么工作目录要一次渲染一个（6.0 修「按集导出只出第一集」）
+ *
+ * 此前工作目录是**固定的** `appDataDir()/render_v2`，且入口那句
+ * `if (await exists(work)) await remove(work, {recursive:true})` **没有 catch**。
+ *
+ * 按集导出是同一进程内**连续 5 次** `render()`。第 1 次收尾时 `finally` 里的
+ * `remove(work).catch(() => {})` 一旦失败就被静默吞掉——Windows 上这很常见：
+ * 刚退出的 ffmpeg 子进程、或正在扫描新写入 mp4 的杀软，都还握着 `seg_*.mp4`
+ * 的句柄，DeleteFile 直接 Access denied。POSIX 的 unlink 允许删有开着句柄的
+ * 文件，所以**这个错误在 Linux 上永远测不出来**（与 Windows 大小写敏感那类
+ * 同源：本地全绿正是它的表现）。
+ *
+ * 于是第 2 次 `render()` 进来，`exists(work)` 为真、`remove()` 抛异常，
+ * 而这句在 `try` **之前**——`App.doLocalExport` 的 for 循环当场 break，
+ * 用户只拿到第一集加一条 4 秒就消失的红字。手动一集一集导则每次都是"第一次"，
+ * 中间隔了几十秒句柄早已释放，所以又都能成功：与用户描述的现象逐条对得上。
+ *
+ * 两条修法都要，因为它们防的是不同的东西：
+ *   ① 每次渲染用自己的目录 —— 两次渲染不再争同一个路径（治本）；
+ *   ② 清理一律 best-effort —— 盘上留着个删不掉的旧目录，也不能阻断新导出（兜底）。
+ *
+ * ⚠️ **本函数整体不抛**。它是清洁工，不是前置条件。
+ */
+async function sweepStaleRuns(runsRoot: string, now: number): Promise<void> {
+  try {
+    for (const e of await readDir(runsRoot)) {
+      const m = /^run_([0-9a-z]+)_/.exec(e.name);
+      // 认得出时间戳的只删够老的：万一将来有并发导出，不至于把别人正在写的目录端了。
+      // 认不出的（≤0.8.6 直接堆在 render_v2 根下的 seg_*.mp4 / masks/ / list.txt）
+      // 是升级前的遗留，直接带走，否则它们会永远占着用户的盘。
+      if (m && now - parseInt(m[1], 36) < STALE_RUN_MS) continue;
+      await remove(await join(runsRoot, e.name), { recursive: true }).catch(() => {});
+    }
+  } catch {
+    // readDir 失败（目录还不存在 / 权限）——没有可清的，也没有可报的。
+  }
+}
+
 /**
  * 执行渲染。抛 Aborted 表示用户取消（调用方应静默处理，不当作错误弹窗）。
  */
@@ -202,7 +250,7 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
 
   const caps = await probeCapabilities();
   if (!caps.available) {
-    throw new Error("本机渲染不可用：未找到 ffmpeg（网页预览环境请改用服务端导出）");
+    throw new Error("导出功能不可用：没有找到导出组件。网页版请改用桌面客户端导出。");
   }
   // 4.4：编码器要**先看用户选的 codec、再看硬件**。此前这里只传 preferEncoder，
   // 而 pickEncoder 直接拿 hwEncoders[0]，于是 plan.output.vcodec 从来没被读过——
@@ -216,10 +264,13 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
   if (!segs.length) throw new Error("没有可渲染的片段");
   const stats = segmentStats(segs);
 
+  // ---- 工作目录：**每次渲染一个**，见 sweepStaleRuns 的注释 ----
   const base = await appDataDir();
-  const work = await join(base, "render_v2");
-  if (await exists(work)) await remove(work, { recursive: true });
+  const runsRoot = await join(base, "render_v2");
+  const work = await join(runsRoot,
+    `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
   await mkdir(work, { recursive: true });
+  await sweepStaleRuns(runsRoot, Date.now());
 
   try {
     // 1) 准备素材（0-18%）：本地化 + 音轨探测
@@ -310,7 +361,7 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
         if (mplan.specs.length) {
           report({
             pct: 18 + Math.round((i / segs.length) * 67),
-            stage: `生成遮挡蒙版 ${i + 1}/${segs.length}`,
+            stage: `处理遮挡 ${i + 1}/${segs.length}`,
             segment: { done: i, total: segs.length },
           });
           segMasks = await writeSegmentMasks(
@@ -424,7 +475,7 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
       // 症状是成片**一个 faststart 都没有**（前一道以为字幕会烧、字幕这边却跳过了）。
       if (!willBurn) {
         // 能力不足时跳过而不是失败：没字幕的成片仍然可用
-        report({ pct: 92, stage: "当前 ffmpeg 不支持字幕烧录，已跳过" });
+        report({ pct: 92, stage: "当前版本不支持烧录字幕，已跳过" });
       } else {
         report({ pct: 92, stage: "烧录字幕" });
         const srt = await join(work, "subs.srt");
@@ -476,12 +527,15 @@ export async function render(opts: RenderOptions): Promise<RenderResult> {
     // fs 插件受 capabilities scope 限制（只允许 $APPDATA 等预声明目录），
     // 而这里的 dest 来自系统保存对话框，用户可能选任意盘符，无法事先枚举。
     // 此前导出"闪一下就没反应"正是 copyFile 被 scope 拦下所致。
-    await invoke("export_copy_file", { src: final, dst: dest });
-
-    // 落地校验：若拷贝写了 0 字节（磁盘满/被安全软件拦截），不能假装成功。
-    const finalStat = await stat(dest).catch(() => null);
-    if (!finalStat || finalStat.size === 0) {
-      throw new Error(`保存失败：目标文件未写入或为空 —— 请检查目标磁盘空间和写入权限 (${dest})`);
+    //
+    // 落地校验用**它的返回值**（`std::fs::copy` 报的字节数），不用 `stat(dest)`：
+    // 若拷贝写了 0 字节（磁盘满 / 被安全软件拦截），不能假装成功；但 `stat` 是
+    // fs 插件的 API，对 dest 同样越 scope —— 上面刚说清楚这一点，紧接着又用它，
+    // 那句 `.catch(() => null)` 会把"权限查不到"和"文件是空的"混成同一个结论，
+    // 于是拷贝明明成了却报「保存失败」。字节数由拷贝本身给出，不需要再查一次盘。
+    const copied = await invoke<number>("export_copy_file", { src: final, dst: dest });
+    if (!copied) {
+      throw new Error(`保存失败：文件没能写入 —— 请检查磁盘空间和写入权限（${dest}）`);
     }
 
     report({ pct: 100, stage: "已导出" });
