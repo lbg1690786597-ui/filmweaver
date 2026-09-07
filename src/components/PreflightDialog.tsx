@@ -468,7 +468,7 @@ export default function PreflightDialog(p: Props) {
                           {missing.length > 12 ? " …" : ""}）
                         </span>
                         <div className="muted" style={{ fontSize: 11 }}>
-                          不会报错：生成视频时后端会自动补。但先补齐更划算——
+                          不补也能出片：生成视频时会自动补一张。但先补齐更划算——
                           首帧几毛钱一张，能先看构图再决定要不要出片
                         </div>
                       </div>
@@ -621,7 +621,7 @@ export default function PreflightDialog(p: Props) {
               ) : missing.length ? (
                 <>
                   <button className="btn" disabled={nothingToDo} onClick={p.onProceed}
-                    title="直接出片；缺首帧的镜头由后端在生成时自动补一张">
+                    title="直接出片；缺首帧的镜头会在生成时自动补一张">
                     仍然继续（缺首帧的镜头将在生成时自动补）
                   </button>
                   <button className="btn primary"
