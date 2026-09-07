@@ -2,10 +2,13 @@
  * TextPanel — 文本 / 字幕（PLAN §5.3）
  *
  * 三件事：
- *   ① **从旁白生成字幕**（主入口）——本机 ffmpeg silencedetect + 强制对齐，
- *      零网络零模型零费用。旁白是我们自己合成的，文本已知，用 ASR 去猜文本
- *      是把已知信息扔掉再买回一个更差的版本（详见 align.ts 头注释）。
- *      ASR 保留为**没有文本**（真人录音/外部素材）时的备选。
+ *   ① **自动生成整轨字幕**。主入口按 `production_mode` 分两条，不是一条带备选：
+ *      · 解说剧 → **从旁白生成**：本机 ffmpeg silencedetect + 强制对齐，
+ *        零网络零模型零费用。旁白是我们自己合成的，文本已知，用 ASR 去猜文本
+ *        是把已知信息扔掉再买回一个更差的版本（详见 align.ts 头注释）。
+ *      · 真人剧 → **识别镜头原声**：台词长在镜头视频自带的声轨里，
+ *        `audio_clips` 恒为空，没有旁白可对齐，ASR 是唯一（也是正确的）通路。
+ *      两者共用「会替换上次自动生成的、不动手动添加的」这一语义。
  *   ② 逐条编辑（文本 / 锚点镜头 / 镜内偏移 / 时长），不再只能删。
  *   ③ 两层样式：项目级默认（存 Project.default_profile.subtitle_style）
  *      + 单条覆写。烧录时 ffmpeg 只吃**一套** force_style，所以项目级那层
@@ -64,8 +67,24 @@ interface Props {
   style: SubtitleStyleLike | null;
   /** 写回项目级样式（落库成功才更新 UI） */
   onSaveStyle: (s: SubtitleStyleLike | null) => Promise<void>;
-  /** TB-08：提交语音识别 job（**备选**入口，仅在没有文本时用） */
+  /** TB-08：提交语音识别 job。
+   *
+   *  解说剧下它是**备选**（有原文，对齐比识别准）；
+   *  真人剧下它是**唯一**入口，见 `fromVideo`。 */
   onAutoSubtitles: () => Promise<void>;
+  /**
+   * 真人剧（`production_mode === "drama"`）。
+   *
+   * 为什么面板要认这件事：真人剧的台词长在**镜头视频自带的声轨**里，
+   * `audio_clips` 恒为空 —— 「从旁白生成」需要我们自己合成过的旁白音频，
+   * 在真人剧上必然报「没有旁白」。所以这里两个入口的主次要按模式对调：
+   * 真人剧把语音识别提到最上面（识别的就是镜头原声），旁白那条降到最后。
+   *
+   * 这正是 2026-09-07 那批字幕问题的来源：真人剧在应用里**根本没有**
+   * 字幕生成通路，用户看到的字幕是验证时用脚本按字数估算写进库的，
+   * 于是既会和音频错位，也会把舞台提示当成台词。
+   */
+  fromVideo?: boolean;
   /** 增删改后通知外层刷新（时间轴字幕轨与本面板共用同一份数据） */
   onChanged: () => void;
   onToast: (m: string) => void;
@@ -144,10 +163,10 @@ export default function TextPanel(p: Props) {
         onProgress: (done, total, label) => setGenLabel(`${label}（${done}/${total}）`),
       });
       reloadAll();
-      const tail = r.degraded
-        ? `；其中 ${r.degraded} 段没探到停顿，按字数比例分配（误差略大）`
-        : "";
-      p.onToast(`✅ 已从 ${r.sources} 段旁白生成 ${r.created} 条字幕`
+      // degraded 的技术含义是"没探到停顿、退化为按字数分配"。对用户只说结果：
+      // 那几段的时间是估算的，可能略偏，别端着"停顿探测"这种词。
+      const tail = r.degraded ? `；其中 ${r.degraded} 段的时间是估算的，可能略有偏差` : "";
+      p.onToast(`✅ 已生成 ${r.created} 条字幕`
         + (r.deleted ? `，替换旧的 ${r.deleted} 条` : "") + tail);
     } catch (e) {
       p.onToast(String(e instanceof Error ? e.message : e));
@@ -200,6 +219,83 @@ export default function TextPanel(p: Props) {
     () => (st.fontSource === "bundled" ? BUNDLED_FONTS : sysFonts),
     [st.fontSource, sysFonts]);
 
+  /* ---- 两个自动入口。主次按 fromVideo 对调（见 Props.fromVideo）---- */
+
+  const narrationBlock = (
+    <>
+      <div className="fw-text-sec">
+        {p.fromVideo ? "从旁白生成（本项目通常没有旁白）" : "从旁白生成（推荐）"}
+      </div>
+      <button className={`fw-text-auto ${p.fromVideo ? "" : "primary"}`}
+        disabled={!!genLabel}
+        title="用旁白原文自动配上时间，一个字都不会错"
+        onClick={() => void genFromNarration()}>
+        {genLabel
+          ? <><Loader2 size={12} className="fw-spin" /> {genLabel}</>
+          : <><Sparkles size={12} /> 从旁白生成字幕</>}
+      </button>
+      <div className="fw-text-hint">
+        {p.fromVideo
+          ? "本项目的台词在镜头画面里，没有旁白可用，请用上面那个。"
+          : "字幕直接用旁白原文，逐字准确。自动字幕不带标点，想要的可以逐条编辑加上。"
+            + "每次生成会替换上一批自动字幕，你手动加的不动。"}
+      </div>
+    </>
+  );
+
+  const asrBlock = (
+    <>
+      <div className="fw-text-sec">
+        {p.fromVideo ? "从镜头原声识别（推荐）" : "语音识别（没有文本时用）"}
+      </div>
+      <button className={`fw-text-auto ${p.fromVideo ? "primary" : ""}`}
+        disabled={!asrOk || asrBusy}
+        title={!asrOk ? "语音识别还没开通，请到设置里配置"
+          : p.fromVideo
+            ? "自动听出镜头里的台词，配上对应时间"
+            : "让 AI 听着音频写字幕。有旁白原文时，上面那个更准"}
+        onClick={async () => {
+          setAsrBusy(true);
+          try {
+            await p.onAutoSubtitles();
+            // job 是异步的，给后端一点时间落库再刷新列表
+            setTimeout(reloadAll, 3000);
+          } finally { setAsrBusy(false); }
+        }}>
+        {asrBusy ? <Loader2 size={12} className="fw-spin" /> : <Wand2 size={12} />}
+        {p.fromVideo ? "识别镜头原声生成字幕" : "语音识别生成字幕"}
+        {!asrOk && <span className="fw-text-todo">未配置</span>}
+      </button>
+      {p.fromVideo && (
+        <div className="fw-text-hint">
+          自动听出镜头里说的话，字幕和声音天然对齐，也不会把剧本里的动作描写当成台词。
+          自动字幕不带标点，想要的可以逐条编辑加上。
+          每次生成会替换上一批自动字幕，你手动加的不动。
+        </div>
+      )}
+    </>
+  );
+
+  const manualBlock = (
+    <>
+      <div className="fw-text-sec">手动添加</div>
+      <div className="fw-text-compose">
+        <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
+          placeholder="输入字幕 / 标题文字…" rows={3} spellCheck={false} />
+        <div className="fw-text-compose-acts">
+          <span className="fw-text-at">
+            {p.anchor
+              ? `锚定镜头 #${p.anchor.order} 第 ${p.anchor.offsetSec.toFixed(1)}s`
+              : "锚定第 1 个镜头"}
+          </span>
+          <button className="primary" disabled={busy} onClick={() => void addText()}>
+            {busy ? <Loader2 size={12} className="fw-spin" /> : <Plus size={12} />} 添加
+          </button>
+        </div>
+      </div>
+    </>
+  );
+
   return (
     <div className="fw-text">
       <div className="fw-text-tabs">
@@ -214,52 +310,9 @@ export default function TextPanel(p: Props) {
       <div className="fw-text-body">
         {tab === "text" && (
           <>
-            <div className="fw-text-sec">从旁白生成（推荐）</div>
-            <button className="fw-text-auto primary" disabled={!!genLabel}
-              title="用本机 ffmpeg 检测旁白里的真实停顿，把已知的旁白文本对齐上去。不联网、不花钱、不会听错字"
-              onClick={() => void genFromNarration()}>
-              {genLabel
-                ? <><Loader2 size={12} className="fw-spin" /> {genLabel}</>
-                : <><Sparkles size={12} /> 从旁白生成字幕</>}
-            </button>
-            <div className="fw-text-hint">
-              旁白文本是合成时用过的原文，逐字准确；时间位置由本机检测停顿得到。
-              会**替换**上一次自动生成的字幕，手动添加的不受影响。
-            </div>
-
-            <div className="fw-text-sec">手动添加</div>
-            <div className="fw-text-compose">
-              <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
-                placeholder="输入字幕 / 标题文字…" rows={3} spellCheck={false} />
-              <div className="fw-text-compose-acts">
-                <span className="fw-text-at">
-                  {p.anchor
-                    ? `锚定镜头 #${p.anchor.order} 第 ${p.anchor.offsetSec.toFixed(1)}s`
-                    : "锚定第 1 个镜头"}
-                </span>
-                <button className="primary" disabled={busy} onClick={() => void addText()}>
-                  {busy ? <Loader2 size={12} className="fw-spin" /> : <Plus size={12} />} 添加
-                </button>
-              </div>
-            </div>
-
-            <div className="fw-text-sec">语音识别（没有文本时用）</div>
-            <button className="fw-text-auto" disabled={!asrOk || asrBusy}
-              title={asrOk
-                ? "对音频做语音识别。只在没有原文时才需要——有原文时上面那个更准"
-                : "未配置语音识别通道"}
-              onClick={async () => {
-                setAsrBusy(true);
-                try {
-                  await p.onAutoSubtitles();
-                  // job 是异步的，给后端一点时间落库再刷新列表
-                  setTimeout(reloadAll, 3000);
-                } finally { setAsrBusy(false); }
-              }}>
-              {asrBusy ? <Loader2 size={12} className="fw-spin" /> : <Wand2 size={12} />}
-              语音识别生成字幕
-              {!asrOk && <span className="fw-text-todo">未配置</span>}
-            </button>
+            {p.fromVideo
+              ? <>{asrBlock}{manualBlock}{narrationBlock}</>
+              : <>{narrationBlock}{manualBlock}{asrBlock}</>}
 
             {p.clips.length > 0 && (
               <>
