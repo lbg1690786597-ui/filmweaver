@@ -73,6 +73,9 @@ import EffectsPanel from "./features/effects/EffectsPanel";
 import ScriptPanel from "./features/script/ScriptPanel";
 import VideoPanel from "./features/generation/VideoPanel";
 import ExportDialog, { IS_TAURI } from "./features/export/ExportDialog";
+import {
+  planEpisodeJobs, summarizeExportRun, type JobOutcome,
+} from "./features/export/exportRun";
 import TasksDrawer from "./features/tasks/TasksDrawer";
 import SettingsDialog from "./features/settings/SettingsDialog";
 import { normalize as normalizeRenderPlan } from "./render/normalize";
@@ -265,7 +268,7 @@ export default function App() {
    *  否则用户以为提交成功、等半天没有额外产出，又去点第三次。 */
   const sayIfDeduped = (job: JobOut, ok: string): boolean => {
     if (job.deduped) {
-      say(`⏳ 该项目已有生产任务在跑（${job.progress}%），本次不再重复提交`);
+      say(`⏳ 这个项目已经在出片了（${job.progress}%），先等这一轮跑完`);
       return true;
     }
     say(ok);
@@ -499,6 +502,8 @@ export default function App() {
     { path: string; segments: number; encoder: string; elapsedMs: number;
       /** 按集导出产出的文件数（>1 时 path 指向最后一个成片，用于定位所在目录） */
       files?: number;
+      /** 6.0：失败的文件数。>0 时面板标题说「部分完成」而不是「导出完成」 */
+      failed?: number;
       /** 5.8：导出成功但有降级（缺滤镜 / 动画蒙版超预算），在结果面板里长期可读 */
       notices?: string[] } | null>(null);
   /** 分段渲染的起算时刻，用来估剩余时间（见 doLocalExport 里的注释） */
@@ -614,14 +619,15 @@ export default function App() {
       const dir = o.dir ?? await pickExportDir();
       if (!dir) { say("已取消导出"); return; }
       const titleOf = new Map(detail.episodes.map((e) => [e.order, e.title]));
-      for (const ep of o.episodes) {
-        const shots = clips.filter((s) => (s.episode ?? 1) === ep);
-        if (!shots.length) continue;   // 该集没有可导镜头：跳过而不是产出空文件
+      // 分集规则在 features/export/exportRun.ts（纯函数，verify 脚本直接跑它）：
+      // 这段逻辑此前只长在这里，而 App 里的东西一行都测不到——
+      // 「按集导出只出第一集」能走到用户机器上，缺的正是这层覆盖。
+      for (const j of planEpisodeJobs(clips, o.episodes)) {
         jobs.push({
-          shots,
+          shots: j.shots,
           // 与导出对话框的路径预览共用同一个函数，预览到哪就落到哪
-          outputPath: await join(dir, episodeFileName(defaultName, ep, titleOf.get(ep))),
-          label: `第 ${ep} 集`,
+          outputPath: await join(dir, episodeFileName(defaultName, j.episode, titleOf.get(j.episode))),
+          label: `第 ${j.episode} 集`,
         });
       }
       if (!jobs.length) { say("所选集里没有已生成的镜头"); return; }
@@ -693,7 +699,9 @@ export default function App() {
     let segments = 0;
     let encoder = "";
     let lastPath = "";
-    let okCount = 0;
+    /** 各 job 的收场；汇总规则在 features/export/exportRun.ts */
+    const outcomes: JobOutcome[] = [];
+    let userAborted = false;
     // 多集导出时同一条降级会每集报一次，用 Set 收敛成一条。
     const exportNotices = new Set<string>();
 
@@ -718,104 +726,117 @@ export default function App() {
 
       for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        if (ctl.signal.aborted) break;
+        if (ctl.signal.aborted) { userAborted = true; break; }
 
-        // Render Engine V2：Timeline → RenderPlan → 分段 → ffmpeg。
-        // 按集导出时 shots 已按集切好，normalize 的 cursor 从 0 起算，
-        // 音频/字幕/转场里锚定到范围外镜头的条目会被自动丢弃（见 normalize.ts）。
-        const plan = normalizeRenderPlan({
-          projectId,
-          shots: job.shots,
-          audioClips,
-          subtitleClips: subtitles,
-          transitions,
-          output,
-          // 按集的镜头已在对话框里筛成"已出片且未停用"，交给 generated 档即可
-          scope: o.scope === "episode" ? "generated" : o.scope,
-          selectedShotIds: selectedShot ? [selectedShot.id] : [],
-          foldsTransition,
-          // 4.6：轨道静音/独奏/隐藏。键是 RenderTrack.id，与时间轴那套 id
-          // 不是一回事，换算在 render/trackFlags.ts 里（音频侧是 3 轨 : 4 kind）。
-          trackFlags: flagPlan,
-        });
+        // ⚠️ 每个 job 各自 try —— **一集失败不能带走其余几集**。
+        // 旧行为是任一集抛异常就整个循环塌掉，只剩一条 4 秒的红字；用户看到的
+        // 就是"只导出了第一集"，且不知道有报错、更不知道是哪一集。各集是彼此
+        // 独立的 ffmpeg 进程和输出文件，没有任何因果关系，不该连坐。
+        // 只有**用户取消**才中断整批——那是他自己的意思。
+        try {
+          // Render Engine V2：Timeline → RenderPlan → 分段 → ffmpeg。
+          // 按集导出时 shots 已按集切好，normalize 的 cursor 从 0 起算，
+          // 音频/字幕/转场里锚定到范围外镜头的条目会被自动丢弃（见 normalize.ts）。
+          const plan = normalizeRenderPlan({
+            projectId,
+            shots: job.shots,
+            audioClips,
+            subtitleClips: subtitles,
+            transitions,
+            output,
+            // 按集的镜头已在对话框里筛成"已出片且未停用"，交给 generated 档即可
+            scope: o.scope === "episode" ? "generated" : o.scope,
+            selectedShotIds: selectedShot ? [selectedShot.id] : [],
+            foldsTransition,
+            // 4.6：轨道静音/独奏/隐藏。键是 RenderTrack.id，与时间轴那套 id
+            // 不是一回事，换算在 render/trackFlags.ts 里（音频侧是 3 轨 : 4 kind）。
+            trackFlags: flagPlan,
+          });
 
-        // 字幕交给最后一道烧录。必须由 plan 现算，不能用后端的全项目 SRT：
-        // 那份时间码是从项目第一个镜头累加的，按集导出会整体偏掉前面所有集的时长。
-        const srt = planToSrt(plan);
-        const burnSrt = srt.trim() ? srt : undefined;
+          // 字幕交给最后一道烧录。必须由 plan 现算，不能用后端的全项目 SRT：
+          // 那份时间码是从项目第一个镜头累加的，按集导出会整体偏掉前面所有集的时长。
+          const srt = planToSrt(plan);
+          const burnSrt = srt.trim() ? srt : undefined;
 
-        segT0.current = null;
-        const res = await renderV2({
-          plan,
-          preferEncoder: "auto",
-          burnSrt,
-          subtitleStyle,
-          outputPath: job.outputPath,   // 渲染器直接使用，不再在内部弹对话框
-          onProgress: (p2) => {
-            // 预计剩余时间只用**分段渲染**这一段来推算，不用整体 pct 线性外推：
-            // 前面的下载/探测与后面的 concat/混音/烧字幕速度差着数量级，
-            // 拿总进度做线性估计会在阶段切换时来回跳，比不显示还糟。
-            // 段与段耗时相近（每段输入数固定、时长相近），所以"已用/已完成段"
-            // 外推到剩余段是稳的；尾巴那几步再加 10% 余量。
-            let etaSec: number | undefined;
-            const seg = p2.segment;
-            if (seg && seg.total > 0) {
-              if (seg.done === 0) segT0.current = Date.now();
-              else if (segT0.current) {
-                const perMs = (Date.now() - segT0.current) / seg.done;
-                etaSec = Math.round(perMs * (seg.total - seg.done) * 1.1 / 1000);
+          segT0.current = null;
+          const res = await renderV2({
+            plan,
+            preferEncoder: "auto",
+            burnSrt,
+            subtitleStyle,
+            outputPath: job.outputPath,   // 渲染器直接使用，不再在内部弹对话框
+            onProgress: (p2) => {
+              // 预计剩余时间只用**分段渲染**这一段来推算，不用整体 pct 线性外推：
+              // 前面的下载/探测与后面的 concat/混音/烧字幕速度差着数量级，
+              // 拿总进度做线性估计会在阶段切换时来回跳，比不显示还糟。
+              // 段与段耗时相近（每段输入数固定、时长相近），所以"已用/已完成段"
+              // 外推到剩余段是稳的；尾巴那几步再加 10% 余量。
+              let etaSec: number | undefined;
+              const seg = p2.segment;
+              if (seg && seg.total > 0) {
+                if (seg.done === 0) segT0.current = Date.now();
+                else if (segT0.current) {
+                  const perMs = (Date.now() - segT0.current) / seg.done;
+                  etaSec = Math.round(perMs * (seg.total - seg.done) * 1.1 / 1000);
+                }
               }
-            }
-            if (jobs.length > 1) {
-              // 多集：单集内的分段外推推不出"还剩几集"，改用整体已完成比例外推。
-              // 集与集时长相近（同一部剧），这个估计比只报当前集的剩余诚实得多。
-              const frac = (i + p2.pct / 100) / jobs.length;
-              etaSec = frac > 0.02
-                ? Math.round((Date.now() - t0) * (1 - frac) / frac / 1000)
-                : undefined;
-              setLocalProgress({
-                pct: Math.round(frac * 100),
-                stage: `${job.label}（${i + 1}/${jobs.length}）· ${p2.stage}`,
-                etaSec,
-              });
-            } else {
-              setLocalProgress({ pct: p2.pct, stage: p2.stage, etaSec });
-            }
-          },
-          signal: ctl.signal,
-        });
-        segments += res.segments;
-        encoder = res.encoder;
-        lastPath = res.outputPath ?? job.outputPath;
-        for (const n of res.notices) exportNotices.add(n);
-        okCount += 1;
+              if (jobs.length > 1) {
+                // 多集：单集内的分段外推推不出"还剩几集"，改用整体已完成比例外推。
+                // 集与集时长相近（同一部剧），这个估计比只报当前集的剩余诚实得多。
+                const frac = (i + p2.pct / 100) / jobs.length;
+                etaSec = frac > 0.02
+                  ? Math.round((Date.now() - t0) * (1 - frac) / frac / 1000)
+                  : undefined;
+                setLocalProgress({
+                  pct: Math.round(frac * 100),
+                  stage: `${job.label}（${i + 1}/${jobs.length}）· ${p2.stage}`,
+                  etaSec,
+                });
+              } else {
+                setLocalProgress({ pct: p2.pct, stage: p2.stage, etaSec });
+              }
+            },
+            signal: ctl.signal,
+          });
+          segments += res.segments;
+          encoder = res.encoder;
+          lastPath = res.outputPath ?? job.outputPath;
+          for (const n of res.notices) exportNotices.add(n);
+          outcomes.push({ label: job.label, ok: true });
+        } catch (e) {
+          // 取消是**整批**的意思，不是这一集的事故：跳出去交给下面统一处理。
+          if (e instanceof Error && e.name === "Aborted") { userAborted = true; break; }
+          outcomes.push({ label: job.label, ok: false, error: String(e) });
+        }
       }
 
-      if (!okCount) { say("已取消导出"); return; }
-      // 不关弹窗：原地切到完成态，用户可直接「打开所在文件夹」。
-      // 多文件时 path 仍指向最后一个成片——revealItemInDir 会打开其所在目录
-      // 并选中它，正好就是那批文件所在的文件夹。
-      setExportDone({
-        path: lastPath, segments, encoder,
-        elapsedMs: Date.now() - t0,
-        files: okCount,
-        notices: [...exportNotices],
-      });
-      say((okCount > 1
-        ? `✅ 已导出 ${okCount} 个文件到 ${lastPath.replace(/[/\\][^/\\]*$/, "")}`
-          + `（共 ${segments} 段 · ${encoder} · ${((Date.now() - t0) / 1000).toFixed(0)}s）`
-        : `✅ 已导出到 ${lastPath}（${segments} 段 · ${encoder} · `
-          + `${((Date.now() - t0) / 1000).toFixed(0)}s）`)
+      const dirHint = jobs.length > 1
+        ? (lastPath || jobs[0].outputPath).replace(/[/\\][^/\\]*$/, "")
+        : (lastPath || jobs[0].outputPath);
+      const sum = summarizeExportRun(outcomes, userAborted, dirHint,
+        `（共 ${segments} 段 · ${encoder} · ${((Date.now() - t0) / 1000).toFixed(0)}s）`
         // 提示正文写在结果面板里（toast 只有一行、4 秒就没），这里只负责把人引过去。
         + (exportNotices.size ? `　⚠️ 有 ${exportNotices.size} 条降级提示，见导出面板` : ""));
+
+      if (sum.showResult) {
+        // 不关弹窗：原地切到完成态，用户可直接「打开所在文件夹」。
+        // 多文件时 path 仍指向最后一个成片——revealItemInDir 会打开其所在目录
+        // 并选中它，正好就是那批文件所在的文件夹。
+        setExportDone({
+          path: lastPath, segments, encoder,
+          elapsedMs: Date.now() - t0,
+          files: sum.okCount,
+          failed: sum.failed.length,
+          // 失败原因和降级提示都进面板：它会一直留着等用户读完，toast 不会。
+          notices: [...sum.notices, ...exportNotices],
+        });
+      }
+      if (sum.toast) say(sum.toast);
     } catch (e) {
-      if (e instanceof Error && e.name === "Aborted") {
-        // 多集导出中途取消：已经落盘的那几集是完整可用的，必须告诉用户，
-        // 否则他会以为全白跑了而重导一遍。
-        say(okCount > 0
-          ? `已取消导出（前 ${okCount} 集已完成并保存）`
-          : "已取消导出");
-      } else say(`导出失败：${String(e)}`);
+      // 到这儿只剩**整批**级别的意外（准备 caps 等循环之外的步骤）；
+      // 单集失败已经在循环里各自接住了。
+      if (e instanceof Error && e.name === "Aborted") say("已取消导出");
+      else say(`导出失败：${String(e)}`);
     } finally {
       setLocalProgress(null);
       setRenderAbort(null);
@@ -1315,8 +1336,8 @@ export default function App() {
       const names = specials.map((c) => c.label).join("、");
       if (!window.confirm(
         `确定从镜头轨移除 ${specials.length} 个外部素材吗？\n\n${names}\n\n`
-        + "后端是硬删，撤销靠重新插回（3.7）——取片窗口、画面调整、叠加层位置都会一并还原，"
-        + "但每个素材各占一条撤销记录，撤 N 个要按 N 次 Ctrl+Z。")) return;
+        + "可以按 Ctrl+Z 撤销，取片范围、画面调整、叠加层位置都会一并还原；"
+        + "但一个素材算一次撤销，撤 N 个要按 N 次。")) return;
       void (async () => {
         for (const c of specials) await deleteSpecialShot(c.shotId!);
       })();
@@ -1793,9 +1814,9 @@ export default function App() {
     return (
       <div className="login-page">
         <div className="fw-offline">
-          <div className="fw-offline-title">连不上后端服务</div>
+          <div className="fw-offline-title">连不上服务器</div>
           <div className="fw-offline-desc">
-            请确认后端已启动。正在每 15 秒自动重试，恢复后会自动进入。
+            服务器暂时没有响应。正在每 15 秒自动重试，恢复后会自动进入。
           </div>
           <button className="btn primary" onClick={() => { void retryBackend(); }}>
             立即重试
@@ -1807,7 +1828,7 @@ export default function App() {
 
   // ---- 登录门控（放在项目列表之前；探测中显示空态防闪烁）----
   if (screen === "probing") {
-    return <div className="login-page"><div className="muted">连接后端…</div></div>;
+    return <div className="login-page"><div className="muted">正在连接…</div></div>;
   }
   if (screen === "login") {
     return <LoginPage onLoggedIn={onLoggedIn} />;
@@ -2028,13 +2049,18 @@ export default function App() {
     } catch (e) { say(String(e)); }
   };
 
-  /** TB-08 自动字幕：对已合成的 AI 旁白做语音识别，按时间戳生成字幕段。 */
+  /** TB-08 自动字幕：对**实际发声的那条音轨**做语音识别，按时间戳生成字幕段。
+   *  解说剧的声音在 TTS 旁白里，真人剧的声音在镜头视频自带的音轨里（音画一体），
+   *  后端按 production_mode 选音源（见 jobs.run_auto_subtitles），这里只把话说对。 */
   const doAutoSubtitles = async () => {
     if (!projectId) return;
+    const fromVideo = detail?.production_mode === "drama";
     try {
       const job = await api.submitAutoSubtitles(projectId, true);
       trackJob(job, "auto_subtitles");
-      say("🎧 正在识别旁白并生成字幕（纯文本，不出图不出片）");
+      say(fromVideo
+        ? "🎧 正在识别镜头原声并生成字幕（纯文本，不出图不出片）"
+        : "🎧 正在识别旁白并生成字幕（纯文本，不出图不出片）");
     } catch (e) { say(String(e)); }
   };
 
@@ -2193,6 +2219,9 @@ export default function App() {
                 // 字幕锚定"第几镜 + 镜内第几秒"，与后端同构；没有播放头就落到第 1 镜
                 anchor={playhead ?? (cursor ?? null)}
                 onAutoSubtitles={doAutoSubtitles}
+                // 真人剧没有旁白音频可对齐，字幕只能来自镜头原声 —— 面板据此
+                // 把「识别镜头原声」提为主入口（见 TextPanel 的 fromVideo 注释）
+                fromVideo={detail?.production_mode === "drama"}
                 clips={subtitles}
                 style={subtitleStyle}
                 onSaveStyle={saveSubtitleStyle}
@@ -2454,11 +2483,11 @@ export default function App() {
             <div className="banner fw-net-bar">
               <span>
                 ⚠️ 已断开与服务器的连接 —— {offlineBannerText(pendingWrites)}
-                已缓存到本机的素材仍可预览和导出。正在每 15 秒自动重连。
+                已下载到本地的素材仍可预览和导出。正在每 15 秒自动重连。
                 {/* 浏览器里没有 appDataDir()，队列只在内存。这句必须说，
                     否则就是又一个"假的已保存"：用户以为关掉页签还在。 */}
                 {!isDurable() && <b>（当前在浏览器中打开，暂存只在本页面有效，关闭页签即丢失）</b>}
-                {snapshotAt !== null && `你看到的是 ${describeSnapshotAge(snapshotAt, Date.now())}保存在本机的版本。`}
+                {snapshotAt !== null && `你看到的是 ${describeSnapshotAge(snapshotAt, Date.now())}保存在本地的版本。`}
               </span>
               <span className="update-actions">
                 <button className="btn ghost" onClick={() => { void retryBackend(); }}>
