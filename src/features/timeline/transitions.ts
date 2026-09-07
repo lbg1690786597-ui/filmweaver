@@ -252,7 +252,7 @@ export function seamHint(m: SeamMarker): string {
     case "disabled":
       return `${at}「${m.type}」有一端镜头已停用，导出时会被丢弃`;
     case "notAdjacent":
-      return `${at}「${m.type}」两镜之间已经隔着别的镜头，不再相邻，导出时是硬切`;
+      return `${at}「${m.type}」两镜之间已经隔着别的镜头，不再相邻，导出时会直接切过去`;
     case "offMain":
       return `${at}「${m.type}」端点在叠加层上，转场只作用于主轨，不会生效`;
     case "tooLong":
