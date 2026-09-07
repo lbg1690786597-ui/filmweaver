@@ -173,7 +173,7 @@ export default function SettingsDialog(p: Props) {
                     }} />
                   </Field>
                   <div className="fw-set-note">
-                    改动实时保存到服务端；关闭后仍会在切换镜头/失焦时保存
+                    改动会实时保存；关掉之后，切换镜头或点到别处时也会保存
                   </div>
                 </Group>
 
@@ -241,12 +241,12 @@ export default function SettingsDialog(p: Props) {
                             </span>
                           </Field>
                         ))}
-                        <Field label="语音合成 TTS">
+                        <Field label="语音合成（配音）">
                           <span className={`fw-set-chip ${health.features.tts ? "ok" : "off"}`}>
                             {health.features.tts ? "可用" : "不可用"}
                           </span>
                         </Field>
-                        <Field label="语音识别 ASR">
+                        <Field label="语音识别（自动字幕）">
                           <span className={`fw-set-chip ${health.features.asr ? "ok" : "off"}`}>
                             {health.features.asr ? "可用" : "不可用"}
                           </span>
@@ -327,7 +327,7 @@ export default function SettingsDialog(p: Props) {
                 )}
 
                 {IS_TAURI && (
-                  <Group title="本机缓存">
+                  <Group title="本地缓存">
                     {!local ? (
                       <div className="fw-set-note">读取中…</div>
                     ) : (
@@ -338,18 +338,18 @@ export default function SettingsDialog(p: Props) {
                           </span>
                         </Field>
                         {local.parts > 0 && (
-                          <Field label="未完成的残留">
+                          <Field label="没下完的残留">
                             <span className="fw-set-ro">{local.parts} 个（下次导出时自动清理）</span>
                           </Field>
                         )}
-                        <Field label="清空本机素材缓存">
+                        <Field label="清空本地素材缓存">
                           <button className="fw-set-btn danger" disabled={clearingLocal}
                             onClick={async () => {
                               setClearingLocal(true);
                               try {
                                 const r = await clearLocalCache();
                                 p.onToast(r.removed === 0
-                                  ? "本机缓存已经是空的"
+                                  ? "本地缓存已经是空的"
                                   : `已删除 ${r.removed} 个文件，释放 ${fmtBytes(r.freed)}`);
                                 setLocal(await localCacheStats());
                               } catch (e) { p.onToast(String(e)); }
@@ -361,9 +361,8 @@ export default function SettingsDialog(p: Props) {
                       </>
                     )}
                     <div className="fw-set-note">
-                      本机渲染会把素材缓存到应用数据目录，重复导出时可跳过下载。
-                      清空只是让下次导出重新下载一遍，不影响任何项目数据；
-                      硬件编码器的探测结果会保留（它只有几 KB，删了要多等几秒重探）。
+                      导出时素材会先存一份到本地，再导同一个项目就不用重新下载。
+                      清空只是让下次导出重新下载一遍，不会动到任何项目内容。
                     </div>
                   </Group>
                 )}
