@@ -35,8 +35,8 @@ export function useProdJobs(opts: {
       const blocked = r.blocked_shots ?? [];
       if (bare.length) {
         say(`⚠️ ${bare.length} 个镜头无定妆图可注入（#${bare.slice(0, 8).join(" #")}`
-          + `${bare.length > 8 ? " …" : ""}），这些首帧的人物一致性无保障，`
-          + "建议补齐定妆图后重生");
+          + `${bare.length > 8 ? " …" : ""}），这些镜头里的人物长相可能和别处不一样，`
+          + "建议补上定妆图后重新生成");
       }
       if (blocked.length) {
         say(`🚫 ${blocked.length} 个镜头的提示词被内容审核拒绝（#${blocked.slice(0, 8).join(" #")}`
