@@ -758,7 +758,7 @@ export default function MosaicPanel({
                           </button>
                           {r.track && (
                             <span className="fw-mp-trk-ok"
-                              title={`采样 ${r.track.sampleFps} fps，跟到 ${r.track.ok}/${r.track.total} 个采样点`}>
+                              title={`全程取了 ${r.track.total} 个点，跟住了 ${r.track.ok} 个`}>
                               ✓ 已跟踪 · {ks.length} 个关键帧
                             </span>
                           )}
