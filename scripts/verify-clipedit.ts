@@ -305,7 +305,7 @@ ok("左手柄：镜头仍要求已出片（3.1 的判据没有被放宽）",
 ok("右手柄提示按实体分（对 3 分钟 BGM 说「1–15s」是纯粹的谎话）",
    /fw-clip-trim"[\s\S]{0,400}?c\.entity === "shot"[\s\S]{0,200}?c\.entity === "audio"/.test(cv));
 ok("音频的右手柄提示报的是素材总长，不是镜头生成上限",
-   /sourceDurSec \?\? dur\)\.toFixed\(1\)\}s＝素材总长/.test(cv));
+   /sourceDurSec \?\? dur\)\.toFixed\(1\)\}s(＝|，就是)素材总长/.test(cv));
 
 const app = read("src/App.tsx");
 ok("editClip 转发 clearClip",
