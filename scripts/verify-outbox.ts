@@ -247,7 +247,7 @@ eq(offlineWriteHint(false, false, "PATCH"), undefined,
 ok((offlineWriteHint(true, true, "PATCH") ?? "").includes("暂存"),
   "★ 进了队列要明说暂存住了，否则用户会去重做（补发跑完就是白干一遍）");
 ok(/新建|联网/.test(offlineWriteHint(true, false, "POST") ?? ""),
-  "★ POST 没进队列要说清「必须联网」，不然用户只会反复点那个按钮");
+  "★ POST 没进队列要说清「要联网才能新建」，不然用户只会反复点那个按钮");
 ok(/编号|服务端/.test(offlineWriteHint(true, false, "POST") ?? ""),
   "★ 并要说明为什么 —— 它同时解释了「为什么别的改动能暂存、偏偏新建不行」");
 ok(!/暂存/.test(offlineWriteHint(true, false, "POST") ?? ""),
