@@ -22,6 +22,7 @@ import { planToSrt } from "../src/render/srt";
 import {
   safeFileName, episodeFileName, dirOf, baseOf, stripMp4,
 } from "../src/lib/filename";
+import { planEpisodeJobs, summarizeExportRun } from "../src/features/export/exportRun";
 import type { ShotInfo } from "../src/api";
 import type { AudioClipInfo, SubtitleClipInfo } from "../src/api";
 
@@ -220,6 +221,79 @@ check("29 集号补零到两位（文件管理器按名排序 == 集号顺序）
 check("30 无集标题时不留多余的下划线",
   episodeFileName("x", 1) === "x_第01集.mp4"
   && episodeFileName("x", 1, "   ") === "x_第01集.mp4");
+
+// ---- F. 批量收场：一集失败不能带走其余几集（6.0，真机 bug）----
+//
+// 2026-09-07 用户反馈：「按集导出五集，只能导出选中的第一集，我必须依次手动
+// 取消一集导出五次，才把五集全部导出。」
+//
+// 根因在 renderer 那边（固定工作目录 + 入口清理没 catch，Windows 上第 2 次
+// render() 未进 try 就抛），但**能走到用户机器上**的原因在这里：
+// 那个 for 循环长在 App.tsx 里，一行都测不到；第 17 项只覆盖到 plan 层
+// "挑若干集各自独立成片"，覆盖不到"循环真的把 5 个 job 都跑完了吗"。
+// 故把排 job 与汇总收场抽成纯函数（features/export/exportRun.ts）并在此覆盖。
+const epShots = [
+  { id: "a", episode: 1 }, { id: "b", episode: 1 },
+  { id: "c", episode: 2 },
+  { id: "d", episode: 4 },
+];
+const planned = planEpisodeJobs(epShots, [1, 2, 3, 4]);
+check("31 选 N 集就排 N 个 job（第 3 集无镜头被跳过，不产出空文件）",
+  planned.length === 3
+  && planned.map((j) => j.episode).join(",") === "1,2,4",
+  planned.map((j) => `${j.episode}:${j.shots.length}`).join(" "));
+check("32 镜头按集分派，不丢不重",
+  planned.flatMap((j) => j.shots.map((s) => s.id)).join("") === "abcd");
+check("33 episode 缺省算第 1 集（与对话框筛选口径一致）",
+  planEpisodeJobs([{ id: "x" }, { id: "y", episode: null }], [1])[0].shots.length === 2);
+
+const okAll = summarizeExportRun(
+  [1, 2, 3, 4, 5].map((n) => ({ label: `第 ${n} 集`, ok: true as const })),
+  false, "D:/片", "");
+check("34 五集全成：okCount=5、无失败、切结果面板",
+  okAll.okCount === 5 && okAll.failed.length === 0 && okAll.showResult
+  && !!okAll.toast?.startsWith("✅ 已导出 5 个文件"), okAll.toast ?? "");
+
+// 这一条就是用户遇到的场景：第 2 集炸了。旧行为 = 循环 break，只出第 1 集，
+// 一条 4 秒的红字。新行为 = 剩下三集照导，最后把"哪一集为什么失败"写进面板。
+const partial = summarizeExportRun([
+  { label: "第 1 集", ok: true },
+  { label: "第 2 集", ok: false, error: "Access is denied (os error 5)" },
+  { label: "第 3 集", ok: true },
+  { label: "第 4 集", ok: true },
+  { label: "第 5 集", ok: true },
+], false, "D:/片", "（共 100 段）");
+check("35 一集失败不带走其余四集：4 成 1 败",
+  partial.okCount === 4 && partial.failed.length === 1
+  && partial.failed[0].label === "第 2 集");
+check("36 部分成功仍切结果面板（已落盘的四个文件是完整可用的）",
+  partial.showResult === true);
+check("37 失败原因进面板 notices，且点名是哪一集",
+  partial.notices.length === 1
+  && partial.notices[0].includes("第 2 集")
+  && partial.notices[0].includes("os error 5"), partial.notices[0]);
+check("38 toast 直说 4/5，不谎报「导出完成」",
+  !!partial.toast?.includes("4/5") && !partial.toast.startsWith("✅"),
+  partial.toast ?? "");
+
+const allFail = summarizeExportRun([
+  { label: "第 1 集", ok: false, error: "ffmpeg 失败(1)" },
+  { label: "第 2 集", ok: false, error: "ffmpeg 失败(1)" },
+], false, "D:/片", "");
+check("39 全失败：不切结果面板（没有文件可「打开所在文件夹」）",
+  allFail.showResult === false && allFail.okCount === 0
+  && !!allFail.toast?.startsWith("导出失败："), allFail.toast ?? "");
+
+// 取消是**整批**的意思：不当作事故，但已落盘的那几集必须告诉用户，
+// 否则他以为全白跑了会重导一遍。
+const cancelled = summarizeExportRun([
+  { label: "第 1 集", ok: true }, { label: "第 2 集", ok: true },
+], true, "D:/片", "");
+check("40 中途取消：已完成的文件数要说出来，且不报「失败」",
+  cancelled.okCount === 2 && cancelled.showResult
+  && cancelled.toast === "已取消导出（前 2 个文件已完成并保存）", cancelled.toast ?? "");
+check("41 一开始就取消：只说已取消，不切结果面板",
+  summarizeExportRun([], true, "", "").showResult === false);
 
 console.log();
 if (FAILS.length) {
