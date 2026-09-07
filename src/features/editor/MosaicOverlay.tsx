@@ -532,7 +532,7 @@ export default function MosaicOverlay({
       {/* 空态提示。key 绑 tool：切换工具时重挂元素，淡出动画重新播一遍 */}
       {active && mosaics.length === 0 && !drawBox && paintPts.length === 0 && (
         <div className="fw-mso-hint" key={tool}>
-          {tool === "brush" ? "按住鼠标涂抹（滚轮调笔刷）" : `拖拽绘制${tool === "ellipse" ? "圆形" : "矩形"}遮罩`}
+          {tool === "brush" ? "按住鼠标涂抹（滚轮调笔刷）" : `拖拽画出${tool === "ellipse" ? "圆形" : "矩形"}遮挡`}
         </div>
       )}
     </div>
