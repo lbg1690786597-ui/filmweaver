@@ -105,7 +105,7 @@ ok(bundledFontsWarning(c) === null, "全在时不打扰用户");
 c = await checkBundledFonts("/app/resources/fonts", present([]));
 ok(c.fontsDir === null && c.missing.length === 2,
    "一个都没有 → fontsDir=null（不传一个空目录假装内置生效了）");
-ok((bundledFontsWarning(c) ?? "").includes("回落"), "全缺时明确告诉用户回落了系统字体",
+ok((bundledFontsWarning(c) ?? "").includes("改用系统字体"), "全缺时明确告诉用户改用了系统字体",
    String(bundledFontsWarning(c)));
 
 c = await checkBundledFonts("/app/resources/fonts", present([files[0]]));
