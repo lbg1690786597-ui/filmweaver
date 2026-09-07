@@ -54,7 +54,7 @@ export function parseCube(text: string): CubeLut {
     }
     if (upper.startsWith("LUT_1D_SIZE")) {
       // 1D LUT 只做灰阶映射，用 3D 采样器读会得到错误结果，直接拒绝
-      throw new Error("暂不支持 1D LUT（LUT_1D_SIZE），请使用 3D LUT（.cube）");
+      throw new Error("这个调色文件是 1D 类型，暂时用不了，请换一个 3D 的 .cube 文件");
     }
     if (upper.startsWith("DOMAIN_MIN")) {
       const p = line.split(/\s+/).slice(1).map(Number);
@@ -74,11 +74,11 @@ export function parseCube(text: string): CubeLut {
     }
   }
 
-  if (!size || size < 2) throw new Error("缺少有效的 LUT_3D_SIZE");
+  if (!size || size < 2) throw new Error("调色文件格式不对：读不到有效的尺寸声明");
   const expect = size * size * size * 3;
   if (values.length !== expect) {
     throw new Error(
-      `LUT 数据量不符：期望 ${expect / 3} 行（${size}³），实际 ${values.length / 3} 行`);
+      `调色文件不完整：应有 ${expect / 3} 行数据，实际只有 ${values.length / 3} 行`);
   }
 
   // 按 DOMAIN 归一化到 0..1，供 sampler3D 直接使用
