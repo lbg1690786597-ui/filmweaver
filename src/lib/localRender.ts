@@ -33,7 +33,11 @@ async function runFfmpeg(args: string[]): Promise<void> {
   const cmd = Command.sidecar("binaries/ffmpeg", args);
   const out = await cmd.execute();
   if (out.code !== 0) {
-    throw new Error(`ffmpeg 失败(${out.code}): ${(out.stderr || "").slice(-400)}`);
+    // 原始输出用户读不懂，但出错时它是唯一线索——加一句人话，
+    // 并说清这段是拿来发给我们的（与 render/renderer.ts 同一处理）。
+    throw new Error(
+      `导出失败（错误码 ${out.code}）。如需帮助，请把下面这段一起发给我们：\n`
+      + (out.stderr || "").slice(-400));
   }
 }
 
