@@ -117,7 +117,9 @@ console.log("\n② 主链路 renderer.ts：从源码里抽出的事件顺序");
  */
 function events(src: string, from: string): string[] {
   const body = src.slice(src.indexOf(from));
-  const RE = /await runFfmpeg\(|const prev = final;|^\s*final = (\w+);|await retireFiles\(([^)]*)\)|invoke\("export_copy_file"/gm;
+  // `invoke<number>("export_copy_file"` —— 6.0 起带类型参数（落地校验改用它的
+  // 返回字节数，不再 stat 一个越 capabilities scope 的路径），故 `<…>` 要可选。
+  const RE = /await runFfmpeg\(|const prev = final;|^\s*final = (\w+);|await retireFiles\(([^)]*)\)|invoke(?:<[^>]*>)?\("export_copy_file"/gm;
   const out: string[] = [];
   for (const m of body.matchAll(RE)) {
     if (m[0].startsWith("await runFfmpeg")) out.push("ffmpeg");
