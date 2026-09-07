@@ -358,8 +358,8 @@ export default function LibraryPanel(p: Props) {
             <button className="btn primary" style={{ flex: 1 }}
               disabled={assetJob !== null || !p.assetsMeta.some((a) => a.kind === "character")}
               onClick={openGenPicker}
-              title={p.assetsMeta.some((a) => a.kind === "character") ? "弹出勾选清单：默认勾选主角全部阶段，配角/场景可主动勾选" : "先在「🎬 镜头」页完成拆解"}>
-              {assetJob ? `生成中 ${assetJob.progress}%（逐张实时显示）` : "✨ AI 生成资产图"}
+              title={p.assetsMeta.some((a) => a.kind === "character") ? "挑选要生成的资产图：默认全选主角，配角和场景可自己勾" : "先在「🎬 镜头」页完成拆解"}>
+              {assetJob ? `生成中 ${assetJob.progress}%` : "✨ AI 生成资产图"}
             </button>
             <button className="btn" disabled={uploading} onClick={() => fileRef.current?.click()}>
               {uploading ? "上传中…" : "＋ 上传"}
@@ -411,7 +411,7 @@ export default function LibraryPanel(p: Props) {
                     <div className="lib-stage-list">
                       {sts.map((s) => (
                         <div key={s.id} className="lib-stage-row" draggable
-                          title="点击打开详情（用途/参数/生成）· 拖到人物轨该角色的段上=替换该阶段定妆图"
+                          title="点击查看详情；拖到时间轴上该角色的片段，可替换这一阶段的定妆图"
                           onClick={() => setAssetDlg({
                             kind: "character", name: s.character_name, assetId: a.id,
                             stage: s, imageUrl: s.image_url, voiceUrl: a.voice_url,
