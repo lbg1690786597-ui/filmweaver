@@ -60,8 +60,8 @@ const cases: [string, unknown, string, string][] = [
   ["401 → 让他去重新登录", { status: 401 }, "auth", "重新登录"],
   ["403 同 401", { status: 403 }, "auth", "重新登录"],
   ["404 → 说清是功能不可用，不是数据丢了", { status: 404 }, "unsupported", "该功能不可用"],
-  ["500 → 服务端错误，稍后重试", { status: 500 }, "server", "服务端错误"],
-  ["503 同 500 一类", { status: 503 }, "server", "服务端错误"],
+  ["500 → 服务器出错，稍后重试", { status: 500 }, "server", "服务器出错"],
+  ["503 同 500 一类", { status: 503 }, "server", "服务器出错"],
   ["429 等其他状态 → 带上状态码", { status: 429 }, "server", "429"],
 ];
 for (const [name, err, kind, must] of cases) {
