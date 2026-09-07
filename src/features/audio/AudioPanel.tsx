@@ -263,7 +263,7 @@ export default function AudioPanel(p: Props) {
                   deleting={deletingId === c.id}
                   onPlay={() => c.url && p.onPreview(api.mediaUrl(c.url), `镜头原声`)}
                   onDelete={() => doDelete(c.id)} />)}
-                {voiceClips.length > 0 && <div className="fw-audio-sec">旁白 · TTS</div>}
+                {voiceClips.length > 0 && <div className="fw-audio-sec">旁白 · AI 配音</div>}
                 {voiceClips.map((c) => <AudioRow key={c.id} clip={c}
                   deleting={deletingId === c.id}
                   onPlay={() => c.url && p.onPreview(api.mediaUrl(c.url), `旁白 · ${(c.text ?? "").slice(0, 20)}`)}
@@ -285,8 +285,8 @@ export default function AudioPanel(p: Props) {
           <div className="fw-audio-tts">
             {!p.ttsAvailable ? (
               <div className="fw-audio-warn">
-                ⚠️ AI 配音当前不可用：后端未接通 RunningHub 语音服务。
-                这不是项目设置问题，应用内也没有可填的地方——需要在服务端配置。
+                ⚠️ AI 配音暂时用不了：服务器还没接通配音服务。
+                这不是你的设置问题，软件里也没有可填的地方，需要在服务器上开通。
               </div>
             ) : (
               <>
