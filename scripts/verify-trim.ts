@@ -123,8 +123,10 @@ ok("Inspector 时长输入框 step 用 TRIM_STEP_SEC（与时间轴同源）",
    "step=1 时用户在时间轴拖出的 2.4 会被这个面板一失焦就整理回 2");
 ok("Inspector 提交前用 quantizeSec 而不是 Math.round",
    cp.includes("quantizeSec(durDraft)") || cp.includes("q1(durDraft)"));
-ok("提示文案说清了 0.1s 步进（否则用户以为只能整秒）",
-   cp.includes("0.1s 步进"));
+// 文案已改成人话（「每 0.1 秒一档」），断言跟着改判据但守的是同一件事：
+// 提示里必须出现 0.1 这个步长，否则用户以为只能填整秒。
+ok("提示文案说清了 0.1 秒一档（否则用户以为只能整秒）",
+   /0\.1\s*秒一档|0\.1s 步进/.test(cp));
 
 const cv = read("src/features/timeline/ClipView.tsx");
 ok("trim 手柄的提示不再写死「1-15s」",
