@@ -236,7 +236,7 @@ export default function EffectsPanel({
       // 转场落库（无论能否渲染——用户的编排不该因引擎没跟上就丢失）
       onApplyTransition?.(it.id);
       if (!okTransitions.has(it.id)) {
-        onToast(`「${it.name}」已保存，但当前渲染引擎尚未实现此转场，导出时会降级为硬切`);
+        onToast(`「${it.name}」已保存，但当前版本还做不出这个转场，导出时会变成直接切换`);
       }
       return;
     }
@@ -344,7 +344,7 @@ export default function EffectsPanel({
                 finally { setLutBusy(false); }
               }} />
             <button disabled={lutBusy} onClick={() => lutRef.current?.click()}
-              title="导入 .cube 色彩查找表，导出时由 ffmpeg lut3d 应用">
+              title="导入 .cube 调色文件，导出时自动套用到画面上">
               {lutBusy ? <Loader2 size={11} className="fw-spin" /> : <Upload size={11} />}
               {transform?.lut ? " 更换 .cube LUT" : " 导入 .cube LUT 文件"}
             </button>
