@@ -268,7 +268,7 @@ export async function prepareMedia(opts: PrepOptions): Promise<PrepResult> {
       if (m.localPath === undefined || local.get(m.id)) continue;
       const why = explainUnreachable(m.localPath, roots, roots.length > 0);
       if (isOptional(m)) {
-        notices.push(`本地 LUT 读不到，本次导出未应用该滤镜 —— ${why.message}`);
+        notices.push(`调色文件读不到，这次导出没有套用它 —— ${why.message}`);
         continue;
       }
       throw new Error(why.message);
@@ -320,7 +320,7 @@ export async function prepareMedia(opts: PrepOptions): Promise<PrepResult> {
         if ((e as Error)?.name === "Aborted") throw e;
         if (!isOptional(m)) throw e;
         // 装饰性素材（LUT）：少一层调色，片子照出。
-        notices.push(`LUT 文件下载失败，本次导出未应用该滤镜（${cacheFileName(m.url)}）`);
+        notices.push(`调色文件下载失败，这次导出没有套用它（${cacheFileName(m.url)}）`);
       }
       doneUnits += DOWNLOAD_WEIGHT;
       downloaded++;
@@ -336,7 +336,7 @@ export async function prepareMedia(opts: PrepOptions): Promise<PrepResult> {
   // ---- 第 2 步：探音轨 ----
   let probed = 0;
   if (toProbeNow.length) {
-    report(doneUnits / totalUnits, `检查素材音轨 0/${toProbeNow.length}`);
+    report(doneUnits / totalUnits, `检查素材声音 0/${toProbeNow.length}`);
     await inBatches(toProbeNow, opts.probeConcurrency, signal, async (m) => {
       const p = paths.get(m.id);
       // 拿不到路径不该发生（targets ⊆ 必需素材），但真发生时按"有音轨"处理，
@@ -361,7 +361,7 @@ export async function prepareMedia(opts: PrepOptions): Promise<PrepResult> {
       }
       doneUnits += 1;
       probed++;
-      report(doneUnits / totalUnits, `检查素材音轨 ${probed}/${toProbeNow.length}`);
+      report(doneUnits / totalUnits, `检查素材声音 ${probed}/${toProbeNow.length}`);
     });
   }
 
