@@ -181,9 +181,9 @@ function ClipViewInner(p: Props) {
         && (c.entity === "subtitle" || canTrimIn({ video_url: c.mediaUrl ?? null })) && (
         <div className="fw-clip-trim-in"
           title={c.entity === "shot"
-            ? `拖动修剪入点（掐掉素材开头；当前入点 ${(c.clipInSec ?? 0).toFixed(1)}s，按 0.1s 步进）`
+            ? `拖动裁掉素材开头（已裁掉 ${(c.clipInSec ?? 0).toFixed(1)}s，每格 0.1s）`
             : c.entity === "audio"
-              ? `拖动修剪开头（当前入点 ${(c.clipInSec ?? 0).toFixed(1)}s；左边缘会跟着右移＝晚点开始放）`
+              ? `拖动裁掉开头（已裁掉 ${(c.clipInSec ?? 0).toFixed(1)}s；这一段会晚一点开始放）`
               : "拖动让字幕晚点出现（同时缩短显示时长）"}
           onMouseDown={(e) => { e.stopPropagation(); p.onBeginTrimIn!(e); }} />
       )}
@@ -198,10 +198,10 @@ function ClipViewInner(p: Props) {
       {!collapsed && !p.trackLocked && (
         <div className="fw-clip-trim"
           title={c.entity === "shot"
-            ? `拖动调整时长（${MIN_TRIM_SEC}–${p.maxDurSec ?? "?"}s，按 0.1s 步进）`
+            ? `拖动调整时长（${MIN_TRIM_SEC}–${p.maxDurSec ?? "?"}s，每格 0.1s）`
             : c.entity === "audio"
-              ? `拖动修剪结尾（最长 ${(c.sourceDurSec ?? dur).toFixed(1)}s＝素材总长，按 0.1s 步进）`
-              : "拖动调整字幕显示时长（按 0.1s 步进）"}
+              ? `拖动裁掉结尾（最长 ${(c.sourceDurSec ?? dur).toFixed(1)}s，就是素材总长；每格 0.1s）`
+              : "拖动调整字幕显示时长（每格 0.1s）"}
           onMouseDown={(e) => { e.stopPropagation(); p.onBeginTrim(e); }} />
       )}
     </div>
