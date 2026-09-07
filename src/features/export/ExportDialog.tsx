@@ -106,8 +106,14 @@ interface Props {
     /** 按集导出时产出的文件数（>1 时"打开所在文件夹"落在整个目录上） */
     files?: number;
     /**
+     * 失败的文件数（6.0）。>0 时面板标题必须说「部分完成」——
+     * 一批里少了几个文件，在文件管理器里是看不出来的，用户只会以为导全了。
+     */
+    failed?: number;
+    /**
      * 降级提示（5.8）：导出**成功**了，但有东西没按用户设置的样子出来。
      * 放在结果面板而不是 toast —— 见 ExportDialog.css 的 `.fw-ex-notices`。
+     * 6.0 起也承载"哪一集失败、为什么"（同理：toast 装不下，也留不住）。
      */
     notices?: string[];
   } | null;
@@ -240,7 +246,11 @@ export default function ExportDialog(p: Props) {
             <div className="fw-ex-done">
               <Check size={14} />
               <div>
-                <div className="fw-ex-done-title">导出完成</div>
+                <div className="fw-ex-done-title">
+                  {done.failed
+                    ? `部分完成 · ${done.files ?? 1} 个成功，${done.failed} 个失败`
+                    : "导出完成"}
+                </div>
                 <div className="fw-ex-done-path" title={done.path}>{done.path}</div>
               </div>
             </div>
@@ -259,8 +269,8 @@ export default function ExportDialog(p: Props) {
             <div className="fw-ex-channels">
               <button className="fw-ex-channel on" disabled>
                 <Monitor size={15} />
-                <span className="fw-ex-channel-name">本机渲染</span>
-                <span className="fw-ex-channel-desc">多轨合成 · 转场 · 字幕 · 硬件编码</span>
+                <span className="fw-ex-channel-name">在这台电脑上导出</span>
+                <span className="fw-ex-channel-desc">画面、转场、字幕、配音一次合成</span>
               </button>
             </div>
             {!IS_TAURI && (
