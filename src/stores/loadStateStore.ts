@@ -112,10 +112,10 @@ export function describeLoadError(err: unknown, label: string): {
     if (status === 404) {
       // 这正是原来那些 catch 存在的理由，但它同样不该静默：
       // 用户需要知道"这里是空的"是因为功能不可用，而不是他的数据没了。
-      return { message: `当前服务端没有「${label}」这个接口，该功能不可用`, kind: "unsupported" };
+      return { message: `${label}没能加载：该功能不可用（不是你的数据丢了）`, kind: "unsupported" };
     }
     if (status >= 500) {
-      return { message: `服务端错误（${status}），${label}没能加载`, kind: "server" };
+      return { message: `服务器出错了（${status}），${label}没能加载`, kind: "server" };
     }
     return { message: `${label}加载失败（${status}）`, kind: "server" };
   }
