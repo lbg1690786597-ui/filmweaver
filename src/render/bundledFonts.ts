@@ -80,7 +80,7 @@ export async function checkBundledFonts(
 export function bundledFontsWarning(check: BundledFontsCheck): string | null {
   if (!check.missing.length) return null;
   if (!check.fontsDir) {
-    return "内置字体未随包安装，已回落到系统字体（字幕字形可能与预览不同）";
+    return "软件自带的字体没装上，字幕已改用系统字体（字形可能和预览不一样）";
   }
-  return `内置字体缺少 ${check.missing.join("、")}，这几款会回落到系统字体`;
+  return `自带字体里少了 ${check.missing.join("、")}，这几款会改用系统字体`;
 }
