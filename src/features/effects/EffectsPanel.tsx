@@ -34,6 +34,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Info, Upload, Loader2 } from "lucide-react";
 import { api } from "../../api";
 import { probeCapabilities } from "../../render/capabilities";
+import { TRANSITIONS as TRANSITION_DEFS } from "./transitionCatalog";
 import type { TransformMeta, TransformPatchOpts } from "../../api";
 import "./EffectsPanel.css";
 
@@ -47,24 +48,12 @@ interface Item {
   group: string;
 }
 
-/* ---- 转场库（对应 FFmpeg xfade 的常见 transition） ---- */
-const TRANSITIONS: Item[] = [
-  { id: "fade", name: "淡入淡出", group: "基础", preview: "linear-gradient(90deg,#000,#888,#fff)" },
-  { id: "fadeblack", name: "黑场过渡", group: "基础", preview: "linear-gradient(90deg,#fff,#000,#fff)" },
-  { id: "fadewhite", name: "白场过渡", group: "基础", preview: "linear-gradient(90deg,#333,#fff,#333)" },
-  { id: "dissolve", name: "溶解", group: "基础", preview: "radial-gradient(circle,#888,#222)" },
-  { id: "slideleft", name: "左滑", group: "运动", preview: "linear-gradient(90deg,#4a5,#254)" },
-  { id: "slideright", name: "右滑", group: "运动", preview: "linear-gradient(270deg,#4a5,#254)" },
-  { id: "slideup", name: "上滑", group: "运动", preview: "linear-gradient(0deg,#4a5,#254)" },
-  { id: "slidedown", name: "下滑", group: "运动", preview: "linear-gradient(180deg,#4a5,#254)" },
-  { id: "wipeleft", name: "左擦除", group: "擦除", preview: "linear-gradient(90deg,#a54,#421)" },
-  { id: "wiperight", name: "右擦除", group: "擦除", preview: "linear-gradient(270deg,#a54,#421)" },
-  { id: "circleopen", name: "圆形展开", group: "擦除", preview: "radial-gradient(circle,#fff 30%,#222 70%)" },
-  { id: "circleclose", name: "圆形收拢", group: "擦除", preview: "radial-gradient(circle,#222 30%,#fff 70%)" },
-  { id: "smoothleft", name: "平滑左移", group: "运动", preview: "linear-gradient(100deg,#57a,#235)" },
-  { id: "pixelize", name: "像素化", group: "风格", preview: "repeating-linear-gradient(45deg,#666 0 6px,#333 6px 12px)" },
-  { id: "zoomin", name: "缩放推入", group: "运动", preview: "radial-gradient(circle,#a85 20%,#432 80%)" },
-];
+/* ---- 转场库 ----
+   3.9：表本身搬到 `transitionCatalog.ts`（时间轴那边也要读它来显示中文名，
+   两处各存一份必然漂移——用户看到的「fadeblack」就是漂移的结果）。 */
+const TRANSITIONS: Item[] = TRANSITION_DEFS.map((t) => ({
+  id: t.id, name: t.name, group: t.group, preview: t.preview,
+}));
 
 /* ---- 特效库 ---- */
 const EFFECTS: Item[] = [
@@ -262,15 +251,25 @@ export default function EffectsPanel({
         <div key={g} className="fw-fx-group">
           <div className="fw-fx-group-title">{g}</div>
           <div className="fw-fx-grid">
-            {items.filter((i) => i.group === g).map((it) => (
+            {items.filter((i) => i.group === g).map((it) => {
+              // 3.9：本机 ffmpeg 做不出的转场要**看得出来**。
+              // 此前只有一个"可渲染 ●"的正向角标，缺角标是很弱的信号
+              // （用户不会去数哪些卡没有点），加上灰化 + 明确的 title，
+              // 才不会出现"选了 15 种、导出全是硬切"却毫不知情。
+              const dead = kind === "transition" && !okTransitions.has(it.id);
+              return (
               <button key={it.id}
-                className={`fw-fx-card ${
+                className={`fw-fx-card ${dead ? "dead " : ""}${
                   applied === it.id
                   || (kind === "effect" && EFFECT_FIELD[it.id]
                       && ((transform as Record<string, number> | null)
                           ?.[EFFECT_FIELD[it.id]] ?? 0) > 0)
                     ? "on" : ""}`}
-                onClick={() => apply(it)} title={it.name}>
+                onClick={() => apply(it)}
+                title={dead
+                  ? `${it.name}：当前环境的 ffmpeg 做不出这个转场，`
+                    + "仍可保存编排，但导出时会变成直接切换"
+                  : it.name}>
                 <span className="fw-fx-preview" style={{ background: it.preview }}>
                   {applied === it.id && <Check size={14} className="fw-fx-check" />}
                   {((kind === "transition" && okTransitions.has(it.id))
@@ -280,7 +279,8 @@ export default function EffectsPanel({
                 </span>
                 <span className="fw-fx-name">{it.name}</span>
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       ))}
