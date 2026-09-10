@@ -59,6 +59,7 @@
 import type { ShotInfo, TransitionInfo } from "../../api";
 import { buildOrderOffsetMap, shotDuration } from "../../adapters/shotToClip";
 import { chainIndex, isAdjacent, foldingLinks } from "../../lib/transitionFold";
+import { transitionName } from "../effects/transitionCatalog";
 
 /** 转场最短时长（秒）。再短就看不出是转场，只是一次抖动。 */
 export const MIN_TRANSITION_SEC = 0.1;
@@ -238,25 +239,29 @@ export function foldedTotalSec(totalSec: number, markers: SeamMarker[]): number 
   return Math.max(0, totalSec - fold);
 }
 
-/** 给用户看的状态说明（一句话说清"为什么它不生效"，别只给个红点） */
+/** 给用户看的状态说明（一句话说清"为什么它不生效"，别只给个红点）。
+ *
+ *  3.9：转场名一律走 `transitionName()`。此前这里直接拼 `m.type`，
+ *  中文界面上冒出来的是「fadeblack」这种 ffmpeg 内部标识符。 */
 export function seamHint(m: SeamMarker): string {
   const at = m.fromOrder !== null && m.toOrder !== null
     ? `#${m.fromOrder} → #${m.toOrder}`
     : "接缝";
+  const nm = transitionName(m.type);
   switch (m.state) {
     case "ok":
-      return `${at}「${m.type}」${m.durationSec.toFixed(1)}s`
+      return `${at}「${nm}」${m.durationSec.toFixed(1)}s`
         + `（成片会缩短 ${m.durationSec.toFixed(1)}s）`;
     case "missing":
-      return `${at}「${m.type}」端点镜头已被删除，导出时会被丢弃`;
+      return `${at}「${nm}」端点镜头已被删除，导出时会被丢弃`;
     case "disabled":
-      return `${at}「${m.type}」有一端镜头已停用，导出时会被丢弃`;
+      return `${at}「${nm}」有一端镜头已停用，导出时会被丢弃`;
     case "notAdjacent":
-      return `${at}「${m.type}」两镜之间已经隔着别的镜头，不再相邻，导出时会直接切过去`;
+      return `${at}「${nm}」两镜之间已经隔着别的镜头，不再相邻，导出时会直接切过去`;
     case "offMain":
-      return `${at}「${m.type}」端点在叠加层上，转场只作用于主轨，不会生效`;
+      return `${at}「${nm}」端点在叠加层上，转场只作用于主轨，不会生效`;
     case "tooLong":
-      return `${at}「${m.type}」${m.durationSec.toFixed(1)}s 超过相邻镜头能让出的 `
+      return `${at}「${nm}」${m.durationSec.toFixed(1)}s 超过相邻镜头能让出的 `
         + `${m.maxSec.toFixed(1)}s，画面会糊成一团，请改短`;
   }
 }
