@@ -218,9 +218,11 @@
 @keyframes fw-spin { to { transform: rotate(360deg); } }
 .fw-spin { animation: fw-spin 0.8s linear infinite; }
 
-/* 分割工具激活：光标提示"点这儿会切开" */
-.fw-clip.split-mode { cursor: crosshair; }
-.fw-clip.split-mode:hover {
+/* Alt 按住：光标提示"点这儿会切开"。
+   这是 Alt+点击分割这条路径**唯一**的自我说明——它没有工具条按钮可看，
+   不给光标反馈的话用户永远发现不了。类由 Timeline 根节点的 alt-armed 驱动。 */
+.fw-tl.alt-armed .fw-clip { cursor: crosshair; }
+.fw-tl.alt-armed .fw-clip:hover {
   outline: 1px solid var(--c-warning);
   outline-offset: -1px;
 }
