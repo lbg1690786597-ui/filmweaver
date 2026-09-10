@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, AssetInfo, EpisodeInfo, JobPhase, ShotInfo, StageInfo } from "../api";
+import { api, AssetInfo, DeletedStageInfo, EpisodeInfo, JobPhase, ShotInfo, StageInfo } from "../api";
 import { LibClip, clipKind, fmtTime, probeDuration } from "../types";
 import ShotsPanel from "./ShotsPanel";
 import AssetDialog, { AssetDialogTarget } from "./AssetDialog";
@@ -20,6 +20,8 @@ interface Props {
   assetsMeta: AssetInfo[];
   /** 资产页角色分层（修 E3）：角色卡展开显示其全部造型阶段，可勾选合并 */
   stages: StageInfo[];
+  /** 被删除的造型阶段（墓碑）：只用于「🗑 已删除的造型」组的恢复入口 */
+  deletedStages?: DeletedStageInfo[];
   onRefreshStages: () => void;
   onRefresh: () => void;
   onToast: (m: string) => void;
@@ -151,6 +153,8 @@ export default function LibraryPanel(p: Props) {
   // ---- 大分组整体折叠：人物 / 场景 / 自定义 / 素材池 ----
   const [secOpen, setSecOpen] = useState<Record<string, boolean>>({
     chars: true, others: false, locs: true, custom: true, pool: true,
+    gone: false,     // 已删除资产：默认收起，只在删错了要找回时展开
+    goneStages: false,   // 已删除的造型阶段：同上
   });
   const toggleSec = (k: string) => setSecOpen((s) => ({ ...s, [k]: !s[k] }));
   // ---- 自定义资产新建（上传 / AI 生图）----
@@ -161,6 +165,77 @@ export default function LibraryPanel(p: Props) {
   const [genPick, setGenPick] = useState<Set<string> | null>(null);  // null=弹窗关闭
   // ---- 统一资产详情弹窗（点击卡片打开：用途/阶段/参数/生成）----
   const [assetDlg, setAssetDlg] = useState<AssetDialogTarget | null>(null);
+  // ---- 删除 / 恢复资产（软删，后端打墓碑）----
+  //
+  // 用户的原话是「有些人物或场景资产并不重要，但自动生成时出错了」，
+  // 要的是**别再管它**：不再注入参考图、不再计入缺图缺口、不再被自动流程
+  // 重画。所以这不是"从库里抹掉"，剧本与镜头一个字都不动——确认文案必须
+  // 把这条边界说清楚，否则用户会以为删了角色戏也没了。
+  const [delBusy, setDelBusy] = useState<string | null>(null);
+  const doDeleteAsset = async (a: AssetInfo) => {
+    const what = a.kind === "location" ? "场景" : a.kind === "character" ? "角色" : "资产";
+    if (!window.confirm(
+      `不再生成${what}「${a.name}」的参考图？\n\n`
+      + `· 剧本与镜头不变：这个${what}在镜头里照旧存在，台词一个字不改\n`
+      + `· 后续生成不再带它：不注入参考图、不算缺图、一键成片不会再把它画回来\n`
+      + `· 已生成的图保留：随时可在「🗑 已删除」里恢复`)) return;
+    setDelBusy(a.id);
+    try {
+      const r = await api.deleteAsset(a.id);
+      p.onRefresh();
+      p.onToast(r.affected_shots
+        ? `已停用「${a.name}」（剧本里仍有 ${r.affected_shots} 个镜头提到它，镜头未改动）`
+        : `已停用「${a.name}」`);
+    } catch (e) { p.onToast(`删除失败：${String(e).slice(0, 160)}`); }
+    finally { setDelBusy(null); }
+  };
+  const doRestoreAsset = async (a: AssetInfo) => {
+    setDelBusy(a.id);
+    try {
+      await api.restoreAsset(a.id);
+      p.onRefresh();
+      p.onToast(`已恢复「${a.name}」，后续生成会重新带上它`);
+    } catch (e) { p.onToast(`恢复失败：${String(e).slice(0, 160)}`); }
+    finally { setDelBusy(null); }
+  };
+
+  // ---- 删除 / 恢复**单个造型阶段**（同为软删；用户原话「阶段删除后似乎没有
+  //      撤销删除的能力」）----
+  //
+  // 与删角色的区别要在文案里说清：删阶段只是"这一套衣服不要了"，角色还在，
+  // 该角色其它阶段照旧生成；区间落空的镜头会退回用基础/通用定妆图。
+  const [stDelBusy, setStDelBusy] = useState<string | null>(null);
+  const doDeleteStage = async (s: StageInfo, charName: string) => {
+    if (!window.confirm(
+      `删除「${charName}·${s.stage_name}」这一套造型？\n\n`
+      + `· 剧本与镜头不变：第${s.ep_from}-${s.ep_to}集照旧，只是不再按这套造型出图\n`
+      + `· 该角色其它造型不受影响；这段集会退回用基础/通用定妆图\n`
+      + `· 可恢复：定妆图保留，在「🗑 已删除的造型」里点 ↩ 撤销`)) return;
+    setStDelBusy(s.id);
+    try {
+      const r = await api.deleteStage(s.id);
+      p.onRefreshStages();
+      // followers = 把它当图源的指针行。不报出来的话，用户事后才发现"另外几段也没图了"。
+      p.onToast(r.followers
+        ? `已删除「${s.stage_name}」（另有 ${r.followers} 段共用它的图，已一并失去图源）`
+        : `已删除「${s.stage_name}」，可在「🗑 已删除的造型」里恢复`);
+    } catch (e) { p.onToast(`删除失败：${String(e).slice(0, 160)}`); }
+    finally { setStDelBusy(null); }
+  };
+  const doRestoreStage = async (s: DeletedStageInfo) => {
+    setStDelBusy(s.id);
+    try {
+      await api.restoreStage(s.id);
+      p.onRefreshStages();
+      p.onToast(`已恢复「${s.character_name}·${s.stage_name}」`);
+    } catch (e) {
+      // 409 = 区间已被后建的阶段占了（墓碑刻意不占集区间）。后端的 detail 已经
+      // 点名了和谁撞、区间是多少，直接透给用户，比"恢复失败"有用。
+      p.onToast(`恢复失败：${String(e).replace(/^ApiError:\s*/, "").slice(0, 200)}`);
+    }
+    finally { setStDelBusy(null); }
+  };
+
   const doMergeStages = async (charName: string) => {
     const ids = [...mergeSel];
     if (ids.length < 2) return;
@@ -374,9 +449,19 @@ export default function LibraryPanel(p: Props) {
               大分组可整体折叠；条目卡最大宽度固定，面板拖宽自动 1→2→3 列（lib-cols）；
               全部卡片可拖拽上轨（dataTransfer: application/x-fw-asset） */}
           {(() => {
-            const chars = p.assetsMeta.filter((a) => a.kind === "character");
-            const locs = p.assetsMeta.filter((a) => a.kind === "location");
-            const customs = p.assetsMeta.filter((a) => a.kind === "custom");
+            // 墓碑资产（用户删掉的）不进正常分组：后端**故意**照旧下发它们，
+            // 由前端隐藏 + 提供恢复入口，删错了才找得回来。
+            const live = p.assetsMeta.filter((a) => !a.deleted_at);
+            const gone = p.assetsMeta.filter((a) => a.deleted_at);
+            // 被删的造型阶段（后端单独下发，不混进 stages —— 那份的契约是
+            // 「轨道显示 = 实际注入」）。只在被删角色仍在用时才列：整个角色都
+            // 删掉了的话，恢复单个造型没有意义，该走上面的资产恢复。
+            const goneNames = new Set(gone.map((a) => a.name));
+            const goneStages = (p.deletedStages ?? [])
+              .filter((s) => !goneNames.has(s.character_name));
+            const chars = live.filter((a) => a.kind === "character");
+            const locs = live.filter((a) => a.kind === "location");
+            const customs = live.filter((a) => a.kind === "custom");
             const stagesOf = (name: string) =>
               p.stages.filter((s) => s.character_name === name)
                 .sort((a, b) => a.ep_from - b.ep_from);
@@ -406,6 +491,9 @@ export default function LibraryPanel(p: Props) {
                     <span className="muted">
                       {sts.length} 个阶段{sts.some((s) => !s.image_url) && " · ⚠缺图"}
                     </span>
+                    <button className="lib-x" title="不再生成这个角色的参考图（剧本不变，可恢复）"
+                      disabled={delBusy === a.id}
+                      onClick={(e) => { e.stopPropagation(); void doDeleteAsset(a); }}>🗑</button>
                   </div>
                   {open && (
                     <div className="lib-stage-list">
@@ -434,6 +522,11 @@ export default function LibraryPanel(p: Props) {
                             <b>{s.stage_name}</b>
                             <em>第{s.ep_from}-{s.ep_to}集{s.image_url ? "" : " · 待生成"}</em>
                           </span>
+                          {/* 阶段级快删：以前只有资产弹窗里有，用户得点进去两层才能删掉
+                              一套识别错的造型（原话「希望在卡片上面就能直接点击快速删除」）。 */}
+                          <button className="lib-x" disabled={stDelBusy === s.id}
+                            title="删除这一套造型（剧本不变，可恢复）"
+                            onClick={(e) => { e.stopPropagation(); void doDeleteStage(s, a.name); }}>🗑</button>
                         </div>
                       ))}
                       {sts.length >= 2 && (
@@ -492,6 +585,9 @@ export default function LibraryPanel(p: Props) {
                                         <b>{a.name}</b>
                                         <em>{st ? `第${st.ep_from}-${st.ep_to}集` : "无阶段"}{!img && " · ⚠缺图"}</em>
                                       </span>
+                                      <button className="lib-x" disabled={delBusy === a.id}
+                                        title="不再生成这个角色的参考图（剧本不变，可恢复）"
+                                        onClick={(e) => { e.stopPropagation(); void doDeleteAsset(a); }}>🗑</button>
                                     </div>
                                   );
                                 })}
@@ -525,6 +621,9 @@ export default function LibraryPanel(p: Props) {
                             {a.image_url
                               ? <img src={api.mediaUrl(a.image_url)} alt={a.name} />
                               : <div className="lib-asset-pending">{assetJob ? "⏳" : "🏞"}</div>}
+                            <button className="lib-del" disabled={delBusy === a.id}
+                              title="不再生成这个场景的参考图（剧本不变，可恢复）"
+                              onClick={(e) => { e.stopPropagation(); void doDeleteAsset(a); }}>🗑</button>
                             <div className="lib-name">{a.name}</div>
                           </div>
                         ))}
@@ -567,12 +666,9 @@ export default function LibraryPanel(p: Props) {
                           {a.image_url
                             ? <img src={api.mediaUrl(a.image_url)} alt={a.name} />
                             : <div className="lib-asset-pending">🖼</div>}
-                          <button className="lib-del" title="删除此自定义资产"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (window.confirm(`删除自定义资产「${a.name}」？`))
-                                void api.deleteAsset(a.id).then(() => p.onRefresh()).catch((err) => p.onToast(String(err)));
-                            }}>🗑</button>
+                          <button className="lib-del" title="删除此自定义资产（可恢复）"
+                            disabled={delBusy === a.id}
+                            onClick={(e) => { e.stopPropagation(); void doDeleteAsset(a); }}>🗑</button>
                           <div className="lib-name">{a.name}</div>
                         </div>
                       ))}
@@ -580,6 +676,71 @@ export default function LibraryPanel(p: Props) {
                         <div className="muted pad">上传图片或 AI 生图创建自定义资产（道具/风格参考等）</div>
                       )}
                     </div>
+                  </>
+                )}
+
+                {/* ===== 🗑 已删除大分组：墓碑资产的唯一可见处 =====
+                    存在的理由只有一个——删错了要能找回来。后端并不真删行、
+                    也不删磁盘上的图（`media` 的 GC 引用扫描故意连墓碑一起扫），
+                    所以恢复是无损的。 */}
+                {gone.length > 0 && (
+                  <>
+                    <div className="lib-sec clickable" onClick={() => toggleSec("gone")}>
+                      <span className={`dock-caret ${secOpen.gone ? "open" : ""}`}>▶</span>
+                      🗑 已删除（{gone.length}）
+                      <span className="muted" style={{ fontWeight: 400 }}> · 不参与生成，可恢复</span>
+                    </div>
+                    {secOpen.gone && (
+                      <div className="lib-cols">
+                        {gone.map((a) => (
+                          <div key={`g-${a.id}`} className="lib-card lib-card-gone"
+                            title={`${a.name} · 已停用，不再参与生成`}>
+                            {a.image_url
+                              ? <img src={api.mediaUrl(a.image_url)} alt={a.name} />
+                              : <div className="lib-asset-pending">
+                                  {a.kind === "location" ? "🏞" : a.kind === "character" ? "👤" : "🖼"}
+                                </div>}
+                            <button className="lib-del lib-del-restore" disabled={delBusy === a.id}
+                              title="恢复：后续生成重新带上它"
+                              onClick={(e) => { e.stopPropagation(); void doRestoreAsset(a); }}>↩</button>
+                            <div className="lib-name">{a.name}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ===== 🗑 已删除的造型：单个造型阶段的墓碑 =====
+                    与上面的「已删除」资产分成两组，因为它们不是一回事：
+                    删资产 = 这个角色/场景整个不要了；删阶段 = 只是这一套衣服不要了，
+                    角色还在。混在一组里用户无法判断点 ↩ 会恢复出什么。 */}
+                {goneStages.length > 0 && (
+                  <>
+                    <div className="lib-sec clickable" onClick={() => toggleSec("goneStages")}>
+                      <span className={`dock-caret ${secOpen.goneStages ? "open" : ""}`}>▶</span>
+                      🗑 已删除的造型（{goneStages.length}）
+                      <span className="muted" style={{ fontWeight: 400 }}> · 不参与生成，可恢复</span>
+                    </div>
+                    {secOpen.goneStages && (
+                      <div className="lib-cols">
+                        {goneStages.map((s) => (
+                          <div key={`gs-${s.id}`} className="lib-card lib-card-gone"
+                            title={`${s.character_name}·${s.stage_name}（第${s.ep_from}-${s.ep_to}集）已删除，不再参与生成`}>
+                            {s.image_url
+                              ? <img src={api.mediaUrl(s.image_url)} alt={s.stage_name} />
+                              : <div className="lib-asset-pending">👤</div>}
+                            <button className="lib-del lib-del-restore" disabled={stDelBusy === s.id}
+                              title="恢复这一套造型（若这段集已被新造型占用会提示冲突）"
+                              onClick={(e) => { e.stopPropagation(); void doRestoreStage(s); }}>↩</button>
+                            <div className="lib-name">
+                              {s.character_name}·{s.stage_name}
+                              <span className="muted"> 第{s.ep_from}-{s.ep_to}集</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </>
                 )}
 
