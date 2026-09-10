@@ -33,9 +33,6 @@ import type { Timeline, Track, Clip, AssetSegment, Selection } from "../types/ti
 import { ZOOM_DEFAULT, ZOOM_MIN, ZOOM_MAX } from "../types/timeline";
 import { readPref, writePref } from "../lib/prefs";
 
-/** 编辑工具。select = 拖拽/框选；split = 点哪切哪。 */
-export type EditorTool = "select" | "split";
-
 /** 会进撤销栈的轨道开关。**不含 collapsed**，理由见文件头。 */
 export type TrackFlag = "locked" | "hidden" | "muted" | "solo";
 
@@ -51,10 +48,6 @@ const MAX_UNDO = 50;
 interface TimelineState {
   timeline: Timeline;
   setTimeline: (t: Timeline) => void;
-
-  // ---- 编辑工具（参考剪映：切了保持状态，不自动回退）----
-  tool: EditorTool;
-  setTool: (t: EditorTool) => void;
 
   // ---- 吸附 ----
   snapping: boolean;
@@ -176,11 +169,6 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
       },
     };
   }),
-
-  // 工具不持久化：下次打开默认回到 select 更符合预期——
-  // 上次退出时停在 split，下次打开一点就切开镜头，是很糟的意外
-  tool: "select",
-  setTool: (t) => set({ tool: t }),
 
   // 吸附是长期偏好，持久化
   snapping: readPref("tlSnapping", true),
@@ -321,7 +309,6 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     selectionAnchor: null,        // 锚点是旧项目的 clip id，留着必然指向空
     clipboard: [],                 // 跨项目粘贴 clip 没有意义（shotId 属于旧项目）
     snapGuideSec: null,
-    tool: "select",                // 停在 split 上切项目，一点就切开新项目的镜头
     undoStack: [],
     redoStack: [],
   }),
