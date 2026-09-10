@@ -15,10 +15,14 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Keyboard, Sparkles, HardDrive, Settings as Cog, AlertTriangle } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api } from "../../api";
+import type { ProjectLook, ProjectLookOut, StyleOption } from "../../api";
 import { listCommandKeys } from "../../commands";
 import { ZOOM_DEFAULT } from "../../types/timeline";
 import { IS_TAURI } from "../export/ExportDialog";
 import { readPref, writePref, clearPrefs } from "../../lib/prefs";
+import {
+  FONT_SCALES, applyFontScale, getFontScale, setFontScale,
+} from "../../lib/fontScale";
 import { localCacheStats, clearLocalCache } from "../../lib/mediaCache";
 import type { LocalCacheStats } from "../../lib/mediaCache";
 import {
@@ -47,6 +51,9 @@ export default function SettingsDialog(p: Props) {
   const [autoSave, setAutoSave] = useState(() => readPref("autoSave", true));
   const [snapping, setSnapping] = useState(() => readPref("snap", true));
   const [quality, setQuality] = useState(() => readPref("quality", "preview"));
+  // 界面字号档位。真值在 <html> 的 --fs-scale 上（启动时由 main.tsx 应用），
+  // 这个 state 只是"哪个按钮高亮"。
+  const [fontScale, setFontScaleState] = useState(() => getFontScale());
   const [advOpen, setAdvOpen] = useState(false);
   // TB-06 缓存统计（进入「缓存」页签才拉）
   const [cache, setCache] = useState<
@@ -100,6 +107,107 @@ export default function SettingsDialog(p: Props) {
     }
   }, [tab, health]);
 
+  // ── 画风（项目级）。与影调同一时机拉：都只在「AI」页签用。
+  //    画风换的是**整套**风格词（正向 + 反向 + 影调题面），不是只换前缀，
+  //    所以它和影调是两件事——画风定"这是什么片种"，影调定"这一套怎么调色"。
+  const [styles, setStyles] = useState<StyleOption[] | null>(null);
+  const [artStyle, setArtStyle] = useState<string | null>(null);
+  const [artEff, setArtEff] = useState<{ label: string; pending: boolean } | null>(null);
+  const [artLoaded, setArtLoaded] = useState(false);
+  const [artBusy, setArtBusy] = useState(false);
+  useEffect(() => {
+    if (tab !== "ai" || artLoaded || !p.projectId) return;
+    api.projectArtStyle(p.projectId).then((r) => {
+      setStyles(r.styles); setArtStyle(r.art_style);
+      setArtEff({ label: r.effective_label, pending: r.pending });
+      setArtLoaded(true);
+    }).catch(() => { setArtLoaded(true); });   // 旧后端无此接口：整块不显示
+  }, [tab, artLoaded, p.projectId]);
+
+  const saveArtStyle = async (key: string) => {
+    if (!p.projectId || key === artStyle) return;
+    const prev = artStyle;
+    setArtStyle(key);                  // 乐观更新
+    setArtBusy(true);
+    try {
+      const r = await api.saveProjectArtStyle(p.projectId, key);
+      setArtStyle(r.art_style);
+      setArtEff({ label: r.effective_label, pending: r.pending });
+      p.onToast(r.pending
+        ? `已记下「${key}」，但该画风还在完善中，实际仍按「${r.effective_label}」生成`
+        : "画风已切换（已生成的图与视频不会重画）");
+    } catch (e) {
+      setArtStyle(prev);               // 存失败回滚，别显示存不下来的值
+      p.onToast(`画风切换失败：${String(e).slice(0, 160)}`);
+    } finally { setArtBusy(false); }
+  };
+
+  // ── 全片影调档案（项目级）。进「AI」页签才拉：绝大多数打开设置的场景
+  // 是改编辑偏好，不该为此多一次请求。
+  const [lookOut, setLookOut] = useState<ProjectLookOut | null>(null);
+  const [look, setLook] = useState<ProjectLook | null>(null);
+  const [lookPhrase, setLookPhrase] = useState("");
+  const [lookLoaded, setLookLoaded] = useState(false);
+  const [lookBusy, setLookBusy] = useState(false);
+  useEffect(() => {
+    if (tab !== "ai" || lookLoaded || !p.projectId) return;
+    api.projectLook(p.projectId).then((r) => {
+      setLookOut(r); setLook(r.look); setLookPhrase(r.phrase); setLookLoaded(true);
+    }).catch(() => {
+      setLookLoaded(true);   // 旧后端无此接口：面板显示"暂不可用"，不弹错
+    });
+  }, [tab, lookLoaded, p.projectId]);
+
+  /** 存一条轴。后端 PUT 是**整体覆盖**，所以必须把其余轴一起回传——
+   *  只传改动的那一条会把别的轴全清掉。 */
+  const saveLook = async (axes: Record<string, string>, extra: string,
+                          prev: ProjectLook | null) => {
+    if (!p.projectId) return;
+    setLookBusy(true);
+    try {
+      const r = await api.saveProjectLook(p.projectId, axes, extra);
+      setLook(r.look);
+      setLookPhrase(r.phrase);
+      p.onToast("影调已保存（已生成的图不会自动重画）");
+    } catch (e) {
+      setLook(prev);         // 存失败就回滚，别让界面显示存不下来的值
+      p.onToast(`影调保存失败：${String(e).slice(0, 160)}`);
+    } finally { setLookBusy(false); }
+  };
+
+  const setLookAxis = async (key: string, value: string) => {
+    const base = look ?? { v: 1, axes: {}, extra: "", status: "draft" };
+    const axes = { ...base.axes };
+    if (value) axes[key] = value; else delete axes[key];
+    setLook({ ...base, axes });   // 乐观更新：下拉不该等一趟网络才回弹
+    await saveLook(axes, base.extra, look);
+  };
+
+  const saveLookExtra = async (v: string) => {
+    const base = look ?? { v: 1, axes: {}, extra: "", status: "draft" };
+    if (v === base.extra) return;
+    await saveLook(base.axes, v, look);
+  };
+
+  /** 按剧本重判影调。与形象档案同理：审美判断，重判几乎必然给出不同结果，
+   *  所以只由用户显式触发，自动流程永不重生成。 */
+  const regenLook = async () => {
+    if (!p.projectId) return;
+    if (!window.confirm(
+      "按剧本重新判定全片影调？\n\n" +
+      "重判出来的调色配方几乎一定与现在不同（这是审美判断，不是事实提取）。" +
+      "已生成的图与视频不会自动重画，只影响此后新生成的。")) return;
+    setLookBusy(true);
+    try {
+      const r = await api.regenerateProjectLook(p.projectId);
+      setLook(r.look);
+      setLookPhrase(r.phrase);
+      p.onToast("影调已重新判定");
+    } catch (e) {
+      p.onToast(`重新判定失败：${String(e).slice(0, 160)}`);
+    } finally { setLookBusy(false); }
+  };
+
   const loadCache = async () => {
     try { setCache(await api.cacheStats()); }
     catch (e) { p.onToast(String(e)); }
@@ -149,6 +257,24 @@ export default function SettingsDialog(p: Props) {
                       {p.theme === "dark" ? "深色" : "浅色"}
                     </button>
                   </Field>
+                  {/* 界面字号：改的是 CSS 乘子 --fs-scale，即刻生效、不需要刷新
+                      （见 lib/fontScale.ts）。烧录字幕的字号不受影响，那是
+                      「文字」面板里另一套参数——要烧进画面的尺寸不该跟界面联动。 */}
+                  <Field label="界面字号">
+                    <span className="fw-set-seg">
+                      {FONT_SCALES.map((s) => (
+                        <button key={s.v} className={fontScale === s.v ? "on" : ""}
+                          title={s.hint}
+                          onClick={() => { setFontScaleState(setFontScale(s.v)); }}>
+                          {s.label}
+                        </button>
+                      ))}
+                    </span>
+                  </Field>
+                  <div className="fw-set-note">
+                    只影响软件界面文字（菜单、剧本、镜头卡等），
+                    <b>不影响成片里的烧录字幕</b>。
+                  </div>
                 </Group>
 
                 <Group title="时间轴">
@@ -219,10 +345,95 @@ export default function SettingsDialog(p: Props) {
                   <Field label="生成模式">
                     <span className="fw-set-ro">{productionModeLabel(p.productionMode)}</span>
                   </Field>
+                  {p.projectId && artLoaded && styles && styles.length > 0 && (
+                    <>
+                      <Field label="画风">
+                        <select value={artStyle ?? ""} disabled={artBusy}
+                          onChange={(e) => void saveArtStyle(e.target.value)}>
+                          {!artStyle && <option value="">（按默认）</option>}
+                          {styles.map((st) => (
+                            <option key={st.key} value={st.key} disabled={!st.enabled}>
+                              {st.label}{st.enabled ? "" : "（待完善）"}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <div className="fw-set-note">
+                        画风决定资产图与视频提示词的<b>整套</b>风格词（风格描述 + 反向约束 +
+                        影调题面）。⚠️ 只影响<b>此后新生成</b>的图与视频，
+                        已生成的不会重画——中途换画风会让新旧素材风格不一致。
+                        {artEff?.pending && (
+                          <> 当前选的这档还在完善中，实际按「{artEff.label}」生成。</>
+                        )}
+                      </div>
+                    </>
+                  )}
                   <div className="fw-set-note">
                     项目级模型与生成模式在新建项目时选择，之后可在项目设置中调整
                   </div>
                 </Group>
+
+                {/* 全片影调：一套调色配方，拼进所有资产图/首帧图/视频提示词。
+                    它是"不同图片色调不统一"的根治手段——此前提示词里对影调
+                    零约束，每张图各自随机决定色温对比饱和，拼起来自然花。 */}
+                {p.projectId && (
+                  <Group title="全片影调">
+                    {!lookLoaded ? <div className="fw-set-note">读取中…</div>
+                      : !lookOut ? <div className="fw-set-note">后端暂不支持影调档案</div>
+                        : (
+                          <>
+                            {lookOut.axes.map((ax) => {
+                              const v = look?.axes[ax.key] ?? "";
+                              // 词表外的值（AI 自己写的，或用户填的）也要能显示，
+                              // 不能被下拉悄悄吞掉——所以并进候选列表
+                              const opts = ax.values.includes(v) || !v
+                                ? ax.values : [v, ...ax.values];
+                              return (
+                                <Field key={ax.key} label={ax.label}>
+                                  <select value={v} disabled={lookBusy}
+                                    onChange={(e) => { void setLookAxis(ax.key, e.target.value); }}>
+                                    <option value="">（不设置）</option>
+                                    {opts.map((o) => (
+                                      <option key={o} value={o}>
+                                        {ax.values.includes(o) ? o : `${o}（自定义）`}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </Field>
+                              );
+                            })}
+                            <Field label="自由补充">
+                              <input key={look?.extra ?? ""} disabled={lookBusy}
+                                maxLength={lookOut.extra_max}
+                                placeholder="下拉放不下的整片质感（如：轻微暗角、局部漏光）"
+                                defaultValue={look?.extra ?? ""}
+                                onBlur={(e) => { void saveLookExtra(e.target.value.trim()); }} />
+                            </Field>
+                            <div className="fw-set-note">
+                              {look
+                                ? <>状态：{look.status === "confirmed" ? "已手动确认（自动流程不再覆盖）" : "AI 按剧本判定"}</>
+                                : <>这个项目还没有影调档案，一键成片时会自动判一份。</>}
+                            </div>
+                            {/* 把"实际拼进提示词的那句话"摊开给用户看：影调是个抽象
+                                概念，不给出这句原文，用户改了下拉也不知道到底改了什么 */}
+                            {lookPhrase && (
+                              <div className="fw-set-note" style={{ opacity: 0.85 }}>
+                                拼进提示词的原文：{lookPhrase}
+                              </div>
+                            )}
+                            <div className="fw-set-note">
+                              ⚠️ 影调只影响<b>此后新生成</b>的图与视频，
+                              不会自动重画已有的图。想让老图跟上，得删掉重画。
+                              日/夜与明暗由剧本决定，不受这里影响。
+                            </div>
+                            <button className="fw-set-adv-head" disabled={lookBusy}
+                              onClick={() => { void regenLook(); }}>
+                              {lookBusy ? "⏳ 处理中…" : "🔄 按剧本重新判定影调"}
+                            </button>
+                          </>
+                        )}
+                  </Group>
+                )}
 
                 <button className="fw-set-adv-head" onClick={() => setAdvOpen((v) => !v)}>
                   {advOpen ? "▾" : "▸"} 高级（Provider / 模型 / API）
@@ -414,6 +625,10 @@ export default function SettingsDialog(p: Props) {
                       Object.keys(localStorage)
                         .filter((k) => k.startsWith("fw_sz_"))
                         .forEach((k) => localStorage.removeItem(k));
+                      // 字号的偏好已被 clearPrefs 清掉，但 <html> 上那行 inline
+                      // style 还挂着——不复位的话界面字号会一直是旧档，
+                      // 用户会以为"重置没生效"。
+                      setFontScaleState(applyFontScale());
                       p.onToast("已重置面板尺寸与偏好，刷新后生效");
                     }}>重置</button>
                   </Field>
