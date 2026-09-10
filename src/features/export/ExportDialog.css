@@ -48,7 +48,7 @@
   border: none;
   background: transparent;
   color: var(--c-muted);
-  font-size: 18px;
+  font-size: calc(18px * var(--fs-scale, 1));
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
@@ -152,6 +152,8 @@
   font-variant-numeric: tabular-nums;
 }
 .fw-ex-warn { color: var(--c-warning); }
+/* 按片段导出的一句操作提示（"一个镜头一个文件"光看按钮看不出来）。 */
+.fw-ex-hint { color: var(--muted); }
 
 /* ---- 按集导出：集号选择 ----
    64 集的项目要能一眼扫完并批量勾选，故用紧凑网格 + 全选/清空，
@@ -214,9 +216,66 @@
 
 .fw-ex-ep-n { font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .fw-ex-ep-meta {
-  font-size: 10px;
+  font-size: calc(10px * var(--fs-scale, 1));
   opacity: 0.75;
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- 按片段导出：镜号选择 ----
+   与集号网格同一套交互，但一部剧动辄 600 镜，平铺成一片小方块没法找，
+   所以按集分组、每组一行横排；组标题本身是「本集全选/取消」按钮。 */
+.fw-ex-clips {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px;
+  margin-top: 4px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-bg);
+}
+
+.fw-ex-clip-grp { padding: 2px 0; }
+.fw-ex-clip-grp + .fw-ex-clip-grp { border-top: 1px solid var(--c-border); }
+
+.fw-ex-clip-ep {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  width: 100%;
+  padding: 2px 2px;
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  text-align: left;
+}
+.fw-ex-clip-ep:hover { color: var(--c-text); }
+.fw-ex-clip-ep-n { opacity: 0.75; font-variant-numeric: tabular-nums; }
+
+.fw-ex-clip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding-bottom: 2px;
+}
+
+.fw-ex-clip {
+  padding: 2px 5px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm, 4px);
+  background: transparent;
+  color: var(--c-muted);
+  font-size: calc(10px * var(--fs-scale, 1));
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.fw-ex-clip:hover { background: var(--c-raised); color: var(--c-text); }
+.fw-ex-clip.on {
+  background: color-mix(in oklch, var(--c-accent) 18%, transparent);
+  color: var(--c-accent);
+  border-color: var(--c-accent-dim);
 }
 
 /* 字段行 */
