@@ -143,7 +143,7 @@ export default function FeishuQRLogin({ onDone }: {
         {phase === "loading" && (
           <div style={{ position: "absolute", inset: 0, display: "flex",
                         alignItems: "center", justifyContent: "center",
-                        fontSize: "13px", color: "#888" }}>
+                        fontSize: "calc(13px * var(--fs-scale, 1))", color: "#888" }}>
             二维码加载中…
           </div>
         )}
@@ -155,14 +155,14 @@ export default function FeishuQRLogin({ onDone }: {
       {phase === "error" && (
         <div style={{ marginTop: "12px", width: "260px", padding: "12px",
                       background: "#fee", border: "1px solid #faa", borderRadius: "8px",
-                      fontSize: "13px", color: "#c33", lineHeight: 1.5 }}>
+                      fontSize: "calc(13px * var(--fs-scale, 1))", color: "#c33", lineHeight: 1.5 }}>
           {err}
         </div>
       )}
 
       {phase === "ready" && (
         <>
-          <p style={{ marginTop: "12px", fontSize: "14px", color: "#9ca3af" }}>
+          <p style={{ marginTop: "12px", fontSize: "calc(14px * var(--fs-scale, 1))", color: "#9ca3af" }}>
             请用飞书扫码
           </p>
           {/* 兜底入口：本站是 HTTP，扫码后的 postMessage 可能被浏览器拦，
@@ -171,7 +171,7 @@ export default function FeishuQRLogin({ onDone }: {
             type="button"
             onClick={() => { if (gotoUrl) window.location.href = gotoUrl; }}
             className="btn ghost"
-            style={{ marginTop: "10px", fontSize: "13px" }}
+            style={{ marginTop: "10px", fontSize: "calc(13px * var(--fs-scale, 1))" }}
           >
             扫码后没反应？点此跳转授权
           </button>
