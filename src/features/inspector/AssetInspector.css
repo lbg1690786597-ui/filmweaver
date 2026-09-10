@@ -4,7 +4,7 @@
   border: none;
   background: transparent;
   color: var(--c-muted);
-  font-size: 16px;
+  font-size: calc(16px * var(--fs-scale, 1));
   line-height: 1;
   cursor: pointer;
   padding: 0 4px;
