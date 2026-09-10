@@ -21,7 +21,10 @@ import { fmtSec } from "../../types/timeline";
 // 各存一份必然漂移（这里原本只列了 3 种画幅，而后端 BASE_ASPECTS 支持 6 种，
 // 选了 3:4 的项目会静默落到 9:16 的档位上）
 import { resListOf } from "../../lib/resolutions";
-import { safeFileName, pad2, episodeFileName } from "../../lib/filename";
+import {
+  safeFileName, pad2, pad3, episodeFileName, clipFileName,
+} from "../../lib/filename";
+import { planClipJobs, planPickedClipJobs } from "./exportRun";
 import { IS_TAURI } from "../../lib/isTauri";
 import "./ExportDialog.css";
 
@@ -33,13 +36,21 @@ import "./ExportDialog.css";
 export { IS_TAURI };
 
 /**
- * 输出范围。前三档决定"取哪些镜头拼成一个文件"；`episode` 是另一种形态——
- * **按集拆分，一集一个文件**。
+ * 输出范围。前两档决定"取哪些镜头拼成**一个**文件"；后两档是另一种形态——
+ * **拆分成多个文件**：`episode` 一集一个，`clip` 一个镜头一个。
  *
- * 为什么必须有它：现网项目动辄 50-64 集（9301 项目 64 集 / 601 镜 / 103 分钟），
+ * 为什么要按集：现网项目动辄 50-64 集（9301 项目 64 集 / 601 镜 / 103 分钟），
  * 整部一次导出就是一个 1.7 小时的单文件，渲染要跑很久，产物也没法按集分发。
+ *
+ * 为什么要按片段（2026-09-09 用户需求）：单个镜头是投流/送审/二次剪辑的最小
+ * 交付单位，此前只能整部或整集导出，用户得自己再切一遍。它**替换掉**了旧的
+ * 「仅选中」档——把选中的几段拼成一个文件几乎没人用。
+ *
+ * 要导哪些片段**在这个对话框里勾**（与按集导出同一套交互），而不是去读时间轴
+ * 上的选中态：时间轴一次只能选一个片段，"选中即范围"实际等于只能一个一个导；
+ * 而且用户点开导出对话框时看不见轨道，无从知道自己"选中"了什么。
  */
-type Range = "all" | "generated" | "selection" | "episode";
+type Range = "all" | "generated" | "episode" | "clip";
 
 /** 按集统计（导出对话框自己从镜头推，不额外依赖 ProjectDetail.episodes） */
 interface EpStat {
@@ -67,7 +78,6 @@ interface Props {
   shots: ShotInfo[];
   baseAspect: string;
   projectTitle: string;
-  selectedShotIds: string[];
   /** 集号 → 集标题（来自 ProjectDetail.episodes）。缺失只影响文件名后缀，不影响导出 */
   episodeTitles?: Record<number, string>;
   /** 已选好的导出目录（null = 还没选过）。由 App 持有并记忆到 localStorage */
@@ -89,14 +99,18 @@ interface Props {
   onLocalExport: (opts: {
     clips: ShotInfo[]; width: number; height: number; fps: number;
     vcodec: string; crf: number; withAudio: boolean;
-    scope: "generated" | "all" | "selection" | "episode";
+    scope: "generated" | "all" | "selection" | "episode" | "clip";
     /** 用户在对话框里填的文件名（不含扩展名）；缺省时由调用方兜底。
-     *  scope=episode 时它是**前缀**，实际文件名再拼上「_第NN集_标题」 */
+     *  scope=episode 时它是**前缀**，实际文件名再拼上「_第NN集_标题」；
+     *  scope=clip 时同为前缀，再拼上「_第NN集_镜NNN」 */
     name?: string;
     /** 已在对话框里选好的目录；缺省时由调用方临时弹选择器兜底 */
     dir?: string;
     /** scope=episode 时要导的集号（升序）；每集单独渲染成一个文件 */
     episodes?: number[];
+    /** scope=clip 时要导的镜头 id（剧情顺序）；每个镜头单独渲染成一个文件。
+     *  由用户在对话框里勾选，不再读时间轴选中态。 */
+    clipIds?: string[];
   }) => void;
   localBusy: boolean;
   localProgress: { pct: number; stage: string; etaSec?: number } | null;
@@ -176,10 +190,55 @@ export default function ExportDialog(p: Props) {
       ? pickedEps.filter((e) => e !== order)
       : [...pickedEps, order].sort((a, b) => a - b));
 
+  /** 可导出的片段（已出片、未停用），剧情顺序。
+   *  与 App 里真正排 job 的地方共用 planClipJobs——各写一份筛选条件，
+   *  对话框显示的"要产出几个文件"和实际落盘的数量迟早对不上。 */
+  const clipCands = useMemo(
+    () => planClipJobs([...p.shots].sort((a, b) => a.order - b.order)),
+    [p.shots]);
+
+  /** 勾选的片段 id。null = 用户还没动过 → 默认全选（与按集导出一致）。
+   *  空数组是合法状态（用户主动清空），此时**不产出任何文件**，
+   *  不能退化成 planClipJobs 的"空 = 全部"。 */
+  const [selClips, setSelClips] = useState<string[] | null>(null);
+  const pickedClipIds = useMemo(() => {
+    const avail = clipCands.map((j) => j.shot.id);
+    if (selClips === null) return avail;
+    const want = new Set(selClips);
+    return avail.filter((id) => want.has(id));   // 按 avail 的顺序 = 剧情顺序
+  }, [selClips, clipCands]);
+  const pickedClipSet = useMemo(() => new Set(pickedClipIds), [pickedClipIds]);
+  const toggleClip = (id: string) => setSelClips(
+    pickedClipSet.has(id)
+      ? pickedClipIds.filter((x) => x !== id)
+      : [...pickedClipIds, id]);
+
+  /** 片段按集分组：一部剧动辄 600 镜，平铺成一片小方块没法找。
+   *  每组给一个「本集全选/取消」的行首按钮。 */
+  const clipGroups = useMemo(() => {
+    const m = new Map<number, typeof clipCands>();
+    for (const j of clipCands) {
+      const arr = m.get(j.episode);
+      if (arr) arr.push(j); else m.set(j.episode, [j]);
+    }
+    return [...m.entries()].sort((a, b) => a[0] - b[0])
+      .map(([order, jobs]) => ({ order, jobs }));
+  }, [clipCands]);
+  const toggleEpClips = (order: number) => {
+    const ids = clipGroups.find((g) => g.order === order)?.jobs
+      .map((j) => j.shot.id) ?? [];
+    const allOn = ids.length > 0 && ids.every((id) => pickedClipSet.has(id));
+    setSelClips(allOn
+      ? pickedClipIds.filter((id) => !ids.includes(id))
+      : [...pickedClipIds, ...ids.filter((id) => !pickedClipSet.has(id))]);
+  };
+
   const clips = useMemo(() => {
     const sorted = [...p.shots].sort((a, b) => a.order - b.order);
-    if (range === "selection") {
-      return sorted.filter((s) => p.selectedShotIds.includes(s.id) && s.video_url);
+    if (range === "clip") {
+      // planPickedClipJobs 而不是 planClipJobs：后者把"空 id 列表"当作"全部"，
+      // 用户主动清空勾选反而会导出 601 个文件。
+      return planPickedClipJobs(sorted, pickedClipIds).map((j) => j.shot);
     }
     if (range === "episode") {
       const want = new Set(pickedEps);
@@ -188,18 +247,21 @@ export default function ExportDialog(p: Props) {
     }
     if (range === "generated") return sorted.filter((s) => s.video_url && !s.disabled);
     return sorted.filter((s) => !s.disabled);
-  }, [p.shots, range, p.selectedShotIds, pickedEps]);
+  }, [p.shots, range, pickedClipIds, pickedEps]);
 
   const totalSec = clips.reduce((a, s) => a + (s.duration_sec ?? 5), 0);
   const missing = clips.filter((s) => !s.video_url).length;
   const busy = p.localBusy;
   const done = p.localResult;
   const byEpisode = range === "episode";
-  const fileCount = byEpisode ? pickedEps.length : 1;
+  const byClip = range === "clip";
+  /** 一次导出会产出几个文件。按片段 = 片段数（一镜一文件） */
+  const multiFile = byEpisode || byClip;
+  const fileCount = byEpisode ? pickedEps.length : byClip ? clips.length : 1;
 
   /** 在对话框里当场选位置。单文件模式会把用户改的文件名一并回填。 */
   const pickPath = async () => {
-    const got = await p.onPickPath(byEpisode ? "dir" : "file",
+    const got = await p.onPickPath(multiFile ? "dir" : "file",
       safeFileName(name.trim() || p.projectTitle || "film", 60) || "film");
     if (got?.name) setName(got.name);
   };
@@ -212,13 +274,17 @@ export default function ExportDialog(p: Props) {
     const base = safeFileName(name.trim() || p.projectTitle || "film", 60) || "film";
     const file = byEpisode
       ? episodeFileName(base, pickedEps[0] ?? 1, p.episodeTitles?.[pickedEps[0] ?? 1])
-      : `${base}.mp4`;
+      : byClip
+        ? clipFileName(base, clips[0]?.order ?? 1, clips[0]?.episode ?? 1)
+        : `${base}.mp4`;
     return `${p.exportDir}${p.exportDir.endsWith(sep) ? "" : sep}${file}`;
-  }, [p.exportDir, p.episodeTitles, p.projectTitle, name, byEpisode, pickedEps]);
+  }, [p.exportDir, p.episodeTitles, p.projectTitle, name, byEpisode, byClip,
+      pickedEps, clips]);
 
   const doExport = () => {
     if (!clips.length || !IS_TAURI) return;
     if (byEpisode && !pickedEps.length) return;
+    if (byClip && !pickedClipIds.length) return;
     const crfNum = { crf20: 20, crf23: 23, crf28: 28 }[bitrate] ?? 20;
     p.onLocalExport({
       clips, width: res.w, height: res.h, fps,
@@ -229,6 +295,7 @@ export default function ExportDialog(p: Props) {
       // 已在对话框里选好位置就直接用；没选过则由 App 在导出前兜底弹一次
       dir: p.exportDir ?? undefined,
       episodes: byEpisode ? pickedEps : undefined,
+      clipIds: byClip ? pickedClipIds : undefined,
     });
   };
 
@@ -290,14 +357,16 @@ export default function ExportDialog(p: Props) {
               <RangeBtn on={range === "all"} onClick={() => setRange("all")}
                 label="全部启用镜头"
                 n={p.shots.filter((s) => !s.disabled).length} />
-              <RangeBtn on={range === "selection"} onClick={() => setRange("selection")}
-                label="仅选中"
-                n={p.selectedShotIds.length}
-                disabled={!p.selectedShotIds.length} />
-              {/* 按集：与前三档不同，它产出**多个**文件（一集一个） */}
+              {/* 按集 / 按片段：与前两档不同，它们产出**多个**文件 */}
               <RangeBtn on={byEpisode} onClick={() => setRange("episode")}
                 label="按集导出" n={epStats.length}
                 disabled={epStats.length < 1} />
+              {/* 按片段替换了旧的「仅选中」：要导哪些片段在下面勾，
+                  与按集导出同一套交互（不读时间轴选中态）。 */}
+              <RangeBtn on={byClip} onClick={() => setRange("clip")}
+                label="按片段导出"
+                n={clipCands.length}
+                disabled={!clipCands.length} />
             </div>
 
             {byEpisode ? (
@@ -332,6 +401,54 @@ export default function ExportDialog(p: Props) {
                     : <span className="fw-ex-warn">未选择任何集</span>}
                 </div>
               </>
+            ) : byClip ? (
+              <>
+                <div className="fw-ex-eps-bar">
+                  <span>选择要导出的片段（每片段一个文件）</span>
+                  <button className="fw-ex-linkbtn"
+                    onClick={() => setSelClips(null)}>全选</button>
+                  <button className="fw-ex-linkbtn"
+                    onClick={() => setSelClips([])}>清空</button>
+                </div>
+                {clipCands.length ? (
+                  <div className="fw-ex-clips">
+                    {clipGroups.map((g) => {
+                      const on = g.jobs.filter((j) => pickedClipSet.has(j.shot.id)).length;
+                      return (
+                        <div className="fw-ex-clip-grp" key={g.order}>
+                          <button className="fw-ex-clip-ep"
+                            title={`第 ${g.order} 集：${on}/${g.jobs.length} 段已勾选`}
+                            onClick={() => toggleEpClips(g.order)}>
+                            第 {g.order} 集
+                            <span className="fw-ex-clip-ep-n">{on}/{g.jobs.length}</span>
+                          </button>
+                          <div className="fw-ex-clip-row">
+                            {g.jobs.map((j) => (
+                              <button key={j.shot.id}
+                                className={`fw-ex-clip ${pickedClipSet.has(j.shot.id) ? "on" : ""}`}
+                                title={`${j.shot.script_ref ?? ""} · ${fmtSec(j.shot.duration_sec ?? 5)}`.trim()}
+                                onClick={() => toggleClip(j.shot.id)}>
+                                镜{pad3(j.order)}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <div className="fw-ex-summary">
+                  {clips.length
+                    ? <>已选 {clips.length} 段 · {fmtSec(totalSec)} ·{" "}
+                      产出 <b>{fileCount}</b> 个文件
+                      <span className="fw-ex-hint">
+                        {" "}· 一个镜头一个文件
+                      </span></>
+                    : clipCands.length
+                      ? <span className="fw-ex-warn">未选择任何片段</span>
+                      : <span className="fw-ex-warn">没有已生成的片段可导出</span>}
+                </div>
+              </>
             ) : (
               <div className="fw-ex-summary">
                 {clips.length} 段 · {fmtSec(totalSec)}
@@ -344,11 +461,13 @@ export default function ExportDialog(p: Props) {
 
           {/* ---- 文件 ---- */}
           <Section title="文件">
-            <Field label={byEpisode ? "文件名前缀" : "文件名"}>
+            <Field label={multiFile ? "文件名前缀" : "文件名"}>
               <input className="fw-ex-input" value={name}
                 onChange={(e) => setName(e.target.value)} spellCheck={false} />
               <span className="fw-ex-ext">
-                {byEpisode ? `_第${pad2(pickedEps[0] ?? 1)}集.mp4` : ".mp4"}
+                {byEpisode ? `_第${pad2(pickedEps[0] ?? 1)}集.mp4`
+                  : byClip ? `_第${pad2(clips[0]?.episode ?? 1)}集_镜${pad3(clips[0]?.order ?? 1)}.mp4`
+                    : ".mp4"}
               </span>
             </Field>
             <Field label="保存位置">
@@ -366,8 +485,8 @@ export default function ExportDialog(p: Props) {
             {p.exportDir && (
               <div className="fw-ex-preview" title={previewPath}>
                 <span className="fw-ex-preview-path">{previewPath}</span>
-                {byEpisode && pickedEps.length > 1
-                  && <span className="fw-ex-preview-more">等 {pickedEps.length} 个文件</span>}
+                {multiFile && fileCount > 1
+                  && <span className="fw-ex-preview-more">等 {fileCount} 个文件</span>}
               </div>
             )}
           </Section>
@@ -448,10 +567,13 @@ export default function ExportDialog(p: Props) {
           ) : (
             <>
               <span className="fw-ex-foot-info">
-                {!clips.length ? "没有可导出的镜头"
+                {!clips.length
+                  ? (byClip && clipCands.length ? "未选择任何片段" : "没有可导出的镜头")
                   : byEpisode
                     ? `将导出 ${pickedEps.length} 集 → ${fileCount} 个文件 · 共 ${fmtSec(totalSec)}`
-                    : `将导出 ${clips.length} 段 · ${fmtSec(totalSec)}`}
+                    : byClip
+                      ? `将导出 ${fileCount} 个片段文件 · 共 ${fmtSec(totalSec)}`
+                      : `将导出 ${clips.length} 段 · ${fmtSec(totalSec)}`}
               </span>
               <button className="fw-ex-btn" onClick={p.onClose}>取消</button>
               <button className="fw-ex-btn primary"
@@ -459,7 +581,9 @@ export default function ExportDialog(p: Props) {
                 title={IS_TAURI ? undefined : "导出需使用桌面版"}
                 onClick={doExport}>
                 <Check size={13} /> {IS_TAURI
-                  ? (byEpisode ? `导出 ${fileCount} 集` : "开始导出") : "需桌面版"}
+                  ? (byEpisode ? `导出 ${fileCount} 集`
+                    : byClip ? `导出 ${fileCount} 个片段` : "开始导出")
+                  : "需桌面版"}
               </button>
             </>
           )}
