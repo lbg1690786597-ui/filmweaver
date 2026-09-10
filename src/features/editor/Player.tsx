@@ -22,6 +22,9 @@ import { styleToCss } from "../../lib/subtitleStyle";
 import type { SubtitleStyleLike } from "../../lib/subtitleStyle";
 import CropZoomOverlay from "./CropZoomOverlay";
 import MosaicOverlay from "./MosaicOverlay";
+import SeamTransition from "./SeamTransition";
+import { transitionDef } from "../effects/transitionCatalog";
+import type { TransitionDef } from "../effects/transitionCatalog";
 import { outputSec } from "../../lib/keyframeEdit";
 import "./CropZoomOverlay.css";
 import "./MosaicOverlay.css";
@@ -40,6 +43,9 @@ export interface PlayerProps {
   onLoadedMetadata: (e: React.SyntheticEvent<HTMLVideoElement>) => void;
   onTimeUpdate: (e: React.SyntheticEvent<HTMLVideoElement>) => void;
   onEnded: () => void;
+  /** 3.9 本镜**之后**那条接缝上的转场（没有则为 null）。
+   *  播完本镜时用它在画面上演一次转场预览 —— 在此之前转场只有导出才看得见。 */
+  seamAtEnd?: { type: string; durationSec: number } | null;
 
   onPlayFromStart: () => void;
   onPlayFromCursor: () => void;
@@ -160,6 +166,64 @@ export default function Player(p: PlayerProps) {
    *  （连播时表现为"一下跳过两个镜头"）。 */
   const endedFired = useRef(false);
 
+  /* ---- 3.9 转场预览 ----
+   *
+   * 一镜播完的那一刻，如果这条接缝上挂着转场，就把 `<video>` 当前显示的
+   * 那一帧抓成位图，交给 SeamTransition 盖在下一镜上面演完退场。
+   *
+   * 必须在 `onEnded` 里抓：播放器的 `<video>` 是 `key={previewUrl}` 挂的，
+   * previewUrl 一变元素就被销毁重建，之后再想拿末帧已经没有源了。
+   */
+  const [seam, setSeam] = useState<
+    { snapshot: string | null; def: TransitionDef; durationSec: number } | null>(null);
+
+  /** 抓当前帧。跨域素材会让 canvas 被污染、toDataURL 抛 SecurityError ——
+   *  抓不到就返回 null，由 SeamTransition 决定还能不能演（闪色能，其余不能）。
+   *  绝不让一次取帧失败把播放流程带崩。 */
+  const grabFrame = (v: HTMLVideoElement): string | null => {
+    try {
+      if (!v.videoWidth || !v.videoHeight) return null;
+      const c = document.createElement("canvas");
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      const ctx = c.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.82);
+    } catch {
+      return null;
+    }
+  };
+
+  /** 播完一镜：先起转场预览，再把"该换下一镜了"交回 App。
+   *  顺序很重要 —— 反过来的话 previewUrl 已经变了，`<video>` 也换了元素，
+   *  抓到的会是新镜头的第一帧（表现为"转场把下一镜叠给了下一镜自己"）。 */
+  const handleEnded = () => {
+    const tr = p.seamAtEnd;
+    if (tr) {
+      const def = transitionDef(tr.type);
+      if (def) {
+        const v = p.videoRef.current;
+        seamJustSet.current = true;
+        setSeam({ snapshot: v ? grabFrame(v) : null,
+                  def, durationSec: tr.durationSec });
+      }
+    }
+    p.onEnded();
+  };
+
+  /* 换镜头时清掉还没演完的转场层 —— 用户中途点了别的镜头，不该还有一层
+   * 旧画面糊在上面最长 5 秒。
+   *
+   * 但**连播换镜正是转场开始的那一刻**：它同样会让 previewShot.id 变化，
+   * 不加区分就会把刚设上的转场层立刻清掉（表现为"转场依然看不到"）。
+   * 故用一个一次性标记跳过这一次。 */
+  const seamJustSet = useRef(false);
+  useEffect(() => {
+    if (seamJustSet.current) { seamJustSet.current = false; return; }
+    setSeam(null);
+  }, [p.previewShot?.id]);
+
   const handleTimeUpdate = (e: React.SyntheticEvent<HTMLVideoElement>) => {
     const v = e.currentTarget;
     setCur(v.currentTime);
@@ -173,7 +237,7 @@ export default function Player(p: PlayerProps) {
     if (w && !endedFired.current && v.currentTime >= w.inSec + w.durSec) {
       endedFired.current = true;
       v.pause();
-      p.onEnded();
+      handleEnded();
     }
   };
   const seekTo = (sec: number) => {
@@ -242,7 +306,7 @@ export default function Player(p: PlayerProps) {
               ref={p.videoRef}
               onLoadedMetadata={handleLoadedMetadata}
               onTimeUpdate={handleTimeUpdate}
-              onEnded={p.onEnded} />
+              onEnded={handleEnded} />
             {/* WebGL 输出层。
                 ⚠️ **必须无条件挂载**，不能写成 `{gpuActive && <canvas …/>}` ——
                 那样会形成自举死锁：canvas 要等 gpuActive，gpuActive 要等
@@ -330,6 +394,22 @@ export default function Player(p: PlayerProps) {
                   tSec={mosaicTSec}
                   onToast={p.onToast}
                 />
+              </div>
+            )}
+
+            {/* 3.9 转场预览层：钉在 <video> 的 offset 盒上（与字幕/取景框/
+                马赛克同一个 vrect），否则画面是 contain 缩放过的、转场会
+                盖到黑边上去。 */}
+            {seam && vrect && (
+              <div style={{ position: "absolute", left: vrect.left, top: vrect.top,
+                            width: vrect.width, height: vrect.height, zIndex: 6,
+                            pointerEvents: "none" }}>
+                <SeamTransition
+                  snapshot={seam.snapshot}
+                  motion={seam.def.motion}
+                  name={seam.def.name}
+                  durationSec={seam.durationSec}
+                  onDone={() => setSeam(null)} />
               </div>
             )}
 
