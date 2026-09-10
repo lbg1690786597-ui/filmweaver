@@ -170,6 +170,50 @@ export function splitIntoCues(text: string, opts: SplitOptions = {}): string[] {
 export interface Silence { start: number; end: number }
 
 /**
+ * 解析 `-af volumedetect` 的 `mean_volume`（dB）。
+ *
+ * 用途见 `adaptiveNoiseDb`：真人剧的镜头视频带**持续的音乐床**，
+ * 绝对阈值判不出停顿，得先知道这一条自己有多响。
+ */
+export function parseMeanVolume(stderr: string): number | null {
+  const m = (stderr || "").match(/mean_volume:\s*(-?[\d.]+)\s*dB/);
+  if (!m) return null;
+  const v = parseFloat(m[1]);
+  return Number.isFinite(v) ? v : null;
+}
+
+/**
+ * 由整条音频的平均音量推出静音判定阈值。
+ *
+ * ## 为什么必须自适应
+ *
+ * 固定 -32dB 是对 **TTS 旁白**调出来的：那是纯合成语音，停顿处是真正的
+ * 数字静音（-60dB 以下），-32dB 一刀切得很干净。
+ *
+ * 真人剧的镜头视频完全不是这个形状 —— seedance 音画一体生成，几乎每一镜都
+ * 铺着**持续的背景音乐/环境声**，实测平均音量 -14dB 左右，最低的谷底也只到
+ * -20dB 上下。也就是说 -32dB 这条线**从头到尾都不会被穿过**。
+ *
+ * 实测 18 个真实真人剧镜头：固定 -32dB 有 **14 个探不到任何停顿**，
+ * 于是每一镜都静默退化成"按字数线性摊到整镜"——正是 `speechRegions`
+ * 想要消除的那种早出晚退。换成 mean-6dB 后只剩 2 个探不到。
+ *
+ * 取 mean-6dB 而不是别的：语音的峰谷差本来就在 6~10dB 量级，减 6 能把
+ * 句读的谷底圈进来，又不至于把说话本身的自然起伏当成停顿。
+ * 上下界 [-45, -18] 是安全网：极静的音轨不至于把整条判成静音（阈值不低于
+ * -45dB 就不会太宽松），极吵的音轨也不至于把说话声本身当静音（不高于 -18dB）。
+ */
+export const ADAPTIVE_DROP_DB = 6;
+export const ADAPTIVE_MIN_DB = -45;
+export const ADAPTIVE_MAX_DB = -18;
+
+export function adaptiveNoiseDb(meanVolumeDb: number | null, fallback = -32): number {
+  if (meanVolumeDb === null || !Number.isFinite(meanVolumeDb)) return fallback;
+  const t = meanVolumeDb - ADAPTIVE_DROP_DB;
+  return Math.round(Math.min(ADAPTIVE_MAX_DB, Math.max(ADAPTIVE_MIN_DB, t)) * 10) / 10;
+}
+
+/**
  * 解析 `-af silencedetect` 打在 stderr 上的结果。
  *
  * ffmpeg 的输出形如：
@@ -345,4 +389,152 @@ export function alignText(
   opts: SplitOptions & { tol?: number } = {},
 ): Cue[] {
   return alignCues(splitIntoCues(text, opts), silences, totalSec, opts);
+}
+
+// ===========================================================================
+//  真人剧：在**有声区间**里分配时间
+// ===========================================================================
+
+/**
+ * 静音区间的补集 —— 也就是"真的有人在说话"的那些区间。
+ *
+ * ## 为什么真人剧非要这一步
+ *
+ * `alignCues` 按字符数在 `[0, totalSec]` 上**线性**插值，这对旁白是对的：
+ * 旁白音频从头到尾都在说话，静音只是句读。但真人剧的一镜是
+ * 「▲动作 3 秒 → 一句台词 → ▲动作 2 秒」，中间大段根本没有人声。
+ * 线性插值会把那句台词摊到整整 10 秒上，字幕在画面上早于台词好几秒就出现、
+ * 说完了还挂着不走 —— 这是真人剧字幕最刺眼的错位，而且**每一镜都错**。
+ *
+ * 正确做法是把时间轴换成"说话时间"：字符数只在有声区间里分配，静音区间
+ * 整段跳过。没有静音数据时（探测失败）有声区间就是整镜，退化成原来的行为。
+ *
+ * `minSec` 过滤掉碎片区间：silencedetect 在语气词/呼吸处会切出 0.05s 的
+ * 小块，它们承不起一条字幕，留着只会让边界抖。
+ */
+export function speechRegions(
+  silences: Silence[], totalSec: number, minSec = 0.12,
+): Silence[] {
+  if (!(totalSec > 0)) return [];
+  // 先按起点排序并合并重叠——silencedetect 正常不会给出重叠区间，
+  // 但窗口裁剪（clipSilences）之后可能出现首尾相接的块。
+  const sil = silences
+    .map((s) => ({ start: Math.max(0, s.start), end: Math.min(totalSec, s.end) }))
+    .filter((s) => s.end > s.start)
+    .sort((a, b) => a.start - b.start);
+  const merged: Silence[] = [];
+  for (const s of sil) {
+    const last = merged[merged.length - 1];
+    if (last && s.start <= last.end + 1e-6) last.end = Math.max(last.end, s.end);
+    else merged.push({ ...s });
+  }
+
+  const out: Silence[] = [];
+  let cur = 0;
+  for (const s of merged) {
+    if (s.start - cur >= minSec) out.push({ start: cur, end: s.start });
+    cur = Math.max(cur, s.end);
+  }
+  if (totalSec - cur >= minSec) out.push({ start: cur, end: totalSec });
+  return out;
+}
+
+/**
+ * 把镜头视频的静音区间裁进"实际用到的那一段"。
+ *
+ * 镜头可能被剪过（`clip_in_sec` / `clip_dur_sec`），而 `probeSilence` 探的是
+ * **整个视频文件**，给出的是文件时间。不裁就会拿片头那段的停顿去排片中那段的
+ * 字幕 —— 剪过的镜头字幕**全错**，且不报错。
+ *
+ * 返回的区间已平移到"以片窗口起点为 0"，与 cue 的镜内偏移同一基准。
+ */
+export function clipSilences(
+  silences: Silence[], winStart: number, winDur: number,
+): Silence[] {
+  const out: Silence[] = [];
+  for (const s of silences) {
+    const a = Math.max(s.start, winStart) - winStart;
+    const b = Math.min(s.end, winStart + winDur) - winStart;
+    if (b > a) out.push({ start: a, end: b });
+  }
+  return out;
+}
+
+/**
+ * 在有声区间内对齐（真人剧用）。
+ *
+ * 与 `alignCues` 的差别只有一处：比例分配走的是**说话时间**而不是墙上时间。
+ * 静音吸附在这里不再需要 —— 区间边界本身就是停顿位置，比"找最近的静音中点"
+ * 更准，也不会出现"两条字幕抢同一个吸附点"。
+ *
+ * 末条终点取**最后一个有声区间的结尾**，不是 `totalSec`：台词说完之后
+ * 往往还有几秒纯动作（`▲他转身走出客厅`），字幕不该挂在那儿等镜头结束。
+ */
+export function alignCuesInSpeech(
+  cues: string[], silences: Silence[], totalSec: number,
+  opts: SplitOptions = {},
+): Cue[] {
+  const { maxSec, minSec } = { ...DEFAULT_SPLIT, ...opts };
+  if (!cues.length || !(totalSec > 0)) return [];
+
+  const regions = speechRegions(silences, totalSec);
+  const speech = regions.reduce((a, r) => a + (r.end - r.start), 0);
+  // 探不到停顿，或几乎整镜都被判成静音（音轨极轻/无人声）：这两种情况下
+  // 有声区间不可信，退回原来的线性分配 + 静音吸附，别把字幕挤成一团。
+  if (!regions.length || speech < totalSec * 0.15) {
+    return alignCues(cues, silences, totalSec, opts);
+  }
+
+  /** 说话时间 → 墙上时间 */
+  const toWall = (t: number): number => {
+    let acc = 0;
+    for (const r of regions) {
+      const len = r.end - r.start;
+      if (t <= acc + len) return r.start + (t - acc);
+      acc += len;
+    }
+    return regions[regions.length - 1].end;
+  };
+
+  const total = cues.reduce((a, c) => a + c.length, 0) || 1;
+  const bounds: number[] = [regions[0].start];
+  let acc = 0;
+  for (const c of cues) {
+    acc += c.length;
+    bounds.push(toWall((acc / total) * speech));
+  }
+  bounds[bounds.length - 1] = regions[regions.length - 1].end;
+
+  // 单调性兜底（同 alignCues）：映射本身是单调的，但零长 cue 会造出相等边界
+  for (let i = 1; i < bounds.length; i++) {
+    if (bounds[i] <= bounds[i - 1]) bounds[i] = bounds[i - 1] + 0.05;
+  }
+  const cap = Math.min(totalSec, regions[regions.length - 1].end);
+  if (bounds[bounds.length - 1] > cap) {
+    const head = bounds[0];
+    const scale = (cap - head) / (bounds[bounds.length - 1] - head);
+    for (let i = 1; i < bounds.length; i++) bounds[i] = head + (bounds[i] - head) * scale;
+  }
+
+  const out: Cue[] = [];
+  for (let i = 0; i < cues.length; i++) {
+    const start = bounds[i];
+    out.push({ text: cues[i], start, end: Math.min(bounds[i + 1], start + maxSec) });
+  }
+  return mergeShort(out, minSec);
+}
+
+/**
+ * 一步到位（真人剧）：**逐行**台词 + 静音区间 + 镜头时长 → 字幕条。
+ *
+ * 收的是 `lines` 而不是拼好的整段文本，因为分条必须**在行边界处强制断开**：
+ * 一镜里相邻两行常常是不同人说的（`楚子烨：…谁碰掉的！` / `叶轻语：我没碰过`），
+ * 拼成一段再按标点切，遇到不以句末标点收尾的行就会把两个人的话并进同一条字幕。
+ */
+export function alignLinesInSpeech(
+  lines: string[], silences: Silence[], totalSec: number,
+  opts: SplitOptions = {},
+): Cue[] {
+  const cues = lines.flatMap((l) => splitIntoCues(l, opts));
+  return alignCuesInSpeech(cues, silences, totalSec, opts);
 }
