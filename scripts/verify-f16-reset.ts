@@ -2,8 +2,12 @@
  * verify-f16-reset.ts — F16 切换项目时的工作区清场验证
  *
  * 验证 resetForProjectSwitch() 将所有跨项目「传染」的状态归零：
- *   - playheadSec / cursorSec / selection / clipboard / tool / undoStack / redoStack
+ *   - playheadSec / cursorSec / selection / clipboard / undoStack / redoStack
  *   - timeline 立即清空（不等 rebuild effect）
+ *
+ * 原先还断言 `tool` 回到 "select"。工具态后来整个从 store 里删掉了
+ * （分割改成 Alt+点击，不再有"当前工具"这种模态），所以那两条断言守的是
+ * 一个已不存在的字段 —— 留着只会让 `npm run typecheck` 一直红。
  *
  * 与 verify-snap 同构：纯计算，不依赖 DOM，tsx 直接运行。
  */
@@ -54,7 +58,6 @@ store.setPlayheadSec(320.5);
 store.setCursorSec(18.0);
 store.selectClip("c1");
 store.copySelection();
-store.setTool("split");
 store.pushUndo({ label: "操作A", undo: async () => {}, redo: async () => {} });
 store.pushUndo({ label: "操作B", undo: async () => {}, redo: async () => {} });
 
@@ -64,7 +67,6 @@ console.log("\n项目 A 状态（切换前）：");
 console.log(`  playheadSec=${before.playheadSec}, cursorSec=${before.cursorSec}`);
 console.log(`  selection.clipIds=${JSON.stringify(before.selection.clipIds)}`);
 console.log(`  clipboard.length=${before.clipboard.length}`);
-console.log(`  tool=${before.tool}`);
 console.log(`  undoStack.length=${before.undoStack.length}`);
 console.log(`  timeline.tracks.length=${before.timeline.tracks.length}`);
 
@@ -77,7 +79,6 @@ check("playheadSec 归零", after.playheadSec, 0);
 check("cursorSec 归 null", after.cursorSec, null);
 check("selection 清空", after.selection, { clipIds: [], assetSegmentIds: [] });
 check("clipboard 清空", after.clipboard.length, 0);
-check("tool 回 select", after.tool, "select");
 check("undoStack 清空", after.undoStack.length, 0);
 check("redoStack 清空", after.redoStack.length, 0);
 check("timeline 立即清空（不等 rebuild effect）",
