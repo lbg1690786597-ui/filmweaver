@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ProjectInfo } from "../api";
+import { api, ProjectInfo, ProductionModeInfo } from "../api";
 import ProjectCards from "../features/projects/ProjectCards";
 import WindowControls from "../features/editor/WindowControls";
 
@@ -82,7 +82,17 @@ const PRODUCTION_MODES = [
     key: "narration", icon: "📖", label: "解说剧",
     hint: "整段剧本作为旁白解说，画面原声不出声",
   },
+  {
+    key: "anime", icon: "🎨", label: "动漫剧",
+    hint: "配音与真人剧一致（音画一体），区别只在画风",
+  },
 ];
+
+/** 画风的展示图标。**只有图标是前端的**——key/label/说明/是否可用全部来自后端
+ *  `style_preset.py`（唯一事实来源）。这里硬编码词表就会与后端漂移。 */
+const STYLE_ICONS: Record<string, string> = {
+  urban: "🏙", period: "🏯", anime_3d: "🧊", thick_paint: "🖌", guoman: "🎋",
+};
 
 /** 各选项的默认值（新建项目时的起手式，不是"预设"——用户可自由改任意一项）。 */
 const DEFAULTS = {
@@ -101,6 +111,10 @@ export default function ProjectList(p: Props) {
   const [title, setTitle] = useState("");
   const [aspect, setAspect] = useState("9:16");        // 默认 9:16
   const [mode, setMode] = useState("drama");           // 配音策略，默认真人剧
+  /** 画风 key（null = 用该模式的默认档）。落库后决定生图/生视频的提示词整套词表 */
+  const [artStyle, setArtStyle] = useState<string | null>(null);
+  /** 生产模式目录（含每个模式下的画风与是否已放开），以后端为准 */
+  const [modeCat, setModeCat] = useState<Record<string, ProductionModeInfo>>({});
   const [videoModel, setVideoModel] = useState(DEFAULTS.video);
   const [imageModel, setImageModel] = useState(DEFAULTS.image);
   const [genMode, setGenMode] = useState(DEFAULTS.gen);
@@ -131,6 +145,12 @@ export default function ProjectList(p: Props) {
       })
       .catch(() => { /* 后端不可达：保留兜底清单 */ });
 
+    // 生产模式 × 画风目录。取不到时 modeCat 为空 → 模式按本地清单全可选、
+    // 画风选择器整块隐藏（离线也能建项目，后端会给默认档）。
+    api.productionModes()
+      .then((r) => setModeCat(r.modes ?? {}))
+      .catch(() => { /* 后端不可达：模式按本地清单，画风交给后端默认 */ });
+
     api.imageProviders()
       .then((r) => {
         if (!r.models?.length) return;
@@ -143,6 +163,16 @@ export default function ProjectList(p: Props) {
       })
       .catch(() => { /* 后端不可达：保留兜底清单 */ });
   }, []);
+
+  // 换生产模式后把画风落到该模式的第一个**已启用**画风。
+  // 不做这一步，用户从真人剧切到动漫剧会带着 urban 走（urban 不在动漫剧的
+  // 值域里），建出来的项目 art_style 与 production_mode 自相矛盾。
+  useEffect(() => {
+    const styles = modeCat[mode]?.styles ?? [];
+    if (!styles.length) { setArtStyle(null); return; }
+    if (artStyle && styles.some((x) => x.key === artStyle && x.enabled)) return;
+    setArtStyle(styles.find((x) => x.enabled)?.key ?? null);
+  }, [mode, modeCat, artStyle]);
 
   // 换模型后若当前模式在新模型上不可用，自动落到第一个可用模式。
   // 不做这一步，用户带着无效模式建项目，直到第一次生成才报错。
@@ -168,7 +198,7 @@ export default function ProjectList(p: Props) {
       const proj = await api.createProject(title.trim(), aspect, mode, {
         video_model: videoModel, image_model: imageModel,
         generation_mode: genMode, resolution,
-      });
+      }, artStyle);
       p.onOpen(proj.id);
     } catch (e) { setErr(String(e)); setBusy(false); }
   };
@@ -205,7 +235,7 @@ export default function ProjectList(p: Props) {
                     title={a.hint} onClick={() => setAspect(a.key)}>
                     <span className="aspect-rect" style={{ width: a.w, height: a.h }} />
                     <span>{a.key}</span>
-                    <span className="muted" style={{ fontSize: 10 }}>{a.hint}</span>
+                    <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{a.hint}</span>
                   </button>
                 ))}
               </div>
@@ -213,18 +243,49 @@ export default function ProjectList(p: Props) {
 
             <label>生产模式（决定台词怎么配音；模型与画质在下方独立选择）
               <div className="mode-cards">
-                {PRODUCTION_MODES.map((m) => (
-                  <button key={m.key} title={m.hint}
-                    className={`mode-card ${mode === m.key ? "on" : ""}`}
-                    onClick={() => setMode(m.key)}>
-                    {m.icon} {m.label}
-                  </button>
-                ))}
+                {PRODUCTION_MODES.map((m) => {
+                  // 后端没回目录时按可选处理（同生成模式那处的口径：宁可让
+                  // 用户试一次，也不要因为探测失败把功能全灰掉）。
+                  const info = modeCat[m.key];
+                  const ok = !Object.keys(modeCat).length || info?.enabled !== false;
+                  return (
+                    <button key={m.key} disabled={!ok}
+                      title={ok ? m.hint : `${m.hint}（画风词表还在完善中）`}
+                      className={`mode-card ${mode === m.key ? "on" : ""}`}
+                      onClick={() => setMode(m.key)}>
+                      {m.icon} {m.label}
+                      {!ok && <span className="badge-todo">待完善</span>}
+                    </button>
+                  );
+                })}
               </div>
-              <span className="muted" style={{ fontSize: 11, display: "block", marginTop: 4 }}>
+              <span className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", display: "block", marginTop: 4 }}>
                 {PRODUCTION_MODES.find((m) => m.key === mode)?.hint}
               </span>
             </label>
+
+            {/* 画风：决定生图/生视频提示词的**整套**词表（正向风格词 + 反向
+                约束 + 影调题面），不是只加一个前缀。所以它必须跟着生产模式走
+                ——动漫剧配「禁止卡通动漫」的都市档反向词会自相矛盾。 */}
+            {!!(modeCat[mode]?.styles?.length) && (
+              <label>画风（决定资产图与视频的整套风格词；创建后可在设置里改，已生成的图不会重画）
+                <div className="opt-grid">
+                  {(modeCat[mode]?.styles ?? []).map((st) => (
+                    <button key={st.key} disabled={!st.enabled}
+                      className={`opt-btn ${artStyle === st.key ? "on" : ""}`}
+                      title={st.enabled ? st.desc : `${st.desc}（词表还在完善中，暂不可选）`}
+                      onClick={() => setArtStyle(st.key)}>
+                      <span className="opt-icon">{STYLE_ICONS[st.key] ?? "🎨"}</span>
+                      <span>
+                        {st.label}
+                        {!st.enabled && <span className="badge-todo">待完善</span>}
+                      </span>
+                      <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{st.desc}</span>
+                    </button>
+                  ))}
+                </div>
+              </label>
+            )}
 
             <label>视频模型
               <div className="opt-grid">
@@ -233,7 +294,7 @@ export default function ProjectList(p: Props) {
                     title={m.hint} onClick={() => setVideoModel(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
-                    <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
+                    <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{m.hint}</span>
                   </button>
                 ))}
               </div>
@@ -246,7 +307,7 @@ export default function ProjectList(p: Props) {
                     title={m.hint} onClick={() => setImageModel(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
-                    <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
+                    <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{m.hint}</span>
                   </button>
                 ))}
               </div>
@@ -259,7 +320,7 @@ export default function ProjectList(p: Props) {
                     title={m.hint} onClick={() => setResolution(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
-                    <span className="muted" style={{ fontSize: 10 }}>{m.hint}</span>
+                    <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{m.hint}</span>
                   </button>
                 ))}
               </div>
@@ -281,7 +342,7 @@ export default function ProjectList(p: Props) {
                     onClick={() => setGenMode(m.key)}>
                     <span className="opt-icon">{m.icon}</span>
                     <span>{m.label}</span>
-                    <span className="muted" style={{ fontSize: 10 }}>
+                    <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>
                       {ok ? m.hint : "该模型不支持"}
                     </span>
                   </button>);
