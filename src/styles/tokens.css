@@ -67,8 +67,17 @@
    * 而正文 fs-base(12px) 只用了 1 处——整体偏小一档。故分级上调。
    * 9px 一律不再使用（badge/meta 也用 fs-xs）。
    */
-  --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px;
-  --fs-md: 14px; --fs-lg: 15px; --fs-xl: 17px;
+  /* --fs-scale = 用户在「设置 · 外观 · 界面字号」里选的乘子（见 lib/fontScale.ts）。
+   * 默认 1；由 JS 写在 <html> 的 style 上覆盖这一行。所有字号都乘它，
+   * 包括各组件 CSS 里的硬编码 px（一律写成 calc(Npx * var(--fs-scale, 1))）——
+   * 只改这 6 个 token 的话，硬编码那 60 多处不跟着变，界面会缩得七零八落。
+   * ⚠️ 唯一不参与缩放的是**烧录字幕**的字号（TextPanel 的 style.fontSize）：
+   * 那是要烧进视频画面的尺寸，跟着界面缩放变等于用户一改界面字号、成片字幕也变了。 */
+  --fs-scale: 1;
+  --fs-xs: calc(11px * var(--fs-scale, 1)); --fs-sm: calc(12px * var(--fs-scale, 1));
+  --fs-base: calc(13px * var(--fs-scale, 1));
+  --fs-md: calc(14px * var(--fs-scale, 1)); --fs-lg: calc(15px * var(--fs-scale, 1));
+  --fs-xl: calc(17px * var(--fs-scale, 1));
 
   /* ---- 过渡 ---- */
   --t-fast: 120ms ease;  --t-std: 200ms ease;
