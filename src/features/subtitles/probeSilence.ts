@@ -32,13 +32,33 @@
 
 import { Command } from "@tauri-apps/plugin-shell";
 import { ensureCached } from "../../lib/mediaCache";
-import { parseSilence, type Silence } from "./align";
+import {
+  parseSilence, parseMeanVolume, adaptiveNoiseDb, type Silence,
+} from "./align";
 
 /** 静音判定阈值。-32dB / 0.18s 是对实际 TTS 产物调出来的：
  *  更严（如 -40dB）会漏掉带底噪的停顿，更松（如 -25dB）会把气口也算进去。
- *  实测 34.66s 旁白得 21 段静音，几乎覆盖每一处句读。 */
+ *  实测 34.66s 旁白得 21 段静音，几乎覆盖每一处句读。
+ *
+ *  ⚠️ 这个值**只对 TTS 旁白成立**。带音乐床的镜头视频要用 `adaptive: true`
+ *  自适应，否则一段停顿都探不到，详见 `align.ts:adaptiveNoiseDb`。 */
 export const NOISE_DB = -32;
 export const MIN_SILENCE_SEC = 0.18;
+
+export interface ProbeOptions {
+  /**
+   * 按这条音频自己的平均音量定阈值，而不是用固定的 -32dB。
+   *
+   * **真人剧必须开**：seedance 的镜头视频音画一体生成，几乎每镜都铺着持续的
+   * 背景音乐，平均音量 -14dB 左右，-32dB 这条线从头到尾不会被穿过。
+   * 实测 18 个真实镜头，固定阈值有 14 个探不到任何停顿（于是字幕全部退化成
+   * 线性摊开），自适应后只剩 2 个。
+   *
+   * 代价是多跑一遍 `volumedetect`（解码同一个文件两次）。旁白路径不需要
+   * 这份开销，也不需要改行为——TTS 的停顿本来就是真静音，故默认关。
+   */
+  adaptive?: boolean;
+}
 
 /**
  * 探测一段音频里的停顿。
@@ -46,7 +66,9 @@ export const MIN_SILENCE_SEC = 0.18;
  * 探测失败**返回空数组而不是抛错**：拿不到停顿只是让对齐退化成纯字符比例
  * 分配（实测误差 < 5%），不该让整个"生成字幕"操作失败。
  */
-export async function probeSilence(url: string, projectId: string): Promise<Silence[]> {
+export async function probeSilence(
+  url: string, projectId: string, opts: ProbeOptions = {},
+): Promise<Silence[]> {
   let path: string;
   try {
     // 6.3：走 6.1 的统一落地实现（URL 哈希命名 / 原子落地 / 单飞），
@@ -56,10 +78,25 @@ export async function probeSilence(url: string, projectId: string): Promise<Sile
     console.warn("[probeSilence] 音频缓存失败，退化为比例分配:", e);
     return [];
   }
+
+  let noiseDb = NOISE_DB;
+  if (opts.adaptive) {
+    try {
+      const vol = await Command.sidecar("binaries/ffmpeg", [
+        "-hide_banner", "-nostats", "-i", path,
+        "-af", "volumedetect", "-f", "null", "-",
+      ]).execute();
+      noiseDb = adaptiveNoiseDb(parseMeanVolume(vol.stderr || ""), NOISE_DB);
+    } catch (e) {
+      // 量不到就用固定值：可能一段都探不到，但那只是退化，不是错误
+      console.warn("[probeSilence] volumedetect 失败，回落固定阈值:", e);
+    }
+  }
+
   try {
     const out = await Command.sidecar("binaries/ffmpeg", [
       "-hide_banner", "-nostats", "-i", path,
-      "-af", `silencedetect=noise=${NOISE_DB}dB:d=${MIN_SILENCE_SEC}`,
+      "-af", `silencedetect=noise=${noiseDb}dB:d=${MIN_SILENCE_SEC}`,
       "-f", "null", "-",
     ]).execute();
     return parseSilence(out.stderr || "");
