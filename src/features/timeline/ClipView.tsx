@@ -34,8 +34,11 @@ const COLLAPSED_PX = 14;
 
 interface Props {
   clip: Clip;
-  /** 分割工具激活：光标变刀形，且不响应拖拽 */
-  splitMode?: boolean;
+  /** Alt+按下：交给时间轴统一处理（点=在此分割，拖=框选）。
+   *  片段自己不判断到底是点还是拖 —— 那要等 mouseup，而框选的整套
+   *  mousemove/mouseup 生命周期在 Timeline 的 `beginMarquee` 里，
+   *  这里再写一份必然与它漂移。 */
+  onAltMouseDown?: (e: React.MouseEvent) => void;
   pxPerSec: number;
   selected: boolean;
   /** 单镜时长上限（秒），仅用于 trim 手柄的提示文案。
@@ -100,7 +103,6 @@ function ClipViewInner(p: Props) {
     p.dragging ? "dragging" : "",
     p.dropTarget ? "drop-target" : "",
     p.trackLocked ? "locked" : "",
-    p.splitMode ? "split-mode" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -108,9 +110,12 @@ function ClipViewInner(p: Props) {
       style={{ left, width }}
       onMouseDown={(e) => {
         if (e.button !== 0) return;
+        // Alt 一律交给时间轴统一处理：点 = 在此切一刀，拖 = 框选。
+        // 这里**不能**再走 onSelect/onBeginMove —— 否则 Alt+拖会变成
+        // "选中并把这个片段拖走"，用户想框选却把素材挪了位置。
+        if (e.altKey && p.onAltMouseDown) { p.onAltMouseDown(e); return; }
         p.onSelect(e);
-        // 分割模式下不启动拖拽——否则点一下既切开又把它拖走了
-        if (!p.trackLocked && !p.splitMode) p.onBeginMove(e);
+        if (!p.trackLocked) p.onBeginMove(e);
       }}
       onContextMenu={p.onContextMenu}
       onDoubleClick={p.onDoubleClick}
