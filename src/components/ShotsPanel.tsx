@@ -157,7 +157,7 @@ const ShotCard = memo(function ShotCard(props: {
         <div className="sp-shot-mid">
           <div className="sp-shot-title">#{s.order}
             <span className="sp-status">{meta.label}</span>
-            {s.duration_sec != null && <span className="muted" style={{ fontSize: 10 }}>{s.duration_sec}s</span>}
+            {s.duration_sec != null && <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{s.duration_sec}s</span>}
             {s.stale && <span className="sp-stale-badge" title={staleHint(s)}>{staleBadge(s)}</span>}
             {s.profile_override && <span title="本镜有策略覆盖">⚙</span>}
             {/* 版本徽标：有历史版本时显示当前版本号，点击展开版本条 */}
@@ -204,7 +204,7 @@ const ShotCard = memo(function ShotCard(props: {
           <div className="sp-detail-label">📄 拆解结果</div>
           <div className="sp-detail-text">{s.script_ref}</div>
           {(s.characters.length > 0 || s.location) && (
-            <div className="muted" style={{ fontSize: 11 }}>
+            <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
               {s.characters.length > 0 && <>角色：{s.characters.join("、")}　</>}
               {s.location && <>场景：{s.location}　</>}
               衔接：{s.link_to_prev === "continuous" ? "承接" : "转场"}
@@ -226,7 +226,7 @@ const ShotCard = memo(function ShotCard(props: {
           </div>
           {s.gen_prompt
             ? <div className="sp-detail-text sp-prompt">{s.gen_prompt}</div>
-            : <div className="muted" style={{ fontSize: 11 }}>尚未生成（点上方「拆解镜头并生成提示词」）</div>}
+            : <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>尚未生成（点上方「拆解镜头并生成提示词」）</div>}
 
           {/* 首帧图（i2va 路线）：先审首帧再出视频——首帧几毛、视频几块，
               场景偏移在首帧就能看出来，不必等视频跑完 */}
@@ -235,7 +235,7 @@ const ShotCard = memo(function ShotCard(props: {
             <img src={api.mediaUrl(ff)} alt={`镜头 #${s.order} 首帧`}
               style={{ maxWidth: "100%", maxHeight: 180, borderRadius: 6, display: "block" }} />
           ) : (
-            <div className="muted" style={{ fontSize: 11 }}>
+            <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
               尚无首帧（「首帧精控」项目生成时自动产出，或点下方按钮先出一张）
             </div>
           )}
@@ -256,7 +256,7 @@ const ShotCard = memo(function ShotCard(props: {
           {/* 失败原因分流：内容审核 ≠ 渠道故障。审核拒绝时重试同一提示词必然同样被拒，
               所以不给「再试一次」，只给「换模型」和「改提示词」两条真能解决问题的路。 */}
           {ffErr && (ffErrReason === "moderation" ? (
-            <div className="err" style={{ fontSize: 11, marginTop: 6 }}>
+            <div className="err" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginTop: 6 }}>
               <div>🚫 {ffErr}</div>
               <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: "wrap" }}>
                 {ALT_IMAGE_MODELS.filter((m) => m.key !== props.imageModel).slice(0, 2).map((m) => (
@@ -267,12 +267,12 @@ const ShotCard = memo(function ShotCard(props: {
                   </button>
                 ))}
               </div>
-              <div className="muted" style={{ fontSize: 10, marginTop: 4 }}>
+              <div className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))", marginTop: 4 }}>
                 若换模型仍被拒，请到「⚙ 高级设置」弱化本镜提示词中的敏感描写后再生成。
               </div>
             </div>
           ) : (
-            <div className="err" style={{ fontSize: 11, marginTop: 6 }}>{ffErr}</div>
+            <div className="err" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginTop: 6 }}>{ffErr}</div>
           ))}
         </div>
       )}
@@ -399,7 +399,7 @@ export default function ShotsPanel(p: Props) {
                   : `出场角色均有可注入的定妆图（${rd.costumes?.stages_total ?? 0} 个造型阶段）`}
               {/* 有通用图兜底的阶段只丢造型区分，不阻断，压成灰字提示 */}
               {scanned && noImgSoft > 0 && (
-                <div className="muted" style={{ fontSize: 11 }}>
+                <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                   ℹ️ {noImgSoft} 个造型阶段无专属图，将回退角色通用定妆图
                 </div>
               )}
@@ -435,7 +435,7 @@ export default function ShotsPanel(p: Props) {
                 {/* 首帧的人物一致性 100% 来自注入的定妆图：没有定妆图就是纯文生图，
                     场景基准帧只保场景不保人。这里必须先告警再让用户点生成。 */}
                 {noAssetChars > 0 && (
-                  <div style={{ fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ fontSize: "calc(11px * var(--fs-scale, 1))", color: "var(--danger)" }}>
                     ⚠️ {noAssetChars} 个角色无定妆图，其首帧为纯文生图，人物一致性无保障
                   </div>
                 )}
@@ -462,7 +462,7 @@ export default function ShotsPanel(p: Props) {
               {/* i2va 批量出片是「整批先出首帧、再逐镜出视频」，没有阶段可见性，
                   前几分钟只有"已出片 0/170"、进度条几乎不动，用户会误认为点了没反应 */}
               {p.jobPhase && (
-                <div style={{ fontSize: 11, color: "var(--primary)", marginTop: 2 }}>
+                <div style={{ fontSize: "calc(11px * var(--fs-scale, 1))", color: "var(--primary)", marginTop: 2 }}>
                   {p.jobPhase.label} {p.jobPhase.done}/{p.jobPhase.total}
                 </div>
               )}
