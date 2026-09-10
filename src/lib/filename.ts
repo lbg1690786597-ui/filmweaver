@@ -31,6 +31,30 @@ export function episodeFileName(base: string, ep: number, title?: string): strin
   return `${base}_第${pad2(ep)}集${t ? `_${t}` : ""}.mp4`;
 }
 
+/** 镜号补零到 3 位：第 7 镜 → "007"。
+ *  项目动辄 600+ 镜（9301 项目 601 镜），补 2 位在文件管理器里排序就乱了
+ *  （`镜10` 会排到 `镜9` 前面）。 */
+export const pad3 = (n: number) => String(n).padStart(3, "0");
+
+/**
+ * 按片段导出的单个文件名（含扩展名）——**一个镜头一个文件**。
+ *
+ * 命名要同时满足两件事：
+ *  · 在文件管理器里按名排序 = 剧情顺序（所以集号与镜号都补零）；
+ *  · 光看文件名就知道是哪一集第几镜（用户拿单个片段去投流/送审时要对得上）。
+ *
+ * `Shot.order` 在整个项目内连续且唯一（后端按集重拆时"order 接在其他集之后"），
+ * 所以不会出现两个片段撞同一个文件名。
+ *
+ * 与 `episodeFileName` 同理：对话框的路径预览和 App 里真正拼盘的地方**必须**
+ * 调这同一个函数，否则预览显示的路径和实际落盘的名字迟早对不上。
+ */
+export function clipFileName(base: string, order: number,
+                             episode?: number | null): string {
+  const ep = episode != null ? `_第${pad2(episode)}集` : "";
+  return `${base}${ep}_镜${pad3(order)}.mp4`;
+}
+
 /**
  * 拆分系统保存对话框返回的完整路径。
  *
