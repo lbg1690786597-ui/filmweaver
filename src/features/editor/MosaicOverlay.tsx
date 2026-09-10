@@ -28,7 +28,8 @@ import type { MosaicParams, MosaicStyle } from "../../render/model";
 import { useCanvasToolStore } from "../../stores/canvasToolStore";
 import { strokeBounds, MIN_REGION_SIZE, regionShapeAt } from "../../lib/regionShape";
 import type { Box } from "../../lib/regionShape";
-import { regionBoxAt } from "../../render/maskGroups";
+import { regionBoxAt, featherPxOf } from "../../render/maskGroups";
+import { featherSigma } from "../../render/maskRaster";
 import { applyRegionBox, kfCount } from "../../lib/keyframeEdit";
 import "./MosaicOverlay.css";
 
@@ -355,6 +356,24 @@ export default function MosaicOverlay({
         const drawStroke = shp.kind === "brush" ? shp.stroke : null;
         const L = px(b.x), T = py(b.y), W = px(b.w), H = py(b.h);
 
+        // ---- 羽化预览（3.9）----
+        //
+        // 在此之前羽化**只在导出时存在**：滑块拉到 40，画面上的遮挡块边缘
+        // 依旧是刀切一样的硬边，用户据此判断"这软件没有羽化功能"。
+        //
+        // 用 SVG mask + feGaussianBlur 而不是 CSS 渐变遮罩：
+        //   · 导出走的就是高斯（σ = featherPx / 2.563），SVG 用**同一个 σ**，
+        //     预览宽度与成片一致；CSS 的 linear-gradient 是线性衰减，对不上。
+        //   · 矩形要四边同时软化，CSS 得靠 mask-composite 叠多层渐变，
+        //     而椭圆/画笔又各是一套；SVG 一套写法覆盖三种形状。
+        //
+        // 软边要向**外**扩散，所以预览层比区域盒四周各大 pad；
+        // 与导出的包围盒外扩同一个理由（见 maskRaster 的 `pad = 3r+1`）。
+        const fpx = featherPxOf(r, { w: vrect.width, h: vrect.height });
+        const sigma = featherSigma(fpx);
+        const pad = fpx > 0 ? Math.ceil(3 * sigma) + 1 : 0;
+        const featherId = `fw-mso-feather-${idx}`;
+
         return (
           <div key={idx}
             className={`fw-mso-region${sel ? " selected" : ""}`}
@@ -369,20 +388,30 @@ export default function MosaicOverlay({
                   ? { backdropFilter: `blur(${r.intensity / 100 * 16}px)`, WebkitBackdropFilter: `blur(${r.intensity / 100 * 16}px)` }
                   : {}),
                 ...(shape === "ellipse" ? { borderRadius: "50%" } : {}),
+                // 羽化：把预览层向外扩 pad，再套高斯 mask，软边才有地方渲染。
+                // 没有羽化时保持 inset:0 原样，老数据零变化。
+                ...(pad > 0
+                  ? { inset: `${-pad}px`, borderRadius: undefined,
+                      mask: `url(#${featherId})`, WebkitMask: `url(#${featherId})` }
+                  : {}),
                 // 画笔：用 SVG mask 把预览裁成笔迹形状。
                 // ⚠️ 必须用 mask 不能用 clipPath —— clipPath 只取路径的**填充**区域，
                 // 完全忽略 stroke/strokeWidth；而笔迹是 fill:none 的描边路径，
                 // 于是裁剪区退化成路径自身轮廓，自我重叠处还会按 fill-rule 被挖空
                 // （用户实测："画笔轨迹重叠处马赛克失效"）。
                 // mask 走的是亮度通道，白色描边即可见，重叠只会更白，不会互相抵消。
-                ...(shape === "brush" && drawStroke
+                //
+                // ⚠️ 顺序：笔迹 mask 必须压在羽化 mask **之后** —— 画笔本身就带
+                // 一个形状 mask，两个 mask 属性只能留一个，故笔迹形状 + 羽化
+                // 合并进同一个 SVG mask（见下方 defs：有羽化时给 path 挂滤镜）。
+                ...(shape === "brush" && drawStroke && pad === 0
                   ? { mask: `url(#fw-mso-mask-${idx})`, WebkitMask: `url(#fw-mso-mask-${idx})` }
                   : {}),
               }}
             />
 
-            {/* 画笔形状的裁剪路径 */}
-            {shape === "brush" && drawStroke && (
+            {/* 画笔形状的裁剪路径（无羽化时用；有羽化时走下面那个合并 mask） */}
+            {shape === "brush" && drawStroke && pad === 0 && (
               <svg className="fw-mso-svg" width={W} height={H}>
                 <defs>
                   <mask id={`fw-mso-mask-${idx}`} maskUnits="userSpaceOnUse"
@@ -398,6 +427,45 @@ export default function MosaicOverlay({
                       strokeLinejoin="round"
                       fill="none"
                     />
+                  </mask>
+                </defs>
+              </svg>
+            )}
+
+            {/* 羽化 mask：形状 + 高斯软边合成一个 mask。
+                三种形状共用一套写法，唯一的差别是里面画什么白色图形。
+                坐标系原点在**扩展后**的左上角（即区域盒左上角减 pad），
+                与被遮罩的预览层 inset:-pad 完全对齐。 */}
+            {pad > 0 && (
+              <svg className="fw-mso-svg"
+                   width={W + 2 * pad} height={H + 2 * pad}>
+                <defs>
+                  <filter id={`${featherId}-blur`}
+                          x="-50%" y="-50%" width="200%" height="200%">
+                    {/* 与导出同一个 σ（featherSigma），预览宽度才与成片一致 */}
+                    <feGaussianBlur stdDeviation={sigma.toFixed(2)} />
+                  </filter>
+                  <mask id={featherId} maskUnits="userSpaceOnUse"
+                        x={0} y={0} width={W + 2 * pad} height={H + 2 * pad}>
+                    <g filter={`url(#${featherId}-blur)`}>
+                      {shape === "ellipse" ? (
+                        <ellipse cx={pad + W / 2} cy={pad + H / 2}
+                                 rx={W / 2} ry={H / 2} fill="#fff" />
+                      ) : shape === "brush" && drawStroke ? (
+                        <path
+                          d={drawStroke.map((p, i) =>
+                            `${i ? "L" : "M"}${(px(p.x) - L + pad).toFixed(1)},`
+                            + `${(py(p.y) - T + pad).toFixed(1)}`).join("")}
+                          stroke="#fff"
+                          strokeWidth={px(r.brushSize ?? 0.1)}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          fill="none"
+                        />
+                      ) : (
+                        <rect x={pad} y={pad} width={W} height={H} fill="#fff" />
+                      )}
+                    </g>
                   </mask>
                 </defs>
               </svg>
