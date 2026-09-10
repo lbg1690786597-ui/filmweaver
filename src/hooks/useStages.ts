@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, LocationInfo, StageInfo } from "../api";
+import { api, DeletedStageInfo, LocationInfo, StageInfo } from "../api";
 import type { Say } from "./useToast";
 import { useLoadState } from "../stores/loadStateStore";
 
 /** G4 状态分层 · 资产层：R1 人物阶段 + P1-3 场景（时间轴轨道数据）。 */
 export function useStages(projectId: string | null, say: Say) {
   const [stages, setStages] = useState<StageInfo[]>([]);
+  // 被删除的造型阶段（墓碑）：只给资产页的「已删除」组做恢复入口，**不进轨道**。
+  // 与 stages 分成两个 state 而不是靠 deleted_at 过滤，是因为轨道相关的
+  // 计算遍布 Timeline/资产轨/首帧，任一处忘了过滤就会显示一段"删掉却还在注入"的假象。
+  const [deletedStages, setDeletedStages] = useState<DeletedStageInfo[]>([]);
   const [locations, setLocations] = useState<LocationInfo[]>([]);  // P1-3 场景轨
   const [drafting, setDrafting] = useState(false);
 
@@ -15,6 +19,7 @@ export function useStages(projectId: string | null, say: Say) {
     try {
       const r = await api.listStages(id);
       setStages(r.stages);
+      setDeletedStages(r.deleted_stages ?? []);   // 旧后端无此字段时回退空
       setLocations(r.locations ?? []);  // 旧后端无此字段时回退空
       useLoadState.getState().noteLoaded("stages");
     } catch (e) {
@@ -56,7 +61,10 @@ export function useStages(projectId: string | null, say: Say) {
   };
 
   /** 切项目：清空轨道数据 */
-  const clearStages = useCallback(() => { setStages([]); setLocations([]); }, []);
+  const clearStages = useCallback(() => {
+    setStages([]); setDeletedStages([]); setLocations([]);
+  }, []);
 
-  return { stages, locations, drafting, refreshStages, doStagesDraft, clearStages };
+  return { stages, deletedStages, locations, drafting,
+           refreshStages, doStagesDraft, clearStages };
 }
