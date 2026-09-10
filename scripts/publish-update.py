@@ -40,6 +40,7 @@ from pathlib import Path
 # 各写一份, 统一从下面这个模块取 —— 两个脚本、两个仓从此不可能各自漂移。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from appcast_channel import channel_for, guard  # noqa: E402
+import pkg_verify  # noqa: E402
 
 # CI 产物的实际大小约 30 MB；低于此值说明没下完
 MIN_SIZE = 25 * 1024 * 1024
@@ -86,6 +87,17 @@ def main() -> None:
     signature = sig.read_text().strip()
     if not signature.startswith("dW50cnVzdGVk"):  # "untrusted comment:" 的 base64
         die("签名内容格式不对，可能下载到了错误页")
+
+    # ---- 真正的完整性判据：用客户端那把公钥验签 ----
+    # 上面几道都是启发式，挡不住"下到一半"：2026-09-10 拉 0.8.8 断在 36.4 MB，
+    # 大小过了 25 MB 下限、PE 头也在、签名文件另外下的还好好的——三道全放行。
+    # 签名覆盖整个文件，少一个字节就通不过，这才是"包是完整的"的证明。
+    try:
+        key_id = pkg_verify.verify(exe, sig, Path(__file__).resolve().parents[1]
+                                   / "src-tauri" / "tauri.conf.json")
+    except pkg_verify.SigError as e:
+        die(f"签名校验失败：{e}")
+    print(f"  签名校验通过（key {key_id}）")
 
     url = f"{base_url}/{exe.name}"
     payload = {
