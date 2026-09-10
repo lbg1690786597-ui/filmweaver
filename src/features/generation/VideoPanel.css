@@ -25,7 +25,7 @@
 }
 
 .fw-vp-pct-num {
-  font-size: 28px;
+  font-size: calc(28px * var(--fs-scale, 1));
   font-weight: 700;
   color: var(--c-text-hi);
   font-variant-numeric: tabular-nums;
