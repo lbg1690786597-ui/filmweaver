@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, SceneGroup, ShotInfo, StageInfo } from "../api";
+import { api, CharacterProfile, ProfileAxis, SceneGroup, SceneViewsOut, ShotInfo, StageInfo } from "../api";
 import { parseEpisodeInput } from "../lib/formState";
 import AutoTextarea from "./AutoTextarea";
 
@@ -112,6 +112,206 @@ export default function AssetDialog(p: Props) {
   const [uploading, setUploading] = useState(false);
   const [curVoice, setCurVoice] = useState(t.voiceUrl ?? null);
 
+  // ── 形象档案（角色专属）：这个角色**全剧统一**的长相。
+  // 与上面的「造型描述」分工：档案是脸，造型是衣服。衣服每套一份，脸只有一份。
+  // 词表由后端给（后端是唯一事实来源），前端只负责渲染下拉与落库。
+  const [profAxes, setProfAxes] = useState<ProfileAxis[]>([]);
+  const [prof, setProf] = useState<CharacterProfile | null>(null);
+  const [profOpen, setProfOpen] = useState(false);
+  const [profBusy, setProfBusy] = useState(false);
+  const [profLoaded, setProfLoaded] = useState(false);
+  // 展开时才拉：绝大多数打开弹窗的场景是看图/改造型，不该为此多一次请求
+  useEffect(() => {
+    if (!profOpen || profLoaded || t.kind !== "character" || !t.assetId) return;
+    api.assetProfile(t.assetId).then((r) => {
+      setProfAxes(r.axes); setProf(r.profile); setProfLoaded(true);
+    }).catch(() => {
+      setProfLoaded(true);   // 旧后端无此接口：面板显示"暂不可用"，不弹错
+    });
+  }, [profOpen, profLoaded, t.kind, t.assetId]);
+
+  /** 改一条轴（本地先改，失焦/选完即存——档案字段多，逐条存比"保存"按钮省事） */
+  const setAxis = async (key: string, value: string) => {
+    if (!t.assetId) return;
+    const base = prof ?? { v: 1, genre: "generic", axes: {}, extra: "", status: "draft" };
+    const axes = { ...base.axes };
+    if (value) axes[key] = value; else delete axes[key];
+    const next = { ...base, axes };
+    setProf(next);                       // 乐观更新：下拉不该等一趟网络才回弹
+    setProfBusy(true);
+    try {
+      const r = await api.saveAssetProfile(t.assetId, axes, next.extra, next.genre);
+      if (r.profile) setProf(r.profile);
+      p.onToast("档案已保存（已生成的定妆图不会自动重画）");
+    } catch (e) {
+      setProf(base);                     // 存失败就回滚，别让界面显示存不下来的值
+      p.onToast(`档案保存失败：${String(e)}`);
+    } finally { setProfBusy(false); }
+  };
+
+  const saveExtra = async (v: string) => {
+    if (!t.assetId) return;
+    const base = prof ?? { v: 1, genre: "generic", axes: {}, extra: "", status: "draft" };
+    if (v === base.extra) return;
+    setProfBusy(true);
+    try {
+      const r = await api.saveAssetProfile(t.assetId, base.axes, v, base.genre);
+      if (r.profile) setProf(r.profile);
+    } catch (e) {
+      p.onToast(`档案保存失败：${String(e)}`);
+    } finally { setProfBusy(false); }
+  };
+
+  /** 按剧本重新识别。重判几乎必然换一张脸，所以先确认。 */
+  const regenProfile = async () => {
+    if (!t.assetId) return;
+    if (!window.confirm(
+      `按剧本重新识别「${t.name}」的形象档案？\n\n` +
+      `重新识别出来的五官几乎一定与现在不同（这是审美判断，不是事实提取），` +
+      `等于换一张脸。已生成的定妆图不会自动重画，` +
+      `要让新档案生效需删掉定妆图再补齐资产。`)) return;
+    setProfBusy(true);
+    try {
+      const r = await api.regenerateAssetProfile(t.assetId);
+      setProf(r.profile);
+      p.onToast("形象档案已重新识别");
+    } catch (e) {
+      p.onToast(`重新识别失败：${String(e)}`);
+    } finally { setProfBusy(false); }
+  };
+
+  // ── 场景多视角参考图（场景专属）：4 方位视角 + 4 景别，共 8 张。
+  // 对齐用户 2026-09-09 给的美术设定板参考图。每张都是**独立的干净单幅图**，
+  // 因为它们要当参考图注入镜头——拼版图会让模型把格子线和标注抄进画面。
+  // 「设定板」是服务端 PIL 拼的派生产物，只给人看（后端 scene_board 模块头有详述）。
+  const [svOut, setSvOut] = useState<SceneViewsOut | null>(null);
+  const [svOpen, setSvOpen] = useState(true);   // 场景资产的主界面，默认展开
+  const [svBusy, setSvBusy] = useState(false);
+  const [svJob, setSvJob] = useState<string | null>(null);
+  const [svLoaded, setSvLoaded] = useState(false);
+  const [qcBusy, setQcBusy] = useState(false);
+  const isScene = t.kind === "location" && !!t.assetId;
+
+  const loadViews = async (aid: string) => {
+    try {
+      const r = await api.sceneViews(aid);
+      setSvOut(r);
+      setSvLoaded(true);
+      // 后端认领了老项目那张图当主视角 → 资产缩略图跟着变，得刷一下外面
+      if (r.primary_synced) p.onChanged();
+    } catch {
+      setSvLoaded(true);   // 旧后端无此接口：面板显示"暂不可用"，不弹错
+    }
+  };
+  useEffect(() => {
+    if (!svOpen || svLoaded || !isScene || !t.assetId) return;
+    void loadViews(t.assetId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svOpen, svLoaded, isScene, t.assetId]);
+
+  // 生图 job 轮询。8 张图串行出基准 + 并发其余，耗时以分钟计，
+  // 所以每 3s 拉一次状态，跑完再整体重拉视角列表（拿到新 image_url 与进度）。
+  useEffect(() => {
+    if (!svJob || !t.assetId) return;
+    let alive = true;
+    let timer: number | undefined;
+    const aid = t.assetId;
+    const tick = async () => {
+      try {
+        const j = await api.jobStatus(svJob);
+        if (!alive) return;
+        if (j.status === "pending" || j.status === "running") {
+          timer = window.setTimeout(tick, 3000);
+          return;
+        }
+        setSvJob(null);
+        await loadViews(aid);
+        p.onChanged();
+        p.onToast(j.status === "done"
+          ? "✅ 多视角参考图已生成"
+          : `视角生图失败：${String(j.error ?? "").slice(0, 160)}`);
+      } catch {
+        if (alive) timer = window.setTimeout(tick, 5000);   // 网络抖动不放弃轮询
+      }
+    };
+    void tick();
+    return () => { alive = false; if (timer) window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [svJob, t.assetId]);
+
+  /** 生成视角图。`keys` 空 = 只补缺图的；给了 key = 点名重画（不去重）。 */
+  const genViews = async (keys?: string[]) => {
+    if (!t.assetId) return;
+    setSvBusy(true);
+    try {
+      const j = await api.generateSceneViews(t.assetId, keys, { modelId: model });
+      setSvJob(j.id);
+      p.onToast(keys?.length
+        ? `✨ 正在重画 ${keys.length} 张视角图`
+        : "✨ 正在补齐缺失的视角图，可以关掉弹窗");
+    } catch (e) {
+      // 409 = 项目级批量补资产正在跑，它会一并补齐；把 job 接过来继续轮询，
+      // 比让用户看一句报错然后自己猜"到底在不在跑"有用
+      const d = (e as { detail?: { reason?: string; job_id?: string; message?: string } }).detail;
+      if (d?.reason === "batch_running" && d.job_id) {
+        setSvJob(d.job_id);
+        p.onToast(d.message ?? "该项目的资产生图任务正在跑，缺失视角会由它一并补齐");
+      } else {
+        p.onToast(`提交失败：${(d?.message ?? String(e)).slice(0, 160)}`);
+      }
+    } finally { setSvBusy(false); }
+  };
+
+  /** 清掉某张视角图（磁盘文件保留——它可能已注入进已出的片子）。 */
+  const clearView = async (key: string, label: string) => {
+    if (!t.assetId) return;
+    if (!window.confirm(`清掉「${label}」这张参考图？\n\n` +
+      `只清引用，图片文件保留（它可能已经用在已生成的镜头里）。` +
+      `清掉后点「补齐缺失」会重画这一张。`)) return;
+    setSvBusy(true);
+    try {
+      await api.clearSceneView(t.assetId, key);
+      await loadViews(t.assetId);
+      p.onChanged();
+    } catch (e) { p.onToast(`清除失败：${String(e).slice(0, 160)}`); }
+    finally { setSvBusy(false); }
+  };
+
+  const makeBoard = async () => {
+    if (!t.assetId) return;
+    setSvBusy(true);
+    try {
+      const r = await api.buildSceneBoard(t.assetId);
+      setSvOut((o) => (o ? { ...o, board_url: r.board_url } : o));
+      p.onToast("✅ 设定板已生成（缺图的格子标「未生成」）");
+    } catch (e) { p.onToast(`拼板失败：${String(e).slice(0, 160)}`); }
+    finally { setSvBusy(false); }
+  };
+
+  /** 视觉体检：核验「场景图里没有人 / 人物图里没有场景」是否真做到了。
+   *  判不合格只标记不删图——判定本身会出错，重画哪张由用户决定。 */
+  const runQc = async () => {
+    if (!t.assetId) return;
+    setQcBusy(true);
+    try {
+      const r = await api.qcAsset(t.assetId, {
+        // 2026-09-09 之前的老定妆图是单视图无标注，对它们报这两项是代际差异
+        // 而非缺陷；场景图无此问题（8 张全是新口径出的）。
+        expectThreeView: t.kind === "character" ? window.confirm(
+          "按「三视图 + 左上角姓名标注」的新口径体检？\n\n" +
+          "确定 = 新口径（2026-09-09 之后生成的图）\n" +
+          "取消 = 老口径（单视图、无标注，不报这两项）") : true,
+      });
+      if (isScene && t.assetId) await loadViews(t.assetId);
+      p.onToast(r.failed === 0
+        ? `✅ 体检通过：${r.checked} 张图全部合格`
+        : `⚠️ ${r.checked} 张里 ${r.failed} 张有问题：` +
+          r.items.filter((i) => i.result && !i.result.ok)
+            .map((i) => `${i.label}—${i.summary}`).join("；").slice(0, 300));
+    } catch (e) { p.onToast(`体检失败：${String(e).slice(0, 160)}`); }
+    finally { setQcBusy(false); }
+  };
+
   // R1 资产改名。后端 rename_asset_everywhere 会在同一事务里把镜头、造型阶段、
   // 别名表里的引用一并改掉，所以改完不会断链（这正是它与只改一行的区别）。
   // 改完把后端报的影响面告诉用户——"动了 208 个镜头"这种信息，用户有权知道。
@@ -182,8 +382,12 @@ export default function AssetDialog(p: Props) {
       const ov = sh.ref_overrides ?? {};
       let present: boolean;
       if (t.kind === "location") {
+        // 场景资产名是**归一名**，所以这里必须拿 location_canonical 去比。
+        // 用原名 sh.location 会全部落空（「夜 内 楚家公馆-客厅」≠「楚家公馆-客厅」），
+        // 表现就是场景资产的"出场集数"永远显示为空。
         const rm = ov.remove_loc ?? [];
-        present = [...(sh.location ? [sh.location] : []), ...(ov.add_loc ?? [])]
+        const l1 = sh.location_canonical ?? sh.location;
+        present = [...(l1 ? [l1] : []), ...(ov.add_loc ?? [])]
           .filter((c) => !rm.includes(c)).includes(t.name);
       } else {
         const rm = ov.remove ?? [];
@@ -316,7 +520,9 @@ export default function AssetDialog(p: Props) {
         {/* 当前图 + 用途 */}
         <div className="adlg-top">
           {curImg
-            ? <img className="adlg-img" src={api.mediaUrl(curImg)} alt={t.name} />
+            ? <img className="adlg-img zoomable" src={api.mediaUrl(curImg)} alt={t.name}
+                title="点击看大图"
+                onClick={() => setZoom(curImg)} />
             : <div className="adlg-img ph">尚无图</div>}
           <div className="adlg-meta">
             <div><b>类型</b>{kindLabel}{t.stage ? (curImg ? " · ✅当前使用中" : " · 待生成") : ""}</div>
@@ -413,7 +619,7 @@ export default function AssetDialog(p: Props) {
                   }
                   void saveStage({ scene_bound: e.target.checked });
                 }} />
-              <span style={{ fontSize: 12 }}>
+              <span style={{ fontSize: "calc(12px * var(--fs-scale, 1))" }}>
                 同场景沿用同一张图（跨集有效）
                 <span className="muted">
                   ：人物再次进入这个场景、剧本又没另写衣着时，直接复用本造型这张图，
@@ -425,9 +631,207 @@ export default function AssetDialog(p: Props) {
           </div>
         )}
         {t.stage?.source_stage_id && (
-          <div className="muted" style={{ fontSize: 11, marginTop: -4 }}>
+          <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginTop: -4 }}>
             ↩ 本段与同角色另一造型是<b>同一件衣服</b>，共用那张图（自己不出图、不花钱）。
             如需让它单独出一张，上传图片或生成一张即可自动解除共用
+          </div>
+        )}
+
+        {/* 形象档案（仅角色）：这个角色全剧统一的长相。
+            折叠默认收起——它有 15 个字段，铺开会把"看图 / 改造型 / 生成"这三个
+            高频动作挤出视野。 */}
+        {t.kind === "character" && t.assetId && (
+          <div className="adlg-prof">
+            <button className="btn ghost adlg-mini" onClick={() => setProfOpen((v) => !v)}
+              title="该角色全剧统一的五官/骨相/气质，定妆图按它生成">
+              {profOpen ? "▾" : "▸"} 🧬 形象档案
+              {prof && <span className="muted">
+                {" "}· {prof.status === "confirmed" ? "已手动确认" : "AI 判定"}
+              </span>}
+              {!prof && profLoaded && <span className="muted"> · 尚未生成</span>}
+            </button>
+            {profOpen && (
+              <div style={{ marginTop: 6 }}>
+                <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginBottom: 6 }}>
+                  这是<b>脸</b>，上面的造型描述是<b>衣服</b>：衣服每套一份，脸全剧只有一份。
+                  定妆图生成时会把这里的每一项写进提示词。
+                  ⚠️ 改档案 = 换脸，但<b>已生成的定妆图不会自动重画</b>——
+                  要让新档案生效，删掉该角色的定妆图再点「补齐缺失资产」。
+                </div>
+                {!profLoaded ? <div className="muted">加载中…</div>
+                  : profAxes.length === 0 ? <div className="muted">后端暂不支持形象档案</div>
+                    : (
+                      <>
+                        <div className="adlg-prof-grid">
+                          {profAxes.map((ax) => {
+                            const v = prof?.axes[ax.key] ?? "";
+                            // 词表外的值（AI 自己写的特征，或用户填的）也要能显示、
+                            // 不能被下拉悄悄吞掉——所以并进候选列表
+                            const opts = ax.values.includes(v) || !v
+                              ? ax.values : [v, ...ax.values];
+                            return (
+                              <label key={ax.key}>{ax.label}
+                                <select value={v} disabled={profBusy}
+                                  onChange={(e) => { void setAxis(ax.key, e.target.value); }}>
+                                  <option value="">
+                                    {ax.optional ? "（不设置）" : "（未判定）"}
+                                  </option>
+                                  {opts.map((o) => (
+                                    <option key={o} value={o}>
+                                      {ax.values.includes(o) ? o : `${o}（自定义）`}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <label style={{ marginTop: 6 }}>自由补充
+                          <span className="muted" style={{ fontWeight: 400 }}>
+                            {" "}· 上面的下拉放不下的独有特征（疤痕/义眼/胎记/标志性配饰）
+                          </span>
+                          {/* key 绑定值：「重新识别」换掉 extra 后，
+                              非受控 textarea 必须重挂载才显示新内容 */}
+                          <AutoTextarea key={prof?.extra ?? ""}
+                            className="drawer-ta" minHeight={40}
+                            defaultValue={prof?.extra ?? ""}
+                            onBlur={(e) => { void saveExtra(e.target.value.trim()); }} />
+                        </label>
+                        <div className="row" style={{ gap: 6, marginTop: 4 }}>
+                          <button className="btn ghost adlg-mini" disabled={profBusy}
+                            onClick={() => { void regenProfile(); }}>
+                            {profBusy ? "⏳" : "🔄 按剧本重新识别"}
+                          </button>
+                          {/* 体检：核验"人物图里没有场景"这条要求真的做到了没有。
+                              角色图的结论不落库（assets 上没有承载它的列），
+                              所以只在这里以 toast 报一次。 */}
+                          <button className="btn ghost adlg-mini" disabled={qcBusy}
+                            title="核验定妆图：是不是三视图、背景是否纯白、有没有混进场景元素"
+                            onClick={() => { void runQc(); }}>
+                            {qcBusy ? "⏳ 体检中…" : "🔍 视觉体检"}
+                          </button>
+                        </div>
+                      </>
+                    )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 场景多视角参考图（仅场景）：4 方位 + 4 景别，共 8 张。
+            这 8 张是**分别独立的干净单幅图**，因为它们要当参考图注入镜头；
+            「设定板」才是拼版的那张，只给人看、从不进模型（见 api.buildSceneBoard）。 */}
+        {isScene && (
+          <div className="adlg-prof">
+            <button className="btn ghost adlg-mini" onClick={() => setSvOpen((v) => !v)}
+              title="该场景的多视角/多景别参考图，镜头按景别自动挑用哪一张">
+              {svOpen ? "▾" : "▸"} 🏞 多视角参考图
+              {svOut && <span className="muted">
+                {" "}· {svOut.progress.done}/{svOut.progress.total} 张
+              </span>}
+            </button>
+            {svOpen && (
+              <div style={{ marginTop: 6 }}>
+                <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginBottom: 6 }}>
+                  4 个方位视角 + 4 档景别。出片时按镜头的景别关键词自动挑用哪一张
+                  （认不出景别就用<b>主视角</b>）。每张图左上角带场景名标注，
+                  这行字<b>不会</b>被抄进镜头画面（已实测）。
+                </div>
+                {!svLoaded ? <div className="muted">加载中…</div>
+                  : !svOut ? <div className="muted">后端暂不支持多视角参考图</div>
+                    : (
+                      <>
+                        {["angle", "framing"].map((kind) => {
+                          const rows = svOut.views.filter((v) => v.kind === kind)
+                            .sort((a, b) => a.sort - b.sort);
+                          if (!rows.length) return null;
+                          return (
+                            <div key={kind}>
+                              <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", margin: "4px 0" }}>
+                                {kind === "angle" ? "多视角参考" : "景别参考 / 材质参考"}
+                              </div>
+                              <div className="adlg-sv-grid">
+                                {rows.map((v) => {
+                                  const bad = v.qc && !v.qc.ok;
+                                  return (
+                                    <div key={v.key} className="adlg-sv-cell">
+                                      {v.image_url
+                                        ? <img className="adlg-sv-img zoomable"
+                                            src={api.mediaUrl(v.image_url)} alt={v.label}
+                                            title="点击看大图"
+                                            onClick={() => setZoom(v.image_url)} />
+                                        : <div className="adlg-sv-img ph">未生成</div>}
+                                      <div className="adlg-sv-label">
+                                        {v.primary && <span title="主视角：也是这个场景的资产图，注入镜头的兜底图就是它">⭐ </span>}
+                                        {v.label}
+                                      </div>
+                                      {v.qc && (
+                                        <div className={bad ? "adlg-sv-qc bad" : "adlg-sv-qc ok"}
+                                          title={v.qc.note}>
+                                          {bad ? "⚠️ 不合格" : "✅ 已体检"}
+                                        </div>
+                                      )}
+                                      <div className="row" style={{ gap: 4 }}>
+                                        <button className="btn ghost adlg-mini" disabled={svBusy || !!svJob}
+                                          title="无论有没有图都重画这一张"
+                                          onClick={() => { void genViews([v.key]); }}>
+                                          {v.image_url ? "🔄" : "✨"}
+                                        </button>
+                                        {v.image_url && (
+                                          <button className="btn ghost adlg-mini" disabled={svBusy || !!svJob}
+                                            title="清掉这张图的引用（磁盘文件保留）"
+                                            onClick={() => { void clearView(v.key, v.label); }}>
+                                            🗑
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                          <button className="btn adlg-mini" disabled={svBusy || !!svJob}
+                            title="只画还没有图的视角（已有的不动，不重复花钱）"
+                            onClick={() => { void genViews(); }}>
+                            {svJob ? "⏳ 生成中…" : "✨ 补齐缺失"}
+                          </button>
+                          <button className="btn ghost adlg-mini" disabled={svBusy || !!svJob}
+                            title="8 张全部重画（会花 8 张图的钱）"
+                            onClick={() => {
+                              if (!window.confirm(
+                                `重画「${t.name}」全部 ${svOut.progress.total} 张视角图？\n\n` +
+                                `这会花 ${svOut.progress.total} 张图的生成费用。` +
+                                `已有的图会被覆盖，已经用在镜头里的旧图不受影响。`)) return;
+                              void genViews(svOut.defs.map((d) => d.key));
+                            }}>
+                            🔄 全部重画
+                          </button>
+                          <button className="btn ghost adlg-mini" disabled={svBusy || !!svJob}
+                            title="把已有视角图拼成美术设定板（服务端拼图，不花生图钱）"
+                            onClick={() => { void makeBoard(); }}>
+                            🎨 生成设定板
+                          </button>
+                          <button className="btn ghost adlg-mini" disabled={qcBusy || !!svJob}
+                            title="核验这些图里有没有出现人物、左上角标注是否到位"
+                            onClick={() => { void runQc(); }}>
+                            {qcBusy ? "⏳ 体检中…" : "🔍 视觉体检"}
+                          </button>
+                          {svOut.board_url && (
+                            <button className="btn ghost adlg-mini"
+                              title="看设定板大图"
+                              onClick={() => setZoom(svOut.board_url)}>
+                              📋 看设定板
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+              </div>
+            )}
           </div>
         )}
 
@@ -469,7 +873,7 @@ export default function AssetDialog(p: Props) {
               onChange={(e) => setKeepFace(e.target.checked)} />
             <img src={api.mediaUrl(p.baseRef)} alt="参考"
               style={{ width: 26, height: 34, objectFit: "cover", borderRadius: 3 }} />
-            <span style={{ fontSize: 12 }}>参考这张已有定妆图（换造型不换脸）</span>
+            <span style={{ fontSize: "calc(12px * var(--fs-scale, 1))" }}>参考这张已有定妆图（换造型不换脸）</span>
           </label>
         )}
 
@@ -496,7 +900,12 @@ export default function AssetDialog(p: Props) {
         <div className="row" style={{ justifyContent: "space-between" }}>
           {t.stage ? (
             <button className="btn ghost" onClick={async () => {
-              if (!window.confirm(`删除「${t.name}·${t.stage!.stage_name}」阶段？`)) return;
+              // 2026-09-09 起是软删（后端打墓碑），所以文案要说清"能撤销"以及
+              // 去哪儿撤销 —— 此前只有一句"删除…阶段？"，用户会以为定妆图没了。
+              if (!window.confirm(
+                `删除「${t.name}·${t.stage!.stage_name}」这一套造型？\n\n`
+                + `· 剧本与镜头不变，只是不再按这套造型出图\n`
+                + `· 可恢复：定妆图保留，在资产页「🗑 已删除的造型」里点 ↩ 撤销`)) return;
               await api.deleteStage(t.stage!.id);
               p.onChanged(); p.onClose();
             }}>🗑 删除阶段</button>
@@ -507,20 +916,28 @@ export default function AssetDialog(p: Props) {
         </div>
       </div>
 
-      {/* 候选大图：缩略图看不清脸，放大确认再采用（点错就得重生成，花钱） */}
+      {/* 大图：缩略图只有 108px 且是 cover 裁切，全身像基本只看得见躯干 ——
+          脸、发型、鞋这些**正是要确认的东西**全被裁掉了。
+          两个入口共用这一个浮层：
+            · 点候选图 → 放大确认再采用（点错就得重生成，花钱）
+            · 点当前图 → 单纯看清楚，此时没有"采用"这回事（它已经是当前图） */}
       {zoom && (
         <div className="drawer-mask" style={{ zIndex: 60 }}
           onClick={(e) => { e.stopPropagation(); setZoom(null); }}>
           <div className="wizard" onClick={(e) => e.stopPropagation()}
             style={{ maxWidth: 560 }}>
-            <img src={api.mediaUrl(zoom)} alt="候选大图"
+            <img src={api.mediaUrl(zoom)} alt="大图"
               style={{ width: "100%", maxHeight: "68vh", objectFit: "contain",
                 background: "#000", borderRadius: 8 }} />
             <div className="row" style={{ justifyContent: "flex-end" }}>
-              <button className="btn ghost" onClick={() => setZoom(null)}>返回挑选</button>
-              <button className="btn primary" onClick={() => void pick(zoom)}>
-                {curImg === zoom ? "✅ 当前就是这张" : "✅ 采用这张"}
+              <button className="btn ghost" onClick={() => setZoom(null)}>
+                {zoom === curImg ? "关闭" : "返回挑选"}
               </button>
+              {zoom !== curImg && (
+                <button className="btn primary" onClick={() => void pick(zoom)}>
+                  ✅ 采用这张
+                </button>
+              )}
             </div>
           </div>
         </div>
