@@ -192,7 +192,7 @@ export default function FineCut(p: Props) {
             </div>
             {srtErr && <div className="finecut-srtfail">⚠️ {srtErr}</div>}
             <textarea className="drawer-ta fill" readOnly
-              style={{ fontFamily: "monospace", fontSize: 12 }}
+              style={{ fontFamily: "monospace", fontSize: "calc(12px * var(--fs-scale, 1))" }}
               placeholder={srtErr
                 ? "字幕没查到 —— 现在导出的成片里不会有字幕。请先重试，别照这个状态导。"
                 : "字幕轨为空 —— 导出时不烧字幕。可在「文本」面板从旁白生成字幕。"}
