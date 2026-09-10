@@ -8,6 +8,7 @@
  *
  * 所以把两件与 I/O 无关的事搬出来做成纯函数：
  *   · `planEpisodeJobs` —— 选了哪几集 → 排出哪几个 job；
+ *   · `planClipJobs`    —— 一个镜头一个文件（可只导用户勾选的那些）；
  *   · `summarizeExportRun` —— 各 job 的收场 → 该给用户看什么。
  *
  * 这里**没有** ffmpeg、没有 Tauri、没有 React，node 下直接可跑。
@@ -43,6 +44,69 @@ export function planEpisodeJobs<S extends EpisodeShotLike>(
     if (picked.length) out.push({ episode: ep, shots: picked });
   }
   return out;
+}
+
+/** 排片段 job 需要的镜头字段。 */
+export interface ClipShotLike {
+  id: string;
+  order: number;
+  episode?: number | null;
+  video_url?: string | null;
+  disabled?: boolean | null;
+}
+
+export interface ClipJobPlan<S> {
+  shot: S;
+  order: number;
+  episode: number;
+}
+
+/**
+ * 按片段导出：**一个镜头一个文件**。
+ *
+ * 要导哪些片段由**用户在导出对话框里勾选**（2026-09-09 用户需求：与按集导出
+ * 同一套交互），不再读时间轴的选中态——时间轴一次只能选一个片段，"选中即范围"
+ * 实际等于只能一个一个导；用户点开对话框时也看不见轨道。
+ *  · `pickedIds` 非空 → 只导这些镜头，各自成一个文件；
+ *  · `pickedIds` 空/缺省 → 全部已出片镜头，各自成一个文件。
+ *
+ * ⚠️ 「空 = 全部」这条兜底是给"不带筛选条件地问一句共有几个片段"用的
+ *    （对话框的档位计数、App 的兜底调用）。**对话框里用户主动清空勾选**是另一
+ *    回事：那必须是 0 个文件，所以调用方要自己先拦住空数组，别指望这里。
+ *
+ * 其余规则：
+ *  · **没有视频的镜头不产文件**（一个没画面的"片段"落盘就是个坏文件，
+ *    也无法被后续投流/送审使用），停用的镜头同理排除；
+ *  · 按 `order` 升序，与文件名里的镜号一致（`clipFileName` 补零到 3 位）；
+ *  · 勾选里含没出片/已停用的镜头 → 静默跳过它（对话框上的计数用的是同一个
+ *    函数，所以用户看到的数量就是实际产出的文件数，不会对不上）。
+ */
+export function planClipJobs<S extends ClipShotLike>(
+  shots: S[], pickedIds?: string[],
+): ClipJobPlan<S>[] {
+  const want = new Set(pickedIds ?? []);
+  return shots
+    .filter((s) => !!s.video_url && !s.disabled
+      && (want.size === 0 || want.has(s.id)))
+    .sort((a, b) => a.order - b.order)
+    .map((s) => ({ shot: s, order: s.order, episode: s.episode ?? 1 }));
+}
+
+/**
+ * 导出对话框口径的"勾选 → job"，三态语义（`planClipJobs` 只有两态）：
+ *  · `picked === null` → 用户还没动过勾选 → **全部**已出片片段；
+ *  · `picked === []`   → 用户主动清空 → **一个都不导**（不是"全部"！）；
+ *  · 非空数组          → 只导这些。
+ *
+ * 单独拎成函数是因为空数组这条极易踩错：`planClipJobs` 把空当"全部"，
+ * 直接把勾选列表递进去，用户清空勾选反而会导出 601 个文件。
+ */
+export function planPickedClipJobs<S extends ClipShotLike>(
+  shots: S[], picked: string[] | null,
+): ClipJobPlan<S>[] {
+  if (picked === null) return planClipJobs(shots);
+  if (!picked.length) return [];
+  return planClipJobs(shots, picked);
 }
 
 /** 单个产出文件的收场。 */
