@@ -121,7 +121,10 @@ export function shotToClip(s: ShotInfo, startSec: number, trackId: string): Clip
   const rm = new Set(ov.remove ?? []);
   const characters = [...s.characters, ...(ov.add ?? [])].filter((c) => !rm.has(c));
   const rmLoc = new Set(ov.remove_loc ?? []);
-  const locs = [...(s.location ? [s.location] : []), ...(ov.add_loc ?? [])]
+  // 场景走**归一名**：`clip.location` 会被拿去和场景资产（按归一名存）比对，
+  // 且 remove_loc 现在也存归一名——用原名两边都比不中。
+  const l1Loc = s.location_canonical ?? s.location;
+  const locs = [...(l1Loc ? [l1Loc] : []), ...(ov.add_loc ?? [])]
     .filter((c) => !rmLoc.has(c));
 
   const status: Clip["status"] =
