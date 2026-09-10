@@ -74,7 +74,7 @@ import ScriptPanel from "./features/script/ScriptPanel";
 import VideoPanel from "./features/generation/VideoPanel";
 import ExportDialog, { IS_TAURI } from "./features/export/ExportDialog";
 import {
-  planEpisodeJobs, summarizeExportRun, type JobOutcome,
+  planEpisodeJobs, planClipJobs, summarizeExportRun, type JobOutcome,
 } from "./features/export/exportRun";
 import TasksDrawer from "./features/tasks/TasksDrawer";
 import SettingsDialog from "./features/settings/SettingsDialog";
@@ -88,7 +88,7 @@ import { save, open, confirm as tauriConfirm } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { join, downloadDir } from "@tauri-apps/api/path";
 import {
-  safeFileName, episodeFileName, dirOf, baseOf, stripMp4,
+  safeFileName, episodeFileName, clipFileName, dirOf, baseOf, stripMp4,
 } from "./lib/filename";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useTimelineStore } from "./stores/timelineStore";
@@ -387,8 +387,8 @@ export default function App() {
   };
 
   // ---- 资产层（R1 人物阶段 + P1-3 场景）+ 弹窗 ----
-  const { stages, locations, drafting, refreshStages, doStagesDraft, clearStages } =
-    useStages(projectId, say);
+  const { stages, deletedStages, locations, drafting, refreshStages, doStagesDraft,
+          clearStages } = useStages(projectId, say);
   const [advancedShot, setAdvancedShot] = useState<ShotInfo | null>(null);
   const [fineCutOpen, setFineCutOpen] = useState(false);
 
@@ -579,12 +579,14 @@ export default function App() {
   const doLocalExport = async (o: {
     clips: ShotInfo[]; width: number; height: number; fps: number;
     vcodec: string; crf: number; withAudio: boolean;
-    scope: "generated" | "all" | "selection" | "episode";
+    scope: "generated" | "all" | "selection" | "episode" | "clip";
     name?: string;
     /** 对话框里已选好的目录；缺省时这里兜底弹一次选择器 */
     dir?: string;
     /** scope=episode：要导的集号；每集单独渲染成一个文件 */
     episodes?: number[];
+    /** scope=clip：用户在导出对话框里勾选的镜头 id；每个镜头单独渲染成一个文件 */
+    clipIds?: string[];
   }) => {
     if (!projectId || !detail) return;
     if (!o.clips.some((s) => s.video_url)) { say("没有已生成的镜头可导出"); return; }
@@ -631,6 +633,24 @@ export default function App() {
         });
       }
       if (!jobs.length) { say("所选集里没有已生成的镜头"); return; }
+    } else if (o.scope === "clip") {
+      // 按片段：**一个镜头一个文件**。与按集同理只认一个目标文件夹——
+      // 601 镜的项目逐个弹 save() 是 601 次对话框。
+      //
+      // o.clips 已由对话框按 planClipJobs 的口径筛过（已出片、未停用、
+      // 用户在导出页勾选的范围），这里再带上 o.clipIds 过一遍同一个纯函数：
+      // 勾选口径只写在对话框里的话，别处调 doLocalExport 就会静默导全部。
+      const dir = o.dir ?? await pickExportDir();
+      if (!dir) { say("已取消导出"); return; }
+      for (const j of planClipJobs(clips, o.clipIds)) {
+        jobs.push({
+          shots: [j.shot],
+          // 与导出对话框的路径预览共用同一个函数，预览到哪就落到哪
+          outputPath: await join(dir, clipFileName(defaultName, j.order, j.episode)),
+          label: `第 ${j.episode} 集 · 镜 ${j.order}`,
+        });
+      }
+      if (!jobs.length) { say("没有已生成的片段可导出"); return; }
     } else {
       const outputPath = o.dir
         ? await join(o.dir, `${defaultName}.mp4`)
@@ -745,7 +765,10 @@ export default function App() {
             transitions,
             output,
             // 按集的镜头已在对话框里筛成"已出片且未停用"，交给 generated 档即可
-            scope: o.scope === "episode" ? "generated" : o.scope,
+            // 按集/按片段的镜头已在对话框里筛成"已出片且未停用"，交给
+            // generated 档即可（normalize 只认 generated/all/selection）。
+            scope: (o.scope === "episode" || o.scope === "clip")
+              ? "generated" : o.scope,
             selectedShotIds: selectedShot ? [selectedShot.id] : [],
             foldsTransition,
             // 4.6：轨道静音/独奏/隐藏。键是 RenderTrack.id，与时间轴那套 id
@@ -1645,6 +1668,28 @@ export default function App() {
     say(`镜头 #${shot.order} 出点 → ${next.toFixed(1)}s（Ctrl+Z 可撤销）`);
   };
 
+  /** 在播放头处分割当前镜头。工具条剪刀 / `B` / `Ctrl+B` 共用这一个实现。
+   *
+   *  3.9：提成具名函数是因为现在有三个调用方了。此前它只是 `useCommands`
+   *  的一个内联字段，工具条要用就得再写一份"找播放头所在 clip"的逻辑——
+   *  而这条时间轴上"同一件事两处各写一份"已经翻过好几次车。
+   *
+   *  失败原因要分开说：`没镜头` 与 `太靠边` 是两种完全不同的处境，
+   *  合成一句"把播放头移到镜头中间"会让第二种情况的用户反复移动播放头
+   *  却怎么都切不开（他明明已经在镜头中间了）。 */
+  const splitAtPlayhead = () => {
+    const ph = tlStore().playheadSec;
+    const clips = tlStore().allClips().filter((c) => c.shotId);
+    // 播放头所在的镜头（不含 0.5s 边距判断，先看在不在片上）
+    const hit = clips.find((c) => ph >= c.startSec && ph <= c.startSec + c.durationSec);
+    if (!hit?.shotId) { say("播放头不在任何镜头上，先把它移到要切的镜头里"); return; }
+    if (ph <= hit.startSec + 0.5 || ph >= hit.startSec + hit.durationSec - 0.5) {
+      say(`播放头离「${hit.label}」的边缘太近（两端各需留 0.5s），切不出有效片段`);
+      return;
+    }
+    void doSplit(hit.shotId, ph - hit.startSec);
+  };
+
   useCommands({
     playPause: playFromCursor,
     playFromStart,
@@ -1668,14 +1713,7 @@ export default function App() {
     paste: () => { void doPaste(); },
     cut: () => { void doCut(); },
     deleteSelected: () => removeSelectedClips(),
-    splitAtPlayhead: () => {
-      // 用播放头所在的那个 clip 作为切割目标；播放头必须在片内（两端各留 0.5s）
-      const ph = tlStore().playheadSec;
-      const clip = tlStore().allClips().find(
-        (c) => c.shotId && ph > c.startSec + 0.5 && ph < c.startSec + c.durationSec - 0.5);
-      if (!clip?.shotId) { say("把播放头移到某个镜头中间再按 Ctrl+B"); return; }
-      void doSplit(clip.shotId, ph - clip.startSec);
-    },
+    splitAtPlayhead,
     // D：停用 / 启用**全部**选中镜头。
     //
     // 3.5：旧实现是 `selection.clipIds[0]` —— 只处理第一个。这在 Ctrl+A
@@ -1884,6 +1922,7 @@ export default function App() {
       onDeleteClip={deleteClip}
       assetsMeta={detail?.assets ?? []}
       stages={stages}
+      deletedStages={deletedStages}
       onRefreshStages={() => refreshStages()}
       onRefresh={() => refreshDetail()}
       onToast={say}
@@ -2219,9 +2258,11 @@ export default function App() {
                 // 字幕锚定"第几镜 + 镜内第几秒"，与后端同构；没有播放头就落到第 1 镜
                 anchor={playhead ?? (cursor ?? null)}
                 onAutoSubtitles={doAutoSubtitles}
-                // 真人剧没有旁白音频可对齐，字幕只能来自镜头原声 —— 面板据此
-                // 把「识别镜头原声」提为主入口（见 TextPanel 的 fromVideo 注释）
+                // 真人剧的台词长在镜头视频的声轨里，没有旁白音频可对齐 ——
+                // 但**文本仍然是已知的**（就在 script_ref 里），所以走的是同一种
+                // 强制对齐，只是声轨与文本换了来源（见 TextPanel 的 fromVideo 注释）。
                 fromVideo={detail?.production_mode === "drama"}
+                shots={detail?.shots ?? []}
                 clips={subtitles}
                 style={subtitleStyle}
                 onSaveStyle={saveSubtitleStyle}
@@ -2312,6 +2353,14 @@ export default function App() {
           baseAspect={detail?.base_aspect}
           playing={isPlaying}
           shuttleRate={shuttle}
+          // 3.9 本镜之后那条接缝上的转场（供播放器演一次转场预览）。
+          // 只认**从本镜出发**的那条：`from_shot_id` 才是"播完这一镜之后"，
+          // 拿 to_shot_id 匹配会把上一条接缝的转场演在这一镜的结尾。
+          seamAtEnd={(() => {
+            if (!previewShot) return null;
+            const t = transitions.find((x) => x.from_shot_id === previewShot.id);
+            return t ? { type: t.type, durationSec: t.duration } : null;
+          })()}
           // 取**正在预览**那个镜头的调色参数，不是 selectedShot ——
           // 两者可能不同（点了 A 镜预览、又在列表里选中 B 镜），
           // 用 selectedShot 会把 B 的调色套到 A 的画面上。
@@ -2460,6 +2509,7 @@ export default function App() {
              没有 staged 写可丢。与上面 Inspector 那条的区别是真实的，不是漏改。 */
           onPatchTransform={(sid, patch) => { void doPatchTransform(sid, patch); }}
           onSplit={doSplit}
+          onSplitAtPlayhead={splitAtPlayhead}
           onDropClip={(c) => { void addToTimeline(c as LibClip); }}
           onMoveTrack={(id, idx, st) => { void doMoveTrack(id, idx, st); }}
           onPushUndo={pushUndo}
@@ -2557,7 +2607,6 @@ export default function App() {
               projectTitle={detail.title}
               episodeTitles={Object.fromEntries(
                 detail.episodes.map((e) => [e.order, e.title]))}
-              selectedShotIds={selectedShot ? [selectedShot.id] : []}
               exportDir={exportDir}
               onPickPath={pickExportPath}
               onLocalExport={doLocalExport}
