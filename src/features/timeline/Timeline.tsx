@@ -53,8 +53,9 @@ import {
   MIN_TRANSITION_SEC,
 } from "./transitions";
 import type { SeamMarker } from "./transitions";
+import { transitionName } from "../effects/transitionCatalog";
 import {
-  Undo2, Redo2, ZoomIn, ZoomOut, Maximize2, MousePointer2, Scissors,
+  Undo2, Redo2, ZoomIn, ZoomOut, Maximize2, Scissors,
   ChevronsLeft, ChevronsRight, Magnet,
   Trash2, EyeOff, Eye, Copy, Scissors as ScissorsIcon,
   RefreshCw, History, Gem, Layers, VolumeX, CopyPlus, Crosshair,
@@ -135,8 +136,12 @@ interface Props {
   /** 6.9：从时间轴直接删掉音频/字幕片段（镜头不走这里，见 canDeleteFromTimeline） */
   onDeleteClip: (clip: Clip) => void;
   onPatchTransform: (shotId: string, patch: Record<string, unknown>) => void;
-  /** TB-01：在镜内 atSec 秒分割（时间轴 Ctrl+B / 右键） */
+  /** TB-01：在镜内 atSec 秒分割（时间轴 Ctrl+B / 右键 / Alt+点击） */
   onSplit: (shotId: string, atSec: number) => void;
+  /** 工具条剪刀 / `B` / `Ctrl+B`：在播放头处分割。
+   *  与 `onSplit` 分开是因为"哪一镜、切在第几秒"由 App 按播放头统一判定，
+   *  时间轴这边不该再写第二套（这条时间轴的注释里记着前三个"第二套"如何漂移）。 */
+  onSplitAtPlayhead: () => void;
   /** 素材面板拖进来的片段（MediaPanel 设的 application/x-fw-clip）。
    *  此前 MediaPanel 的 tooltip 写着「拖到时间轴插入」，但没有任何落点
    *  接收这个 MIME —— 旧的 TimelineDock 被删时把 onDrop 一起带走了，
@@ -238,12 +243,31 @@ export default function Timeline(p: Props) {
     useTimelineStore.getState().setPlayheadSec(base + p.playhead.offsetSec);
   }, [p.playhead, p.shots]);
 
-  // ---- zoom with Ctrl+scroll ----
+  // ---- 滚轮：Ctrl=缩放，Alt/Shift=横向滚动，裸滚轮=纵向（浏览器默认）----
+  //
+  // 三件套对齐剪映/Premiere 的通行习惯。此前只有 Ctrl 缩放这一条，
+  // 想在长时间轴上左右挪只能去拖底部滚动条 —— 而这条时间轴动辄几百秒，
+  // 那是每次调整都要做一遍的动作。
+  //
+  // ⚠️ Alt 与 Shift 都收：Windows 上剪映用 Alt，macOS 触控板用户习惯 Shift，
+  // 两个都认没有代价（它们在时间轴上都没有别的滚轮语义）。
+  // macOS 触控板的横向手势走的是 deltaX，浏览器原生就处理了，这里不叠加。
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
+      if (!e.ctrlKey && !e.metaKey) {
+        if (e.altKey || e.shiftKey) {
+          // deltaY 才是滚轮主轴；带修饰键时把它当横向位移用。
+          // 有些设备在按住 Shift 时自己就把 deltaY 挪到了 deltaX，
+          // 取两者绝对值大的那个，避免"按了 Shift 反而不动"。
+          const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+          if (!d) return;
+          e.preventDefault();
+          el.scrollLeft += d;
+        }
+        return;
+      }
       e.preventDefault();
       const box = el.getBoundingClientRect();
       const anchorContent = el.scrollLeft + (e.clientX - box.left) - GUTTER_W;
@@ -664,10 +688,18 @@ export default function Timeline(p: Props) {
   // 调 getBoundingClientRect 会强制同步布局。而拖动中容器是可能滚的（拖到边缘、
   // 或用户同时滚轮），所以把按下时的 scrollLeft/Top 一起记下，之后用增量把
   // 指针坐标换算回"按下那一刻的坐标系"——比重新量便宜，且是精确的。
-  const beginMarquee = useCallback((e: React.MouseEvent) => {
+  // `onTap`（3.9）：按下后**没有移动**就松手时调用，参数是按下处的绝对秒。
+  // 用来把 "Alt+点击 = 在这里切一刀" 和 "Alt+拖 = 框选" 塞进同一个手势里 ——
+  // 两者都由 Alt+mousedown 开始，靠"有没有真的拖"区分，不必再占一个修饰键。
+  const beginMarquee = useCallback((e: React.MouseEvent,
+                                    onTap?: (atSec: number) => void) => {
     const lanes = [...document.querySelectorAll<HTMLElement>(".fw-tl-lane[data-track-id]")]
       .map((el) => ({ id: el.dataset.trackId!, r: el.getBoundingClientRect() }));
-    const self = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // 起手元素的时间原点：一律取所在 lane，而**不是** e.currentTarget ——
+    // Alt+拖可以从片段上起手（currentTarget 是那个 clip），拿 clip 的左边缘
+    // 当 0 秒会把整个框算错一整段。lane 才是"秒 → px"的坐标原点。
+    const laneEl = (e.target as HTMLElement).closest(".fw-tl-lane") as HTMLElement | null;
+    const self = (laneEl ?? (e.currentTarget as HTMLElement)).getBoundingClientRect();
     const sc = scrollRef.current;
     const s0 = { left: sc?.scrollLeft ?? 0, top: sc?.scrollTop ?? 0 };
     const x0 = e.clientX;
@@ -701,7 +733,7 @@ export default function Timeline(p: Props) {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       setMarquee(null);
-      if (!moved) return;
+      if (!moved) { onTap?.(startSec); return; }
       // 3.5：命中判据统一在 selection.ts（与 Ctrl+A / [ ] / Shift 范围同一条）。
       // 锁定/隐藏轨、以及没有 shotId 的音频/字幕段不再进选中集 ——
       // 它们进来也只是亮着而已，Delete/复制/剪切一个都动不了。
@@ -887,8 +919,31 @@ export default function Timeline(p: Props) {
     ];
   };
 
+  /* Alt 按住时给片段换成刀形光标。
+   *
+   * 不只是好看：「点哪切哪」原先靠工具条上一个常亮的模式按钮来告知，
+   * 现在改成了 Alt+点击这个**不可见**的手势，没有任何提示的话没人会发现它。
+   * 光标是这条路径唯一的自我说明。
+   *
+   * blur 也要清：按住 Alt 切走窗口（Alt+Tab）时收不到 keyup，
+   * 回来后光标会一直是刀形，用户以为软件卡在某个模式里了。 */
+  const [altHeld, setAltHeld] = useState(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.altKey) setAltHeld(true); };
+    const up = (e: KeyboardEvent) => { if (!e.altKey) setAltHeld(false); };
+    const clear = () => setAltHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", clear);
+    };
+  }, []);
+
   return (
-    <div className={`fw-tl ${p.maximized ? "maximized" : ""}`}>
+    <div className={`fw-tl ${p.maximized ? "maximized" : ""}${altHeld ? " alt-armed" : ""}`}>
       {/* ---- 工具条 ---- */}
       <div className="fw-tl-toolbar">
         <button className="fw-tl-tbtn" title="适配全宽 (Ctrl+0)"
@@ -907,14 +962,15 @@ export default function Timeline(p: Props) {
         <div className="fw-tl-tb-sep" />
 
         {/* ---- 工具模式（参考剪映：切了保持，不自动回退）---- */}
-        <button className={`fw-tl-tbtn ${store.tool === "select" ? "on" : ""}`}
-          title="选择工具 (A)：拖动 / 调整边界 / 多选"
-          onClick={() => store.setTool("select")}>
-          <MousePointer2 size={13} />
-        </button>
-        <button className={`fw-tl-tbtn ${store.tool === "split" ? "on" : ""}`}
-          title="分割工具 (B)：点击镜头上任意位置切开"
-          onClick={() => store.setTool("split")}>
+        {/* 分割：**立即执行**，不是切模式。
+            旧版这里是 `setTool("split")` —— 点完按钮鼠标变成剪刀，还要再去点
+            一次轨道才真的切开。剪映/大多数剪辑软件的剪刀都是"在时间指示器处
+            立刻切一刀"，用户按我们这套走会以为按钮坏了。
+            "点哪切哪"的能力没有丢，改由 **Alt+点击片段** 提供（见 lane 的
+            onMouseDown），不再需要先切模式。 */}
+        <button className="fw-tl-tbtn"
+          title="分割 (B / Ctrl+B)：在播放头处切开当前镜头；Alt+点击片段可点哪切哪"
+          onClick={() => p.onSplitAtPlayhead()}>
           <Scissors size={13} />
         </button>
         <div className="fw-tl-tb-sep" />
@@ -988,6 +1044,12 @@ export default function Timeline(p: Props) {
 
       {/* ---- 滚动区 ---- */}
       <div className="fw-tl-scroll" ref={scrollRef}>
+        {/* 内容画布：播放头/定位线/吸附线的**包含块**。
+            必须有这一层 —— 直接挂在 .fw-tl-scroll（overflow:auto）下时，
+            `top:0;bottom:0` 解析的是滚动容器的**可视高度**而非内容总高，
+            轨道多于一屏时线只有一屏那么长，下半截轨道上根本看不到线。
+            详见 Timeline.css 的 .fw-tl-canvas 注释。 */}
+        <div className="fw-tl-canvas">
         {/* 刻度尺（sticky top，跟随横向滚动） */}
         <TimelineRuler
           totalSec={p.totalSec} pxPerSec={pxPerSec}
@@ -1133,25 +1195,20 @@ export default function Timeline(p: Props) {
                         dragging={isDragging}
                         dropTarget={!!isDropTarget}
                         trackLocked={track.locked}
-                        splitMode={store.tool === "split"}
-                        onSelect={(e) => {
-                          // 分割工具：点哪切哪。用点击位置换算成镜内偏移，
-                          // 不是用播放头——用户点的位置就是他想切的位置。
-                          if (store.tool === "split" && clip.shotId && !track.locked) {
-                            const lane = (e.currentTarget as HTMLElement)
-                              .closest(".fw-tl-lane") as HTMLElement | null;
-                            if (lane) {
-                              const atSec = (e.clientX - lane.getBoundingClientRect().left)
-                                / pxPerSec - clip.startSec;
-                              // 太靠边的切点会切出 0 长度片段，后端也会拒绝
-                              if (atSec > 0.3 && atSec < clip.durationSec - 0.3) {
-                                p.onSplit(clip.shotId, atSec);
-                              } else {
-                                p.onToast("切点太靠近边缘，请点镜头中间位置");
-                              }
-                            }
-                            return;
+                        onAltMouseDown={(e) => beginMarquee(e, (atSec) => {
+                          // Alt+点击（没有拖动）= 点哪切哪。
+                          // 用点击位置换算成镜内偏移，不是用播放头 ——
+                          // 用户点的位置就是他想切的位置。
+                          if (!clip.shotId || track.locked) return;
+                          const at = atSec - clip.startSec;
+                          // 太靠边的切点会切出 0 长度片段，后端也会拒绝
+                          if (at > 0.3 && at < clip.durationSec - 0.3) {
+                            p.onSplit(clip.shotId, at);
+                          } else {
+                            p.onToast("切点太靠近边缘，请点镜头中间位置");
                           }
+                        })}
+                        onSelect={(e) => {
                           // 3.8：Shift 与 Ctrl/Cmd 从此**分工不同**。
                           // 此前两者都是"逐个加减"，Shift 的范围语义无处可去，
                           // 想选第 12~40 镜只能点 29 下（还不能点错）。
@@ -1266,6 +1323,7 @@ export default function Timeline(p: Props) {
           <div className="fw-tl-snapguide"
             style={{ left: GUTTER_W + store.snapGuideSec * pxPerSec }} />
         )}
+        </div>
       </div>
 
       {/* 右键菜单 */}
@@ -1284,7 +1342,7 @@ export default function Timeline(p: Props) {
             style={{ left: Math.max(8, seamEdit.x - 110), top: Math.max(8, seamEdit.y - 150) }}>
             <div className="fw-tl-seampop-hd">
               <Shuffle size={12} />
-              <b>{seamEdit.m.type}</b>
+              <b>{transitionName(seamEdit.m.type)}</b>
               <button className="fw-tl-seampop-x" title="关闭"
                 onClick={() => setSeamEdit(null)}><X size={12} /></button>
             </div>
