@@ -52,6 +52,12 @@
 .fw-fx-card:hover { border-color: var(--c-accent-dim); background: var(--c-raised); }
 .fw-fx-card.on { border-color: var(--c-accent); background: color-mix(in oklch, var(--c-accent) 12%, transparent); }
 
+/* 本机 ffmpeg 渲染不出的转场：灰化但**不禁用** ——
+   编排照样可以存（换台机器/换个版本就能渲染了），只是要让用户一眼看出
+   它导出时会退化成硬切。禁用掉反而会让用户以为这个转场不存在。 */
+.fw-fx-card.dead .fw-fx-preview { opacity: 0.35; }
+.fw-fx-card.dead .fw-fx-name { color: var(--c-muted); }
+
 .fw-fx-preview {
   width: 100%;
   aspect-ratio: 16/10;
@@ -171,7 +177,7 @@
   position: absolute;
   top: 2px;
   right: 3px;
-  font-size: 8px;
+  font-size: calc(8px * var(--fs-scale, 1));
   line-height: 1;
   color: var(--c-success);
   filter: drop-shadow(0 0 2px oklch(0% 0 0 / 0.8));
