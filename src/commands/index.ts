@@ -11,7 +11,6 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useTimelineStore } from "../stores/timelineStore";
 
 export interface Command {
   id: string;
@@ -131,17 +130,17 @@ export function buildCommands(h: CommandHandlers): Command[] {
       match: (e) => e.key === "Delete" || e.key === "Backspace",
       run: h.deleteSelected,
     },
-    // ---- 工具切换（单键，与已有的 S / D 同风格）----
-    // 直接操作 store：这两个纯粹是 UI 状态，不需要经 App 的 handler 中转。
+    // ---- 分割 ----
+    // `B` 与 `Ctrl+B` **同一个动作**：在播放头处切开。
+    //
+    // 3.9 之前 `B` 是"切换到分割工具"（只改一个 store 字段，屏幕上几乎没有
+    // 任何变化），用户按下去看不到反应，报「分割快捷键用不了」。剪映里根本
+    // 没有"分割工具"这个模式，剪刀就是立刻切一刀。
+    // 「点哪切哪」的能力改由 Alt+点击片段提供，不再占用一个模式。
     {
-      id: "tool.select", label: "选择工具", keys: "A",
-      match: (e) => e.key.toLowerCase() === "a" && !mod(e) && !e.shiftKey,
-      run: () => useTimelineStore.getState().setTool("select"),
-    },
-    {
-      id: "tool.split", label: "分割工具", keys: "B",
-      match: (e) => e.key.toLowerCase() === "b" && !mod(e) && !e.shiftKey,
-      run: () => useTimelineStore.getState().setTool("split"),
+      id: "edit.split", label: "在播放头分割", keys: "B / Ctrl+B",
+      match: (e) => e.key.toLowerCase() === "b" && !e.shiftKey,
+      run: h.splitAtPlayhead,
     },
     {
       id: "select.left", label: "选中播放头左侧全部", keys: "[",
@@ -152,11 +151,6 @@ export function buildCommands(h: CommandHandlers): Command[] {
       id: "select.right", label: "选中播放头右侧全部", keys: "]",
       match: (e) => e.key === "]" && !mod(e),
       run: () => h.selectSide("right"),
-    },
-    {
-      id: "edit.split", label: "在播放头分割", keys: "Ctrl+B",
-      match: (e) => mod(e) && e.key.toLowerCase() === "b",
-      run: h.splitAtPlayhead,
     },
     {
       id: "edit.toggleDisabled", label: "停用 / 启用选中", keys: "D",
