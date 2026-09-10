@@ -57,9 +57,24 @@ export interface BoxPx { w: number; h: number }
  * 对用户的含义就是那条软边有多宽，故取 **σ = featherPx / 2.563**。
  * 验证脚本实测这条带宽并钉住，不靠这段推导自证。
  */
+/**
+ * 羽化宽度 → 高斯 σ。**全工程只有这一处**定这个换算。
+ *
+ * 高斯的 10%→90% 过渡带宽 ≈ 2.563σ，而 `featherPx` 对用户的含义就是那条软边
+ * 有多宽，故 **σ = featherPx / 2.563**。
+ *
+ * 提成导出函数是因为编辑器的**画面预览**也要用它（`MosaicOverlay` 的 SVG
+ * feGaussianBlur 直接吃 σ）。预览与导出各写一个系数的话，用户拉到 20 的羽化
+ * 在画面上和成片里宽度就是两回事——而羽化这种"看着调"的参数，预览不准
+ * 等于没有。
+ */
+export function featherSigma(featherPx: number): number {
+  return featherPx <= 0 ? 0 : featherPx / 2.563;
+}
+
 export function featherBoxRadius(featherPx: number): number {
   if (featherPx <= 0) return 0;
-  const sigma = featherPx / 2.563;
+  const sigma = featherSigma(featherPx);
   const r = Math.round((Math.sqrt(1 + 4 * sigma * sigma) - 1) / 2);
   return Math.max(1, r);
 }
