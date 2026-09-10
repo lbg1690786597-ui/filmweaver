@@ -201,7 +201,10 @@ export default function Inspector(p: InspectorProps) {
   const rm = new Set(ov.remove ?? []);
   const chars = [...s.characters, ...(ov.add ?? [])].filter((c) => !rm.has(c));
   const rmLoc = new Set(ov.remove_loc ?? []);
-  const locs = [...(s.location ? [s.location] : []), ...(ov.add_loc ?? [])]
+  // 归一名：下面 locs 是拿去和场景资产（按归一名存）比对/展示参考图的，
+  // 用原名「夜 内 楚家公馆-客厅」比不中资产行。
+  const l1Loc = s.location_canonical ?? s.location;
+  const locs = [...(l1Loc ? [l1Loc] : []), ...(ov.add_loc ?? [])]
     .filter((c) => !rmLoc.has(c));
 
   // 拆解编辑的可选项：只给资产库里真实存在的名字。
