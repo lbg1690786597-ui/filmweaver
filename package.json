@@ -1,7 +1,7 @@
 {
   "name": "filmweaver-desktop",
   "private": true,
-  "version": "0.8.7",
+  "version": "0.8.8",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,9 +9,9 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json --noEmit",
-    "verify:render": "tsx scripts/verify-capabilities.ts && tsx scripts/verify-caps-cache.ts && tsx scripts/verify-segments.ts && tsx scripts/verify-compiler.ts && tsx scripts/verify-faststart.ts && tsx scripts/verify-cleanup.ts && tsx scripts/verify-encoder.ts && tsx scripts/verify-mediacache.ts && tsx scripts/verify-prefetch.ts && tsx scripts/verify-localsource.ts && tsx scripts/verify-multitrack.ts && tsx scripts/verify-overlay-ui.ts && tsx scripts/verify-fold.ts && tsx scripts/verify-effects.ts && tsx scripts/verify-grade-preview.ts && tsx scripts/verify-trackflags.ts && tsx scripts/verify-regionshape.ts && tsx scripts/verify-maskraster.ts && tsx scripts/verify-maskgroups.ts && tsx scripts/verify-maskcompile.ts && tsx scripts/verify-kfexpr.ts && tsx scripts/verify-kfedit.ts && tsx scripts/verify-maskfiles.ts && tsx scripts/verify-blackout.ts && tsx scripts/verify-exportprep.ts && tsx scripts/verify-track.ts && tsx scripts/verify-localroot.ts && tsx scripts/verify-appgate.ts && tsx scripts/verify-outbox.ts && tsx scripts/verify-placement.ts",
-    "verify:subtitles": "tsx scripts/verify-align.ts",
-    "verify:export": "tsx scripts/verify-episode-export.ts",
+    "verify:render": "tsx scripts/verify-capabilities.ts && tsx scripts/verify-caps-cache.ts && tsx scripts/verify-segments.ts && tsx scripts/verify-compiler.ts && tsx scripts/verify-faststart.ts && tsx scripts/verify-cleanup.ts && tsx scripts/verify-encoder.ts && tsx scripts/verify-mediacache.ts && tsx scripts/verify-prefetch.ts && tsx scripts/verify-localsource.ts && tsx scripts/verify-multitrack.ts && tsx scripts/verify-overlay-ui.ts && tsx scripts/verify-fold.ts && tsx scripts/verify-effects.ts && tsx scripts/verify-grade-preview.ts && tsx scripts/verify-trackflags.ts && tsx scripts/verify-regionshape.ts && tsx scripts/verify-maskraster.ts && tsx scripts/verify-maskgroups.ts && tsx scripts/verify-maskcompile.ts && tsx scripts/verify-kfexpr.ts && tsx scripts/verify-kfedit.ts && tsx scripts/verify-maskfiles.ts && tsx scripts/verify-blackout.ts && tsx scripts/verify-exportprep.ts && tsx scripts/verify-track.ts && tsx scripts/verify-localroot.ts && tsx scripts/verify-appgate.ts && tsx scripts/verify-outbox.ts && tsx scripts/verify-placement.ts && tsx scripts/verify-transition-catalog.ts",
+    "verify:subtitles": "tsx scripts/verify-align.ts && tsx scripts/verify-drama-align.ts",
+    "verify:export": "tsx scripts/verify-episode-export.ts && tsx scripts/verify-clip-export.ts",
     "verify:baseline": "tsx scripts/baseline-export.ts",
     "baseline:update": "tsx scripts/baseline-export.ts --update",
     "accept:batch4": "tsx scripts/accept-batch4.ts",
