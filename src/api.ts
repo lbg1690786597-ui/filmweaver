@@ -188,11 +188,36 @@ export interface UploadOut {
 }
 
 // ---- R0: 项目化类型（契约 C2）----
+/** 画风预设（后端 `style_preset.py` 是唯一事实来源，前端不硬编码任何词）。
+ *  `enabled=false` = 词表写好了但还没放开：前端**列出但禁用**并打「待完善」徽章，
+ *  后端 `style_preset.resolve()` 同时会把它兜底成都市档——双保险。 */
+export interface StyleOption {
+  key: string;
+  label: string;
+  desc: string;
+  enabled: boolean;
+}
+
+/** 生产模式（决定台词怎么配音）+ 它下面可选的画风。 */
+export interface ProductionModeInfo {
+  label: string;
+  video_model?: string;
+  /** 该模式下有没有任何已启用的画风；false = 整个模式还不能选 */
+  enabled: boolean;
+  /** 标称默认画风 key（可能本身就是未启用档，如动漫剧的 anime_3d） */
+  default_style: string | null;
+  styles: StyleOption[];
+}
+
 export interface ProjectInfo {
   id: string;
   title: string;
   base_aspect: string;
   production_mode: string | null;
+  /** 用户选的画风 key；null = 老项目/没选 */
+  art_style?: string | null;
+  /** **实际生效**的画风 key。与 `art_style` 不同 = 那档还没放开，已回退都市 */
+  effective_style?: string | null;
   episodes_count?: number;
   /** TB-11：列表接口直接带统计，前端不再逐项目补拉 detail */
   shots_total?: number;
@@ -216,6 +241,14 @@ export interface ShotInfo {
   link_to_prev: string;
   characters: string[];
   location: string | null;
+  /** 场景**归一名**（后端 `scenes.canonical_of` 下发）。
+   *  `location` 是拆解写下的原名，同一个房间各集写法常常不同
+   *  （「夜 内 楚家公馆-客厅」/「楚家公馆-客厅」）；而场景资产名、场景轨、
+   *  造型的 scene 绑定一律是归一名。**凡是要和场景资产/场景轨比对的地方
+   *  都用这个字段**，用 `location` 会静默比不中。展示镜头自身的场景标签
+   *  仍用 `location`（那才是本镜剧本里的写法）。
+   *  老后端没有这个字段 → undefined，调用方回落到 `location`。 */
+  location_canonical?: string | null;
   video_url: string | null;
   /** P1-1 缩略图：轨道用首帧 JPG 渲染（不再每槽挂 <video>，837 镜也不卡） */
   thumb_url: string | null;
@@ -380,6 +413,8 @@ export interface ProjectDetail {
   title: string;
   base_aspect: string;
   production_mode: string | null;
+  art_style?: string | null;
+  effective_style?: string | null;
   /** 单镜时长上限（秒），由服务端按项目的视频模型算：
    *  seedance-2.0/veo → 15，seedance-2.5 → 30，H3 随分辨率变。
    *  时间轴拖拽与时长输入框都用它做上限；缺省（老后端）按 15。 */
@@ -521,6 +556,27 @@ export interface StageInfo {
   virtual?: boolean;
 }
 
+/** 被删除的造型阶段（墓碑，`listStages().deleted_stages`）。
+ *
+ *  不复用 `StageInfo`：墓碑不参与轨道计算，后端**故意**不给它算
+ *  `present_orders` / `manual_*`（那是"实际注入"的口径，删掉的阶段一个镜头都不注入）。
+ *  这里带 image_url 只为让用户看图认出"删掉的是哪一套造型"——阶段名常常只是
+ *  「造型2」，光看名字认不出来。 */
+export interface DeletedStageInfo {
+  id: string;
+  character_name: string;
+  stage_name: string;
+  ep_from: number;
+  ep_to: number;
+  shot_from: number | null;
+  shot_to: number | null;
+  image_url: string | null;
+  description: string | null;
+  location: string | null;
+  /** 打墓碑的时刻（ISO8601） */
+  deleted_at: string | null;
+}
+
 /** P1-3 场景轨条目：每场景一行（L1=Shot.location，图源=Asset(kind=location)，L3=add_loc/remove_loc） */
 export interface LocationInfo {
   name: string;
@@ -543,6 +599,135 @@ export interface AssetInfo {
    *  出片时作为参考图的文字锚点喂给提示词优化器（没有它，提示词只能凭空编服装）。
    *  以「〔自动识图〕」开头 = 机器看图写的，用户改过就不再自动覆盖。 */
   prompt?: string | null;
+  /** 墓碑：用户手动删除这条资产的时刻（ISO）。非空 = 已删除。
+   *  后端**故意不过滤**，由前端默认隐藏并提供「已删除」恢复入口——
+   *  否则删错了就再也找不回来。 */
+  deleted_at?: string | null;
+}
+
+/** 角色形象档案：这个角色**全剧统一**的长相（骨相/肤色/五官/气质）。
+ *
+ * 与「造型描述」(`AssetInfo.prompt` / `StageInfo.description`) 分工明确：
+ * 档案是脸，造型是衣服。衣服每套一份，脸只有一份。
+ * 后端事实来源 `backend/app/character_profile.py`。 */
+export interface CharacterProfile {
+  v: number;
+  /** modern | period | generic —— 决定气质两轴的候选值域 */
+  genre: string;
+  /** {轴 key: 取值}。缺的轴 = 没判出来，不写进提示词 */
+  axes: Record<string, string>;
+  /** 词表覆盖不到的独有特征（疤痕/义眼/胎记） */
+  extra: string;
+  /** draft = AI 判的；confirmed = 用户手改过，自动流程不再覆盖 */
+  status: string;
+}
+
+/** 一条档案轴的定义（下拉候选由后端给） */
+export interface ProfileAxis {
+  key: string;
+  label: string;
+  values: string[];
+  /** true = 可留空（妆容/记忆点对男性与儿童不适用，留空即不进提示词） */
+  optional: boolean;
+}
+
+export interface CharacterProfileOut {
+  name: string;
+  /** null = 这个角色还没生成过档案 */
+  profile: CharacterProfile | null;
+  genre: string;
+  axes: ProfileAxis[];
+  extra_max: number;
+}
+
+/** 一条视觉体检结论（`backend/app/asset_qc.py`）。
+ *  `null` = 体检没跑成（视觉通道不可用），**不等于**通过。 */
+export interface AssetQcResult {
+  ok: boolean;
+  /** 问题 key（has_person / has_scene / not_three_view / …），文案由 summary 给 */
+  issues: string[];
+  note: string;
+}
+
+/** 场景的一张多视角参考图 */
+export interface SceneViewRow {
+  id: string;
+  key: string;
+  /** angle = 方位视角；framing = 景别 */
+  kind: string;
+  label: string;
+  sort: number;
+  /** true = 主视角，它同时是 `Asset.image_url`（注入镜头的兜底图就是它） */
+  primary: boolean;
+  image_url: string | null;
+  prompt: string | null;
+  qc: AssetQcResult | null;
+}
+
+/** 视图定义（标签/顺序由后端 `scene_view.VIEWS` 下发，前端不硬编码） */
+export interface SceneViewDef {
+  key: string;
+  label: string;
+  kind: string;
+  sort: number;
+  primary: boolean;
+}
+
+export interface SceneViewsOut {
+  asset_id: string;
+  name: string;
+  project_id: string;
+  /** 场景空间描述（= `AssetInfo.prompt`），拼进每张视角图的提示词 */
+  description: string | null;
+  /** 美术设定板（服务端 PIL 拼的派生图，**只给人看**，从不注入模型） */
+  board_url: string | null;
+  progress: { done: number; total: number };
+  defs: SceneViewDef[];
+  views: SceneViewRow[];
+  /** 后端刚认领/同步过主视角 → 前端顺带刷资产缩略图 */
+  primary_synced: boolean;
+}
+
+/** 全片影调档案：一套调色配方，拼进所有资产图/首帧图/视频提示词。
+ *  事实来源 `backend/app/look_profile.py`。 */
+export interface ProjectLook {
+  v: number;
+  axes: Record<string, string>;
+  extra: string;
+  /** draft = AI 判的；confirmed = 用户手改过，自动流程不再覆盖 */
+  status: string;
+}
+
+export interface LookAxis {
+  key: string;
+  label: string;
+  values: string[];
+}
+
+export interface ProjectLookOut {
+  /** null = 这个项目还没生成过影调档案 */
+  look: ProjectLook | null;
+  /** 实际拼进提示词的那句话——让"提示词里到底写了什么"可见可查 */
+  phrase: string;
+  axes: LookAxis[];
+  extra_max: number;
+  axis_max: number;
+}
+
+export interface AssetQcOut {
+  name: string;
+  kind: string;
+  checked: number;
+  failed: number;
+  items: {
+    view_key: string | null;
+    row_id: string | null;
+    label: string;
+    image_url: string;
+    result: AssetQcResult | null;
+    /** 后端 `asset_qc.describe` 给的人读结论，前端直接显示不自己拼句子 */
+    summary: string;
+  }[];
 }
 
 /** 资产拖拽 payload（资产页卡片 → 时间轴轨道，经 dataTransfer 传递） */
@@ -650,15 +835,47 @@ export const api = {
   appLatest: () => get<AppLatest>("/v2/app/latest"),
 
   // ---- R0: 项目化（契约 C2/C3）----
-  productionModes: () => get<{ modes: Record<string, { video_model?: string; label: string }> }>("/v2/production-modes"),
+  productionModes: () => get<{
+    modes: Record<string, ProductionModeInfo>;
+    aspects?: string[];
+    resolutions?: string[];
+  }>("/v2/production-modes"),
 
   listProjects: () => get<{ projects: ProjectInfo[] }>("/v2/projects"),
 
   createProject: (title: string, baseAspect: string, productionMode: string,
-                  customSettings?: Record<string, string>) =>
+                  customSettings?: Record<string, string>,
+                  artStyle?: string | null) =>
     post<ProjectInfo>("/v2/projects", {
       title, base_aspect: baseAspect, production_mode: productionMode,
       custom_settings: customSettings ?? null,
+      art_style: artStyle ?? null,
+    }),
+
+  /** 读项目画风（含该模式下的可选值域与是否已回退）。 */
+  projectArtStyle: (id: string) => get<{
+    production_mode: string | null;
+    art_style: string | null;
+    effective_style: string;
+    effective_label: string;
+    /** true = 用户选的那档还没放开，实际用的是 `effective_style` */
+    pending: boolean;
+    styles: StyleOption[];
+    default_style: string | null;
+  }>(`/v2/projects/${id}/art-style`),
+
+  /** 改项目画风。只影响**此后**新生成的图与视频，已生成的不会重画。 */
+  saveProjectArtStyle: (id: string, artStyle: string | null) =>
+    fetchTracked(`${BASE}/v2/projects/${id}/art-style`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ art_style: artStyle }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
+      return r.json() as Promise<{
+        art_style: string | null; effective_style: string;
+        effective_label: string; pending: boolean;
+      }>;
     }),
 
   projectDetail: (id: string) => get<ProjectDetail>(`/v2/projects/${id}/detail`),
@@ -725,6 +942,19 @@ export const api = {
   // ---- TB-02 字幕轨 ----
   listSubtitleClips: (projectId: string) =>
     get<{ clips: SubtitleClipInfo[] }>(`/v2/projects/${projectId}/subtitle-clips`),
+
+  /** 每镜"会被念出来"的台词原文（真人剧本地对齐字幕的文本来源）。
+   *
+   *  判定哪一行是台词的权威实现在后端 `drama_timing.split_units`——拆镜算
+   *  时长用的就是它。前端不要自己解析剧本：字幕文本必须**等于**当初让视频
+   *  模型念的文本，两份解析器一漂移，对齐就失去意义了。
+   *
+   *  纯文本变换，不调模型、不产生费用。只回没被念出来的行**已剔除**的结果，
+   *  所以 `shots` 里不含纯画面描述的镜头。按 `order` 与 ShotInfo 关联。 */
+  listSpokenLines: (projectId: string) =>
+    get<{ shots: { shot_id: string; order: number; episode: number;
+                   lines: string[]; text: string }[] }>(
+      `/v2/projects/${projectId}/spoken-lines`),
 
   createSubtitleClip: (body: {
     project_id: string; text: string; kind?: string;
@@ -867,8 +1097,11 @@ export const api = {
     get<{ versions: { version_no: number; video_url: string | null; model_id: string | null; prompt: string | null; meta: Record<string, unknown> | null; created_at: string | null }[] }>(`/v2/shots/${shotId}/versions`),
 
   // ---- R1: 人物资产阶段（契约 C5）----
+  /** 造型阶段 + 场景轨 + **已删除的阶段**（墓碑，资产页「已删除」组的数据源）。
+   *  `stages` 只含在用的：它的契约是「轨道显示 = 实际注入」，墓碑不注入。 */
   listStages: (projectId: string) =>
-    get<{ stages: StageInfo[]; locations: LocationInfo[] }>(`/v2/projects/${projectId}/stages`),
+    get<{ stages: StageInfo[]; deleted_stages?: DeletedStageInfo[];
+          locations: LocationInfo[] }>(`/v2/projects/${projectId}/stages`),
 
   /** AI 识别全剧服装 → 造型阶段草稿；priors: {角色名: none|growth|multi}。
    *  逐集并发扫描 + 完整性复查（不再截断剧本），并按"同一场景同一人物服装相同"绑场景。
@@ -914,9 +1147,32 @@ export const api = {
       body: JSON.stringify(patch),
     }).then(async (r) => { if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`); return r.json() as Promise<StageInfo>; }),
 
+  /** 删除造型阶段 = **打墓碑**（软删，2026-09-09 起）。
+   *
+   *  以前是真删，误删一个已出定妆图的阶段就把那张图彻底丢了——"重跑服装识别"
+   *  找不回来：那是按剧本重新规划，出来的是新 id、没有图的阶段，还要重新花钱。
+   *  现在行与图都留着，`restoreStage` 可原样恢复。
+   *
+   *  `followers` = 把它当图源的指针行数（那几段会跟着失去图）；
+   *  `kept_image` = 定妆图仍在磁盘上（GC 连墓碑一起扫）。 */
   deleteStage: (stageId: string) =>
     fetchTracked(`${BASE}/v2/stages/${stageId}`, { method: "DELETE", headers: authHeaders() })
-      .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json() as Promise<{
+          ok: boolean; already_deleted?: boolean;
+          character_name?: string; stage_name?: string;
+          deleted_at?: string; kept_image?: boolean; followers?: number;
+        }>;
+      }),
+
+  /** 撤销删除造型阶段（清墓碑）。阶段与定妆图原样回来。
+   *
+   *  唯一会失败的情形是 **409 区间已被占**：墓碑刻意不占集区间，所以删掉之后
+   *  用户可能在同一段集里建了新造型。此时错误文本里点名了和谁撞，直接给用户看。 */
+  restoreStage: (stageId: string) =>
+    post<{ ok: boolean; already_alive?: boolean; stage?: StageInfo }>(
+      `/v2/stages/${stageId}/restore`, {}),
 
   /** 生成候选定妆图（不落库，选定后 patchStage image_url） */
   stageCandidates: (stageId: string, n = 4) =>
@@ -1453,9 +1709,117 @@ export const api = {
       return r.json() as Promise<AssetInfo>;
     }),
 
+  /** 删除资产 = **打墓碑**（软删）。
+   *
+   *  语义边界（用户 2026-09-09 决策「只断资产链，不动剧本」）：
+   *  - 断掉：不再注入参考图、不计入缺图缺口、不被自动流程重建、资产页不显示
+   *  - 不动：镜头里该角色/场景照旧存在，剧本一个字不改
+   *  - 保留：已生成的图与磁盘文件全在，可 `restoreAsset` 恢复
+   *
+   *  `affected_shots` = 剧本里还提到它的镜头数，用于删除确认文案。 */
   deleteAsset: (assetId: string) =>
     fetchTracked(`${BASE}/v2/assets/${assetId}`, { method: "DELETE", headers: authHeaders() })
-      .then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json() as Promise<{ ok: boolean }>; }),
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json() as Promise<{
+          ok: boolean; name?: string; kind?: string;
+          deleted_at?: string; affected_shots?: number;
+        }>;
+      }),
+
+  /** 恢复被删除的资产（清墓碑）。图还在，恢复后立刻重新参与生成。 */
+  restoreAsset: (assetId: string) =>
+    post<{ ok: boolean; name?: string; kind?: string }>(`/v2/assets/${assetId}/restore`, {}),
+
+  /** 角色形象档案（结构化五官/骨相/气质）+ 词表。
+   *  词表由后端给（`character_profile.AXES` 是唯一事实来源），前端不硬编码，
+   *  否则加一条轴要改两处、必然漂移。 */
+  assetProfile: (assetId: string) =>
+    get<CharacterProfileOut>(`/v2/assets/${assetId}/profile`),
+
+  /** 手改形象档案（= 改这个角色的脸）。存下的档案标 confirmed，自动流程不再覆盖。 */
+  saveAssetProfile: (assetId: string, axes: Record<string, string>,
+                     extra: string, genre?: string) =>
+    fetchTracked(`${BASE}/v2/assets/${assetId}/profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ axes, extra, genre: genre ?? null }),
+    }).then(async (r) => {
+      if (!r.ok) throw toApiError(r.status, await r.text().catch(() => ""));
+      return r.json() as Promise<{ ok: boolean; profile: CharacterProfile | null }>;
+    }),
+
+  /** 按剧本重新识别形象档案。重判几乎必然给出不同的五官，所以只由用户显式触发。 */
+  regenerateAssetProfile: (assetId: string) =>
+    post<{ ok: boolean; profile: CharacterProfile }>(
+      `/v2/assets/${assetId}/profile/regenerate`, {}),
+
+  // ---------- 场景多视角参考图 / 设定板 / 影调档案 / 视觉体检 ----------
+
+  /** 一个场景的 8 张多视角参考图现状（4 方位 + 4 景别）。
+   *  视图标签与顺序由后端 `scene_view.VIEWS` 下发（`defs`），前端不硬编码，
+   *  否则加一档景别要改两处、必然漂移（与形象档案词表同理）。 */
+  sceneViews: (assetId: string) =>
+    get<SceneViewsOut>(`/v2/assets/${assetId}/scene-views`),
+
+  /** 生成/补齐场景多视角参考图。
+   *  `viewKeys` 空 = 只补缺图的（省钱的默认，会与在跑的批量任务去重）；
+   *  给了 key = 无论有没有图都重画这几张（定向"重画"，不去重）。 */
+  generateSceneViews: (assetId: string, viewKeys?: string[],
+                       opts?: { modelId?: string; size?: string }) =>
+    post<JobOut>(`/v2/assets/${assetId}/scene-views/generate`, {
+      view_keys: viewKeys ?? [],
+      model_id: opts?.modelId ?? null,
+      size: opts?.size ?? "1024x1024",
+    }),
+
+  /** 清掉某个视角的图（磁盘文件保留——它可能已注入进已出的片子）。 */
+  clearSceneView: (assetId: string, viewKey: string) =>
+    fetchTracked(`${BASE}/v2/assets/${assetId}/scene-views/${encodeURIComponent(viewKey)}`,
+                 { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => {
+        if (!r.ok) throw toApiError(r.status, await r.text().catch(() => ""));
+        return r.json() as Promise<{ ok: boolean }>;
+      }),
+
+  /** 把已有视角图拼成美术设定板（服务端 PIL 拼图，不花生图钱）。
+   *  ⚠️ 设定板**只给人看**：它带格子线与中文标注，当参考图会被模型抄进画面，
+   *  所以它只存 `board_url`，注入链路从不读它。 */
+  buildSceneBoard: (assetId: string) =>
+    post<{ ok: boolean; board_url: string }>(`/v2/assets/${assetId}/board`, {}),
+
+  /** 全片影调档案 + 词表（词表由后端 `look_profile.AXES` 给）。 */
+  projectLook: (projectId: string) =>
+    get<ProjectLookOut>(`/v2/projects/${projectId}/look`),
+
+  /** 手改影调档案（整体覆盖，标 confirmed，此后自动流程不再覆盖）。
+   *  ⚠️ 改影调不会重画任何已生成的图，只影响此后新生成的。 */
+  saveProjectLook: (projectId: string, axes: Record<string, string>, extra: string) =>
+    fetchTracked(`${BASE}/v2/projects/${projectId}/look`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ axes, extra }),
+    }).then(async (r) => {
+      if (!r.ok) throw toApiError(r.status, await r.text().catch(() => ""));
+      return r.json() as Promise<{ ok: boolean; look: ProjectLook; phrase: string }>;
+    }),
+
+  /** 按剧本重判一套影调。与形象档案同理：审美判断，只由用户显式触发。 */
+  regenerateProjectLook: (projectId: string) =>
+    post<{ ok: boolean; look: ProjectLook; phrase: string }>(
+      `/v2/projects/${projectId}/look/regenerate`, {}),
+
+  /** 视觉体检：核验"人物图里没有场景 / 场景图里没有人 / 标注是否到位"。
+   *  判不合格**只标记不删图**——判定本身会出错，自动删图等于让一个不可靠的
+   *  判断销毁用户资产。重画哪张由用户决定。 */
+  qcAsset: (assetId: string, opts?: { viewKeys?: string[];
+                                      expectThreeView?: boolean;
+                                      expectNameLabel?: boolean }) =>
+    post<AssetQcOut>(`/v2/assets/${assetId}/qc`, {
+      view_keys: opts?.viewKeys ?? [],
+      expect_three_view: opts?.expectThreeView ?? true,
+      expect_name_label: opts?.expectNameLabel ?? true,
+    }),
 
   /** 按 (kind,name) 换图/换音色/改造型描述（拖资产卡到场景轨段=替换参考图；无行则建） */
   upsertAssetImage: (projectId: string, kind: string, name: string,
