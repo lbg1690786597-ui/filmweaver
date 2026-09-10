@@ -2,13 +2,21 @@
  * TextPanel — 文本 / 字幕（PLAN §5.3）
  *
  * 三件事：
- *   ① **自动生成整轨字幕**。主入口按 `production_mode` 分两条，不是一条带备选：
- *      · 解说剧 → **从旁白生成**：本机 ffmpeg silencedetect + 强制对齐，
- *        零网络零模型零费用。旁白是我们自己合成的，文本已知，用 ASR 去猜文本
- *        是把已知信息扔掉再买回一个更差的版本（详见 align.ts 头注释）。
- *      · 真人剧 → **识别镜头原声**：台词长在镜头视频自带的声轨里，
- *        `audio_clips` 恒为空，没有旁白可对齐，ASR 是唯一（也是正确的）通路。
- *      两者共用「会替换上次自动生成的、不动手动添加的」这一语义。
+ *   ① **自动生成整轨字幕**。主入口按 `production_mode` 分两条，但**两条都是
+ *      本机强制对齐**，不是一条对齐一条 ASR：
+ *      · 解说剧 → **从旁白生成**：文本 = `AudioClip.text`（TTS 的输入），
+ *        声轨 = 我们合成的旁白音频。
+ *      · 真人剧 → **从台词生成**：文本 = `script_ref` 里的台词行（也就是当初
+ *        送给视频模型要它念的内容），声轨 = 镜头视频自带的音轨。
+ *      两者都用本机 ffmpeg silencedetect 找停顿，零网络零模型零费用，
+ *      也共用「会替换上次自动生成的、不动手动添加的」这一语义。
+ *
+ *      ⚠️ 这里曾长期写着"真人剧 ASR 是唯一（也是正确的）通路"，理由是
+ *      "台词长在声轨里"。那个理由只说明了**声轨**的来源，漏掉了**文本也是
+ *      已知的**这一半 —— 台词就在剧本里。已知文本时正确的技术是强制对齐；
+ *      ASR 会把人名听错、在静音镜头上凭空写出「请不吝点赞 订阅 转发」，
+ *      还要按分钟计费。ASR 现降为备选，只在"用户没有文本"时才有意义
+ *      （外部素材 / 真人实拍录音）。
  *   ② 逐条编辑（文本 / 锚点镜头 / 镜内偏移 / 时长），不再只能删。
  *   ③ 两层样式：项目级默认（存 Project.default_profile.subtitle_style）
  *      + 单条覆写。烧录时 ffmpeg 只吃**一套** force_style，所以项目级那层
@@ -20,10 +28,10 @@ import {
   Type, Plus, Trash2, Wand2, Loader2, Sparkles, Check, AlertTriangle,
 } from "lucide-react";
 import { api } from "../../api";
-import type { SubtitleClipInfo } from "../../api";
+import type { SubtitleClipInfo, ShotInfo } from "../../api";
 import type { SubtitleStyleLike } from "../../lib/subtitleStyle";
 import { styleToCss } from "../../lib/subtitleStyle";
-import { generateFromNarration } from "./generate";
+import { generateFromNarration, generateFromScript } from "./generate";
 import { BUNDLED_FONTS, listSystemFonts, type FontOption } from "./fonts";
 import { IS_TAURI } from "../export/ExportDialog";
 import "./TextPanel.css";
@@ -69,22 +77,27 @@ interface Props {
   onSaveStyle: (s: SubtitleStyleLike | null) => Promise<void>;
   /** TB-08：提交语音识别 job。
    *
-   *  解说剧下它是**备选**（有原文，对齐比识别准）；
-   *  真人剧下它是**唯一**入口，见 `fromVideo`。 */
+   *  **两种模式下都是备选**：有文本时强制对齐更准（一个字都不会错）且免费。
+   *  它的正当用途只剩"用户没有文本"——外部导入的素材、真人实拍录音。 */
   onAutoSubtitles: () => Promise<void>;
   /**
    * 真人剧（`production_mode === "drama"`）。
    *
-   * 为什么面板要认这件事：真人剧的台词长在**镜头视频自带的声轨**里，
-   * `audio_clips` 恒为空 —— 「从旁白生成」需要我们自己合成过的旁白音频，
-   * 在真人剧上必然报「没有旁白」。所以这里两个入口的主次要按模式对调：
-   * 真人剧把语音识别提到最上面（识别的就是镜头原声），旁白那条降到最后。
+   * 为什么面板要认这件事：两种模式的**声轨与文本来源不同**，所以是两个函数：
+   * · 解说剧的声轨是我们合成的旁白音频，文本是 `AudioClip.text`。
+   * · 真人剧的 `audio_clips` 恒为空，声轨在镜头视频里，文本在 `script_ref` 里。
+   * 「从旁白生成」在真人剧上必然报「没有旁白」，所以真人剧要走
+   * `generateFromScript`，旁白那条降到最后。
    *
-   * 这正是 2026-09-07 那批字幕问题的来源：真人剧在应用里**根本没有**
-   * 字幕生成通路，用户看到的字幕是验证时用脚本按字数估算写进库的，
+   * 2026-09-07 那批字幕问题的来源正是这里缺口：真人剧在应用里**根本没有**
+   * 免费的字幕生成通路，用户看到的字幕是验证时用脚本按字数估算写进库的，
    * 于是既会和音频错位，也会把舞台提示当成台词。
    */
   fromVideo?: boolean;
+  /** 全部镜头。真人剧的字幕要按镜头去探声轨、按镜序锚定，
+   *  时长/片窗口（`clip_in_sec` / `clip_dur_sec`）也都在镜头上。
+   *  外层已有这份数据，面板不再自己拉一遍（同 `clips` 的单一数据源原则）。 */
+  shots: ShotInfo[];
   /** 增删改后通知外层刷新（时间轴字幕轨与本面板共用同一份数据） */
   onChanged: () => void;
   onToast: (m: string) => void;
@@ -154,7 +167,7 @@ export default function TextPanel(p: Props) {
     finally { setBusy(false); }
   };
 
-  /** 主入口：从已合成的旁白本地对齐出整轨字幕。 */
+  /** 主入口（解说剧）：从已合成的旁白本地对齐出整轨字幕。 */
   const genFromNarration = async () => {
     setGenLabel("读取旁白…");
     try {
@@ -167,6 +180,28 @@ export default function TextPanel(p: Props) {
       // 那几段的时间是估算的，可能略偏，别端着"停顿探测"这种词。
       const tail = r.degraded ? `；其中 ${r.degraded} 段的时间是估算的，可能略有偏差` : "";
       p.onToast(`✅ 已生成 ${r.created} 条字幕`
+        + (r.deleted ? `，替换旧的 ${r.deleted} 条` : "") + tail);
+    } catch (e) {
+      p.onToast(String(e instanceof Error ? e.message : e));
+    } finally { setGenLabel(""); }
+  };
+
+  /** 主入口（真人剧）：拿剧本里的台词，对着镜头视频的声轨本地对齐。
+   *
+   *  与上面那个是同一种技术、同样零费用，只是声轨与文本换了来源
+   *  （见 generate.ts 里 `generateFromScript` 的对照表）。 */
+  const genFromScript = async () => {
+    setGenLabel("读取台词…");
+    try {
+      const r = await generateFromScript(p.projectId, p.shots, {
+        probe: IS_TAURI,
+        onProgress: (done, total, label) => setGenLabel(`${label}（${done}/${total}）`),
+      });
+      reloadAll();
+      // 真人剧的 degraded 成因与旁白不同：探不到停顿多半是这一镜**真的没人声**
+      // （纯动作镜被写了台词），说法上也别提"停顿探测"。
+      const tail = r.degraded ? `；其中 ${r.degraded} 镜没探到人声，时间是估算的` : "";
+      p.onToast(`✅ 已按台词生成 ${r.created} 条字幕（${r.sources} 个镜头）`
         + (r.deleted ? `，替换旧的 ${r.deleted} 条` : "") + tail);
     } catch (e) {
       p.onToast(String(e instanceof Error ? e.message : e));
@@ -219,14 +254,12 @@ export default function TextPanel(p: Props) {
     () => (st.fontSource === "bundled" ? BUNDLED_FONTS : sysFonts),
     [st.fontSource, sysFonts]);
 
-  /* ---- 两个自动入口。主次按 fromVideo 对调（见 Props.fromVideo）---- */
+  /* ---- 三个自动入口。主入口按 fromVideo 二选一，ASR 恒为备选 ---- */
 
   const narrationBlock = (
     <>
-      <div className="fw-text-sec">
-        {p.fromVideo ? "从旁白生成（本项目通常没有旁白）" : "从旁白生成（推荐）"}
-      </div>
-      <button className={`fw-text-auto ${p.fromVideo ? "" : "primary"}`}
+      <div className="fw-text-sec">从旁白生成（推荐）</div>
+      <button className="fw-text-auto primary"
         disabled={!!genLabel}
         title="用旁白原文自动配上时间，一个字都不会错"
         onClick={() => void genFromNarration()}>
@@ -235,25 +268,40 @@ export default function TextPanel(p: Props) {
           : <><Sparkles size={12} /> 从旁白生成字幕</>}
       </button>
       <div className="fw-text-hint">
-        {p.fromVideo
-          ? "本项目的台词在镜头画面里，没有旁白可用，请用上面那个。"
-          : "字幕直接用旁白原文，逐字准确。自动字幕不带标点，想要的可以逐条编辑加上。"
-            + "每次生成会替换上一批自动字幕，你手动加的不动。"}
+        字幕直接用旁白原文，逐字准确。自动字幕不带标点，想要的可以逐条编辑加上。
+        每次生成会替换上一批自动字幕，你手动加的不动。
+      </div>
+    </>
+  );
+
+  const scriptBlock = (
+    <>
+      <div className="fw-text-sec">从台词生成（推荐）</div>
+      <button className="fw-text-auto primary"
+        disabled={!!genLabel}
+        title="用剧本里的台词原文，对着镜头声音自动配上时间"
+        onClick={() => void genFromScript()}>
+        {genLabel
+          ? <><Loader2 size={12} className="fw-spin" /> {genLabel}</>
+          : <><Sparkles size={12} /> 从台词生成字幕</>}
+      </button>
+      <div className="fw-text-hint">
+        字幕用剧本里的台词原文 —— 那正是当初让 AI 演员念的内容，所以一个字都不会错，
+        人名也不会听错。时间由本机对着镜头里的声音自动排，不花钱、不上传。
+        剧本里 ▲ 开头的画面描写不会被当成台词。
+        自动字幕不带标点，想要的可以逐条编辑加上。
+        每次生成会替换上一批自动字幕，你手动加的不动。
       </div>
     </>
   );
 
   const asrBlock = (
     <>
-      <div className="fw-text-sec">
-        {p.fromVideo ? "从镜头原声识别（推荐）" : "语音识别（没有文本时用）"}
-      </div>
-      <button className={`fw-text-auto ${p.fromVideo ? "primary" : ""}`}
+      <div className="fw-text-sec">语音识别（没有文本时用）</div>
+      <button className="fw-text-auto"
         disabled={!asrOk || asrBusy}
         title={!asrOk ? "语音识别还没开通，请到设置里配置"
-          : p.fromVideo
-            ? "自动听出镜头里的台词，配上对应时间"
-            : "让 AI 听着音频写字幕。有旁白原文时，上面那个更准"}
+          : "让 AI 听着声音写字幕。有原文时上面那个更准，也不花钱"}
         onClick={async () => {
           setAsrBusy(true);
           try {
@@ -263,16 +311,13 @@ export default function TextPanel(p: Props) {
           } finally { setAsrBusy(false); }
         }}>
         {asrBusy ? <Loader2 size={12} className="fw-spin" /> : <Wand2 size={12} />}
-        {p.fromVideo ? "识别镜头原声生成字幕" : "语音识别生成字幕"}
+        语音识别生成字幕
         {!asrOk && <span className="fw-text-todo">未配置</span>}
       </button>
-      {p.fromVideo && (
-        <div className="fw-text-hint">
-          自动听出镜头里说的话，字幕和声音天然对齐，也不会把剧本里的动作描写当成台词。
-          自动字幕不带标点，想要的可以逐条编辑加上。
-          每次生成会替换上一批自动字幕，你手动加的不动。
-        </div>
-      )}
+      <div className="fw-text-hint">
+        只在**没有文本**时才需要它（外部导入的素材、真人实拍录音）。
+        识别按时长计费，而且会把人名听错、在没人说话的镜头上凭空写出无关文字。
+      </div>
     </>
   );
 
@@ -310,8 +355,11 @@ export default function TextPanel(p: Props) {
       <div className="fw-text-body">
         {tab === "text" && (
           <>
+            {/* 真人剧不渲染「从旁白生成」：`audio_clips` 恒为空，那个按钮
+                点了必然报「没有旁白」——放一个注定失败的入口只会让人以为
+                字幕功能坏了。反过来解说剧也不渲染「从台词生成」。 */}
             {p.fromVideo
-              ? <>{asrBlock}{manualBlock}{narrationBlock}</>
+              ? <>{scriptBlock}{manualBlock}{asrBlock}</>
               : <>{narrationBlock}{manualBlock}{asrBlock}</>}
 
             {p.clips.length > 0 && (
