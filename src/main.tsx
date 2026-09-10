@@ -5,8 +5,13 @@ import App from "./App";
 import { IS_TAURI } from "./lib/isTauri";
 import { setOutboxIO, hydrateOutbox } from "./lib/outboxStore";
 import { tauriOutboxIO } from "./lib/persistIO";
+import { applyFontScale } from "./lib/fontScale";
 import "./styles/tokens.css";
 import "./styles.css";
+
+// 界面字号：**在 render 之前**写 `--fs-scale`。放进组件的 effect 里的话，
+// 首屏会先按 1.0 画一帧再跳档，肉眼可见"字先小后大"的闪跳。
+applyFontScale();
 
 // 6.8 离线补发队列的落盘实现在这里注入，**在 render 之前**。
 //
