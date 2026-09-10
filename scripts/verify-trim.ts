@@ -293,8 +293,12 @@ ok("旧行没窗口时，撤销是清窗口而不是写 in=0",
 const pl = read("src/features/editor/Player.tsx");
 ok("预览器按窗口停（修剪掉的尾巴不该还能播出来）",
    pl.includes("v.currentTime >= w.inSec + w.durSec"));
+// 3.9：修剪镜到点改走 `handleEnded()` —— 它在最末调用 `p.onEnded()`，
+// 中间多包了一层「先抓末帧、再起转场预览」的逻辑（见 SeamTransition）。
+// 不变式仍是：修剪过的镜头到点必须触发连播/暂停标记，绝不能停在原地成为终点。
 ok("到点复用 onEnded（否则修剪过的镜头会成为连播的终点）",
-   /endedFired\.current = true;[\s\S]{0,80}p\.onEnded\(\)/.test(pl));
+   /endedFired\.current = true;[\s\S]{0,80}handleEnded\(\)/.test(pl)
+   && /const handleEnded = \(\) => \{[\s\S]{0,400}p\.onEnded\(\)/.test(pl));
 ok("<video> 的 key={previewUrl} 仍在（§0.5(g)：去掉会导致换源不重载）",
    pl.includes("key={p.previewUrl}"));
 
