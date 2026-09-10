@@ -256,19 +256,19 @@ export default function PreflightDialog(p: Props) {
                     <div style={{ marginTop: 4, display: "flex",
                                   alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                       <span className={p.narrationVoiceUrl ? "" : "err"}
-                        style={{ fontSize: 11 }}>
+                        style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                         {p.narrationVoiceUrl
                           ? "✓ 解说音色已设置"
                           : "⚠️ 未设解说音色 — 配音阶段会中止"}
                       </span>
                       <button className="link-btn" disabled={upVoice}
-                        style={{ fontSize: 11 }}
+                        style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}
                         onClick={() => voiceRef.current?.click()}>
                         {upVoice ? "上传中…"
                           : p.narrationVoiceUrl ? "更换音色" : "上传音色"}
                       </button>
                       {p.narrationVoiceUrl && (
-                        <button className="link-btn" style={{ fontSize: 11 }}
+                        <button className="link-btn" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}
                           onClick={() => setVoicePreview(
                             api.mediaUrl(p.narrationVoiceUrl!))}>
                           试听
@@ -298,7 +298,7 @@ export default function PreflightDialog(p: Props) {
                     {rd.image_model ? ` / ${imageModelLabel(rd.image_model)}` : ""}
                   </span>
                   {rd.generation_mode === "i2va" && !rd.i2va_supported && (
-                    <div className="err" style={{ fontSize: 11 }}>
+                    <div className="err" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                       ⚠️ 该视频模型不支持首帧输入
                       {rd.i2va_reason ? `（${rd.i2va_reason}）` : ""}
                       ，本次将<b>回退全参考路线</b>，首帧图不会真正生效
@@ -329,7 +329,7 @@ export default function PreflightDialog(p: Props) {
                 <td>资产</td>
                 <td>
                   {noImg.length > noImgHard.length && (
-                    <div className="muted" style={{ fontSize: 11, marginBottom: 4 }}>
+                    <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginBottom: 4 }}>
                       ℹ️ {noImg.length - noImgHard.length} 个造型阶段还没出图（将回退角色基础定妆图）：
                       {noImg.filter((s) => s.fallback).slice(0, 6)
                         .map((s) => `${s.character_name}·${s.stage_name}`).join(" / ")}
@@ -339,7 +339,7 @@ export default function PreflightDialog(p: Props) {
                   {noImgHard.length > 0 && (
                     <div className="err" style={{ marginBottom: 4 }}>
                       ⚠️ {noImgHard.length} 个造型阶段既无专属图、该角色也无通用定妆图：
-                      <span className="muted" style={{ fontSize: 11 }}>
+                      <span className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                         {noImgHard.slice(0, 6).map((s) => `${s.character_name}·${s.stage_name}`).join(" / ")}
                         {noImgHard.length > 6 ? " …" : ""}
                       </span>
@@ -348,17 +348,17 @@ export default function PreflightDialog(p: Props) {
                   {noAsset.length > 0 && (
                     <div className="err" style={{ marginBottom: 4 }}>
                       ⚠️ {noAsset.length} 个出场角色没有任何可注入的定妆图：
-                      <span className="muted" style={{ fontSize: 11 }}>
+                      <span className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                         {noAsset.slice(0, 6).map((c) => c.name).join("、")}
                         {noAsset.length > 6 ? " …" : ""}
                       </span>
-                      <div className="muted" style={{ fontSize: 11 }}>
+                      <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                         无参考图可注入，长相由模型自由发挥，同一角色跨镜会变脸
                       </div>
                     </div>
                   )}
                   {rd.assets.locations_no_image.length > 0 && (
-                    <div className="muted" style={{ fontSize: 11 }}>
+                    <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                       {rd.assets.locations_no_image.length} 个场景没有参考图：
                       {rd.assets.locations_no_image.slice(0, 6).join("、")}
                       {rd.assets.locations_no_image.length > 6 ? " …" : ""}
@@ -382,10 +382,10 @@ export default function PreflightDialog(p: Props) {
                 <tr>
                   <td>服装</td>
                   <td>
-                    <div className="muted" style={{ fontSize: 12 }}>
+                    <div className="muted" style={{ fontSize: "calc(12px * var(--fs-scale, 1))" }}>
                       尚未识别（流程第 ② 步会自动跑，也可现在单独跑）
                     </div>
-                    <button className="btn" style={{ fontSize: 11, marginTop: 4 }}
+                    <button className="btn" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginTop: 4 }}
                       onClick={() => { p.onCostumeScan(); p.onClose(); }}>
                       🔍 识别全剧服装（不出图）
                     </button>
@@ -404,7 +404,7 @@ export default function PreflightDialog(p: Props) {
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: 12, marginTop: 2 }}>
+                    <div style={{ fontSize: "calc(12px * var(--fs-scale, 1))", marginTop: 2 }}>
                       {rd.costumes.to_generate > 0
                         ? <>本次需出图 <b>{rd.costumes.to_generate}</b> 张（会产生费用）</>
                         : <span className="ok-text">✅ 所有造型都已有图，无需出图</span>}
@@ -412,7 +412,7 @@ export default function PreflightDialog(p: Props) {
                         <span className="muted">　免费复用 {rd.costumes.followers} 段（同一件衣服共用图）</span>
                       )}
                     </div>
-                    <button className="btn ghost" style={{ fontSize: 11, marginTop: 4 }}
+                    <button className="btn ghost" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginTop: 4 }}
                       onClick={openRep}>
                       {repOpen ? "收起服装清单" : "查看服装清单"}
                     </button>
@@ -420,7 +420,7 @@ export default function PreflightDialog(p: Props) {
                     {repOpen && rep && (
                       <div style={{ maxHeight: 220, overflow: "auto", marginTop: 4 }}>
                         {rep.summary.shot_char_uncovered > 0 && (
-                          <div className="err" style={{ fontSize: 11 }}>
+                          <div className="err" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                             ⚠️ {rep.summary.shot_char_uncovered}/{rep.summary.shot_char_pairs} 处
                             「镜头×角色」还取不到任何参考图（出图后即会补齐）
                           </div>
@@ -428,10 +428,10 @@ export default function PreflightDialog(p: Props) {
                         <table className="preflight-table"><tbody>
                           {rep.stages.map((s) => (
                             <tr key={s.id}>
-                              <td style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+                              <td style={{ fontSize: "calc(11px * var(--fs-scale, 1))", whiteSpace: "nowrap" }}>
                                 {s.character_name}·{s.stage_name}
                               </td>
-                              <td style={{ fontSize: 11 }}>
+                              <td style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                                 <span className="muted">
                                   第 {s.ep_from}
                                   {s.ep_to !== s.ep_from ? `-${s.ep_to}` : ""} 集
@@ -463,11 +463,11 @@ export default function PreflightDialog(p: Props) {
                     {missing.length ? (
                       <div className="err">
                         ⚠️ {missing.length} 个镜头还没有首帧图
-                        <span className="muted" style={{ fontSize: 11 }}>
+                        <span className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                           （{missing.slice(0, 12).map((m) => `#${m.order}`).join(" ")}
                           {missing.length > 12 ? " …" : ""}）
                         </span>
-                        <div className="muted" style={{ fontSize: 11 }}>
+                        <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
                           不补也能出片：生成视频时会自动补一张。但先补齐更划算——
                           首帧几毛钱一张，能先看构图再决定要不要出片
                         </div>
@@ -492,7 +492,7 @@ export default function PreflightDialog(p: Props) {
                       <div key={i}
                         className={w.level === "error" ? "err"
                           : w.level === "warn" ? "warn-text" : "muted"}
-                        style={{ fontSize: 12, marginBottom: 3 }}>
+                        style={{ fontSize: "calc(12px * var(--fs-scale, 1))", marginBottom: 3 }}>
                         {w.level === "error" ? "⛔ " : w.level === "warn" ? "⚠️ " : "ℹ️ "}
                         {w.text}
                       </div>
@@ -565,7 +565,7 @@ export default function PreflightDialog(p: Props) {
                       </select>
                     </label>
 
-                    <div className="muted" style={{ fontSize: 10, lineHeight: 1.6 }}>
+                    <div className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))", lineHeight: 1.6 }}>
                       仅本次生效，不修改项目默认设置。
                       分辨率越高越贵也越慢，试片建议先用较低档。
                     </div>
