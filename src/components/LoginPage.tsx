@@ -48,7 +48,13 @@ export default function LoginPage(p: Props) {
   const doFeishuLogin = async () => {
     setBusy(true); setErr("");
     try {
-      const { ticket, authorize_url } = await api.feishuStart("desktop");
+      const { ticket, authorize_url, claim_secret } = await api.feishuStart("desktop");
+      if (!claim_secret) {
+        // 后端太旧（2026-09-11 之前）就不会返回它。此时 poll 必定 403，
+        // 与其让用户对着一个永远 pending 的转圈等 10 分钟，不如立刻说清。
+        setErr("后端版本过旧（缺少取号密钥），请联系管理员更新织影后端。");
+        return;
+      }
       // 用系统浏览器打开：飞书授权页在应用内 WebView 里常因 UA/Cookie 限制走不通，
       // 而且用户在系统浏览器里可能已有飞书登录态，扫码更快
       await openUrl(authorize_url);
@@ -64,7 +70,9 @@ export default function LoginPage(p: Props) {
           return;
         }
         try {
-          const r = await api.feishuPoll(ticket);
+          // claim_secret 只活在这个闭包里：不落 localStorage、不进 URL。
+          // 它是"只有发起登录的这个客户端才能取号"的那把钥匙（后端 S2）。
+          const r = await api.feishuPoll(ticket, claim_secret);
           if (r.status === "ok" && r.token && r.user) {
             stopPoll(); setWaiting(false);
             localStorage.setItem("fw_session", r.token);
@@ -74,8 +82,14 @@ export default function LoginPage(p: Props) {
             setErr("登录请求已失效，请重新点击飞书登录。");
           }
           // pending：继续等
-        } catch {
-          // 单次轮询失败（网络抖动）不该终止整个流程，下一次再试
+        } catch (e) {
+          // 单次轮询失败（网络抖动）不该终止整个流程，下一次再试。
+          // 但 403 是**确定性**失败（取号密钥/来源校验没过），再试一万次也一样，
+          // 必须当场停下并说清，否则用户只会看到一直转圈到超时。
+          if ((e as { status?: number })?.status === 403) {
+            stopPoll(); setWaiting(false);
+            setErr(`取号被拒绝：${String((e as Error)?.message ?? e).slice(0, 120)}`);
+          }
         }
       }, POLL_MS);
     } catch (e) {
