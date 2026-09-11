@@ -38,9 +38,12 @@ const AI_ITEMS: RailItem[] = [
   { tab: "ai-tasks", label: "任务", Icon: ListTodo },
 ];
 
-export default function Rail() {
+export default function Rail(p: { productionMode?: string | null } = {}) {
   const tab = useEditorStore((s) => s.leftPanelTab);
   const setTab = useEditorStore((s) => s.setLeftPanelTab);
+  // 真人剧的 ai-voice 面板里是**角色音色**（给角色指定说话声），不是 TTS 配音。
+  // 侧栏还写"配音"的话，点进去看到的东西对不上（见 AudioPanel 头注释）。
+  const isNarration = p.productionMode === "narration";
 
   const renderItem = ({ tab: t, label, Icon }: RailItem) => (
     <button key={t}
@@ -52,12 +55,15 @@ export default function Rail() {
     </button>
   );
 
+  const aiItems = AI_ITEMS.map((it) =>
+    it.tab === "ai-voice" && !isNarration ? { ...it, label: "音色" } : it);
+
   return (
     <>
       {EDIT_ITEMS.map(renderItem)}
       <div className="fw-rail-sep" />
       <div className="fw-rail-group-tag" title="FilmWeaver AI 创作">AI</div>
-      {AI_ITEMS.map(renderItem)}
+      {aiItems.map(renderItem)}
     </>
   );
 }
