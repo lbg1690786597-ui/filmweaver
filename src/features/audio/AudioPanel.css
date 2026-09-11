@@ -188,6 +188,61 @@
 .fw-audio-chip.ok { background: color-mix(in oklch, var(--c-success) 20%, transparent); color: var(--c-success); }
 .fw-audio-chip.dim { background: var(--c-raised); color: var(--c-muted); }
 
+/* ---- 真人剧：角色音色列表 ----
+   与解说剧那份 .fw-audio-char 的区别是这里**每行都能操作**（试听/上传/选库/清除），
+   所以要给行留出按钮区、并把名字与状态叠成两行。 */
+.fw-audio-voicelist { display: flex; flex-direction: column; gap: 2px; }
+
+.fw-audio-voicerow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) 0;
+  border-radius: var(--r-sm);
+}
+.fw-audio-voicerow:hover { background: var(--c-hover); }
+
+.fw-audio-voiceinfo {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+/* .fw-audio-char-name 在解说剧那份里是 flex:1（横排占位）；这里是竖排，
+   继承过来会把名字拉伸得莫名其妙，显式收掉。 */
+.fw-audio-voiceinfo .fw-audio-char-name {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 操作按钮**常显**（半透明），不做 hover 才出现：
+   藏在 hover 里的按钮 = 用户眼里没这功能。 */
+.fw-audio-voiceacts { display: flex; gap: 2px; flex-shrink: 0; }
+.fw-audio-voiceacts button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.75;
+  transition: background var(--t-fast), color var(--t-fast), opacity var(--t-fast);
+}
+.fw-audio-voicerow:hover .fw-audio-voiceacts button { opacity: 1; }
+.fw-audio-voiceacts button:hover:not(:disabled) { background: var(--c-surface); color: var(--c-text); }
+.fw-audio-voiceacts button.danger:hover:not(:disabled) { color: var(--c-danger); }
+.fw-audio-voiceacts button:disabled { opacity: 0.3; cursor: default; }
+
 .fw-audio-btn {
   display: inline-flex;
   align-items: center;
