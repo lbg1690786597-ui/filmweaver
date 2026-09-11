@@ -79,11 +79,29 @@ function parseBlock(css: string, selector: string): Map<string, [number, number,
 }
 
 const css = readFileSync(TOKENS, "utf8");
-const tokens = parseBlock(css, ":root");
-const lightTokens = parseBlock(css, '[data-theme="light"]');
+
+// ⚠️ 2026-09-10 起 tokens.css 里的 oklch 全在 `@supports (color: oklch(…))` 块内，
+// 块外另有一份等价 hex 回退（给老 WebView2 用，见 tokens.css 文件头）。
+// 直接对全文找 ":root" 会先撞上那份 hex 回退、一个 oklch 都解析不到，
+// 所以这里先把作用域收窄到 @supports 块里。
+function colorScope(src: string): string {
+  const at = src.indexOf("@supports (color: oklch");
+  if (at < 0) return src; // 结构又变了：退回全文，下面的空判定会报错提醒
+  const open = src.indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (depth === 0) return src.slice(open + 1, i); }
+  }
+  return src.slice(open + 1);
+}
+
+const colorCss = colorScope(css);
+const tokens = parseBlock(colorCss, ":root");
+const lightTokens = parseBlock(colorCss, '[data-theme="light"]');
 
 if (tokens.size === 0) {
-  console.log("❌ 没从 tokens.css 的 :root 解析到任何 oklch() token");
+  console.log("❌ 没从 tokens.css 的 @supports(oklch) → :root 解析到任何 oklch() token");
   process.exit(1);
 }
 
