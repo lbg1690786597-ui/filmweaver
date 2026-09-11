@@ -85,14 +85,27 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 /** 后端结构化错误（FastAPI detail 为对象时）：带 reason 便于前端分类处置。
  *  典型来源：首帧生成被内容审核拒绝（reason="moderation"）——这类**重试无效**，
  *  必须引导用户改写提示词或换生图模型，不能只显示一句"生成失败"。 */
+export type ClipReference = {
+  /** 引用种类（后端 UrlColumn.kind），如 shot / asset_stage / scene_view */
+  type: string;
+  /** 引用方的行 id */
+  id: string;
+  /** 引用所在库表，如 asset_stages。排障用，界面不展示 */
+  table: string;
+  /** 给人看的一句话，如「角色「林晚」造型「沉郁迷茫」的定妆图」 */
+  label: string;
+};
+
 export class ApiError extends Error {
   status: number;
   reason?: string;
   categories?: string[];
-  /** B23：删除素材被引用挡下时，后端回的引用清单（用于给用户看清删了会坏什么） */
-  references?: { type: string; id: string; label: string }[];
+  /** B23：删除素材被引用挡下时，后端回的引用清单（用于给用户看清删了会坏什么）。
+   *  `table` 是引用所在的库表名（后端 `media_refs.URL_COLUMNS` 的单一事实来源），
+   *  界面只展示 `label`；`table` 供排障与验证脚本点名用。 */
+  references?: ClipReference[];
   constructor(status: number, message: string, reason?: string, categories?: string[],
-              references?: { type: string; id: string; label: string }[]) {
+              references?: ClipReference[]) {
     super(message);
     this.status = status;
     this.reason = reason;
@@ -113,11 +126,16 @@ function toApiError(status: number, raw: string): ApiError {
   return new ApiError(status, `${status}: ${raw.slice(0, 300)}`);
 }
 
-async function get<T>(path: string): Promise<T> {
+async function get<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
   // 6.7：读请求也走 `fetchTracked`。它对 GET **不计入保存状态**（`isTrackedWrite`
   // 只认写方法），走这一趟只为了让读也成为「后端还连不连得上」的证据 ——
   // 全软件绝大多数请求是读，只盯写的话，一个只在浏览的用户断了网也察觉不到。
-  const resp = await fetchTracked(`${BASE}${path}`, { headers: authHeaders() });
+  //
+  // `extraHeaders` 目前只有一个用途：飞书轮询取号的 `X-FW-Claim`。
+  // 那个取号密钥**刻意不放 query** —— query 会进 nginx access log，
+  // 而 ticket 已经在 query 里，两个都落日志就等于把会话写进日志。
+  const resp = await fetchTracked(`${BASE}${path}`,
+    { headers: extraHeaders ? { ...authHeaders(), ...extraHeaders } : authHeaders() });
   // 2.4：以前这里是 `throw new Error(String(resp.status))` —— 整条消息就是三个
   // 数字，读路径的 catch 只能一律当"失败"处理，说不出"是接口不存在还是后端挂了"。
   // 而这两件事用户能做的动作完全不同（前者是功能不可用，后者是稍后重试）。
@@ -224,6 +242,25 @@ export interface ProjectInfo {
   shots_done?: number;
   total_sec?: number;
   thumb_url?: string | null;
+  /** 建项目时刻（ISO8601）。**可能为 null**：迁移只能从 jobs 回填，
+   *  从没跑过任何任务的老空项目推断不出来。排序时 null 一律排最后。 */
+  created_at?: string | null;
+  /** 回收站墓碑时刻；null/缺省 = 在用 */
+  deleted_at?: string | null;
+  /** 最近活动 = 该项目最后一个任务的时刻（由 jobs 派生，不是 updated_at 列） */
+  last_active_at?: string | null;
+}
+
+/** 彻底删除的预演结果（只算不删），用于把确认框写具体。 */
+export interface PurgePreview {
+  /** 将被 unlink 的独占文件数 */
+  files: number;
+  /** 将释放的字节数 */
+  bytes: number;
+  /** 因被别的项目共用而**保留**的文件数 */
+  shared_skipped: number;
+  /** 各表将删除的行数，如 `{ shots: 120, assets: 8 }` */
+  rows: Record<string, number>;
 }
 
 export interface EpisodeInfo {
@@ -293,10 +330,6 @@ export interface ShotInfo {
   /** 首帧流水线（i2va）：本镜首帧图；视频由该帧生长而来。
    *  先审首帧再出视频可省废片成本，也是排查场景偏移的抓手。null=未走首帧路线 */
   first_frame_url: string | null;
-  /** 本镜出片后抽的尾帧（供下一个连续镜头当参考图） */
-  tail_frame_url?: string | null;
-  /** 本镜接了上一镜尾帧作为参考图之一时有值（判据由后端统一给，前端不自己拼） */
-  prev_tail_ref?: { url: string; from_order: number; label: string } | null;
   /** 镜头级策略覆盖（三层策略最高优先级）；null=继承项目 */
   profile_override: Record<string, unknown> | null;
   /** TB-01 分割后的取片窗口（秒）。分割不重新转码，前后两段共用同一
@@ -439,6 +472,11 @@ export interface Readiness {
   image_model: string | null;
   /** 项目画幅（9:16 等）。生产检查弹窗据此算分辨率可选档位 */
   base_aspect?: string | null;
+  /** 项目分辨率档位（480p/720p/1080p/2k）= 新建向导里选的那一档。
+   *  **可能为 null**：老项目的 default_profile 里没这一项，那就是"模型默认"。
+   *  「本次参数」面板拿它当"沿用项目设置（…）"的显示值——没有它就只能
+   *  默认显示档位表第一项，用户选的 720p 会被显示成 1080p。 */
+  resolution?: string | null;
   /** 当前视频模型是否支持首帧输入；false 时后端会静默回退全参考 */
   i2va_supported: boolean;
   i2va_reason: string | null;
@@ -497,6 +535,32 @@ export interface SceneGroup {
     time_of_day: string | null;
     int_ext: string | null;
   }[];
+}
+
+/** 归一建议的**预览**（POST /v2/projects/{id}/scenes/preview，只算不写）。
+ *  比 `SceneGroup` 多的全是"执行后会变什么"：哪个写法会被改、
+ *  会推翻哪条人工映射、会删掉哪一行场景资产（不可逆的那一段）。 */
+export interface ScenePreviewGroup {
+  canonical: string;
+  shots: number;
+  /** false = 这一组现在就已经是这样了，确认它什么都不会发生 */
+  changed: boolean;
+  /** 已被用户手改成别的归一名的成员：确认这一组就是推翻自己的手改 */
+  locked: string[];
+  members: {
+    raw_name: string;
+    shots: number;
+    current_canonical: string;
+    source: string;
+    will_change: boolean;
+    time_of_day: string | null;
+    int_ext: string | null;
+  }[];
+  /** 空对象 = 没有资产要合并。非空则 drop 里的行会被**删除** */
+  asset_merges: {
+    keep: { name: string; has_image: boolean };
+    drop: { name: string; has_image: boolean; deleted: boolean }[];
+  } | Record<string, never>;
 }
 
 /** 服装解析报告（GET /v2/projects/{id}/costume-report）：
@@ -740,6 +804,24 @@ export interface AssetDragData {
 }
 
 /** P2-4 音频轨段：TTS 旁白 / 配乐，锚定镜头 order + 镜内偏移 */
+/**
+ * 音色库里的一条音色（全局素材，与项目无关）。
+ *
+ * ⚠️ 这个库**当前是空的**，后端 `/v2/voice-library` 常态返回 `voices: []`。
+ * 它不是坏了——音色素材要后期才补。前端必须把空库当**主要形态**做好：
+ * 明说"建设中"并引导去上传自己的音色，而不是甩一句"暂无数据"。
+ */
+export interface VoiceLibItem {
+  id: string;
+  name: string;
+  gender: string | null;
+  age: string | null;
+  style: string | null;
+  tags: string[];
+  /** 试听/赋值用的音频地址（/fw/media/voice-library/xxx.wav） */
+  url: string;
+}
+
 export interface AudioClipInfo {
   id: string;
   /** shot = 从镜头视频里剥出来的原声；narration = 解说剧按剧本切出的旁白 */
@@ -816,14 +898,23 @@ export const api = {
 
   // ---- 登录（飞书扫码，2026-08 起账号密码已移除）----
   // mode 决定回调怎么收尾：desktop 显示落地页等轮询，web 直接 302 回应用
+  //
+  // `claim_secret`（2026-09-11 起，后端 S2）：只有 desktop 模式会返回，
+  // 是取号的第二把钥匙。它**只存在于本次响应的内存里** —— 不写 localStorage、
+  // 不进 URL，因为整个劫持路径的前提就是"ticket 必然经过扫码那个人的浏览器"，
+  // 而这把钥匙全程不出现在授权链接里。web 模式压根不走 poll（回调直接 302
+  // 带回令牌），所以后端也不发。
   feishuStart: (mode: "desktop" | "web" = "desktop") =>
-    post<{ ticket: string; authorize_url: string }>(
+    post<{ ticket: string; authorize_url: string; claim_secret?: string }>(
       `/v2/auth/feishu/start?mode=${mode}`, {}),
-  feishuPoll: (ticket: string) =>
+  feishuPoll: (ticket: string, claimSecret: string) =>
     get<{ status: "pending" | "ok" | "expired"; token?: string; expires_at?: string; user?: { id: number; username: string; display_name: string | null; role: string } }>(
-      `/v2/auth/feishu/poll?ticket=${encodeURIComponent(ticket)}`),
+      `/v2/auth/feishu/poll?ticket=${encodeURIComponent(ticket)}`,
+      { "X-FW-Claim": claimSecret }),
 
-  logout: (token: string) => post<{ ok: boolean }>("/v2/auth/logout", { token }),
+  // 登出只吊销**自己**的会话：主体由 Authorization 头决定（authHeaders() 带上），
+  // 请求体不再传 token —— 后端 2026-09-11 起会拒绝"用我的 token 吊销别人的"。
+  logout: () => post<{ ok: boolean }>("/v2/auth/logout", {}),
 
   authMe: () =>
     get<{ user: { id: number; username: string; display_name: string | null; role: string } }>(
@@ -841,7 +932,51 @@ export const api = {
     resolutions?: string[];
   }>("/v2/production-modes"),
 
-  listProjects: () => get<{ projects: ProjectInfo[] }>("/v2/projects"),
+  /** 项目列表。`trash=true` **只**返回回收站里的项目（与在用列表互斥）。 */
+  listProjects: (trash = false) =>
+    get<{ projects: ProjectInfo[] }>(`/v2/projects${trash ? "?trash=true" : ""}`),
+
+  /** 重命名项目。
+   *
+   *  ⚠️ title 会作为片名进入生成提示词，所以改名影响**此后**新生成内容的语境，
+   *  已生成的图与视频不变——这句必须在 UI 上告诉用户。 */
+  renameProject: (id: string, title: string) =>
+    fetchTracked(`${BASE}/v2/projects/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ title }),
+    }).then(async (r) => {
+      if (!r.ok) throw toApiError(r.status, await r.text());
+      return r.json() as Promise<{ ok: boolean; id: string; title: string }>;
+    }),
+
+  /** 移入回收站（打墓碑）。数据与磁盘文件一个不动，可 `restoreProject` 恢复。 */
+  trashProject: (id: string) =>
+    fetchTracked(`${BASE}/v2/projects/${id}`, { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => {
+        if (!r.ok) throw toApiError(r.status, await r.text());
+        return r.json() as Promise<{ ok: boolean; mode: string; deleted_at?: string }>;
+      }),
+
+  /** 从回收站恢复。 */
+  restoreProject: (id: string) =>
+    post<{ ok: boolean; id: string }>(`/v2/projects/${id}/restore`, {}),
+
+  /** 彻底删除前的预演：会删几个文件、释放多少、有几个因共用而保留。 */
+  purgePreview: (id: string) => get<PurgePreview>(`/v2/projects/${id}/purge-preview`),
+
+  /** 彻底删除（**不可恢复**）：删库行 + unlink 该项目独占的文件。
+   *  后端要求项目已在回收站，否则 409。 */
+  purgeProject: (id: string) =>
+    fetchTracked(`${BASE}/v2/projects/${id}?purge=true`,
+          { method: "DELETE", headers: authHeaders() })
+      .then(async (r) => {
+        if (!r.ok) throw toApiError(r.status, await r.text());
+        return r.json() as Promise<{
+          ok: boolean; mode: string; rows: Record<string, number>;
+          files_deleted: number; bytes_freed: number; shared_skipped: number;
+        }>;
+      }),
 
   createProject: (title: string, baseAspect: string, productionMode: string,
                   customSettings?: Record<string, string>,
@@ -1072,6 +1207,10 @@ export const api = {
       body: JSON.stringify({ tag }),
     }).then(async (r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); }),
 
+  // ---- 音色库（全局素材，当前为空）----
+  voiceLibrary: () =>
+    get<{ voices: VoiceLibItem[]; count: number; error?: string }>("/v2/voice-library"),
+
   // ---- TB-08 自动字幕 ----
   asrStatus: () => get<{ available: boolean }>("/v2/asr/status"),
   submitAutoSubtitles: (projectId: string, replace = false) =>
@@ -1130,17 +1269,37 @@ export const api = {
       body: JSON.stringify({ project_id: projectId, raw_name: rawName, canonical }),
     }).then(async (r) => { if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`); return r.json() as Promise<{ ok: boolean; changed: boolean }>; }),
 
-  /** 跑一次场景别名合并（一次文本模型调用，不生成任何图、不花生图钱） */
-  canonicalizeScenes: (projectId: string) =>
-    post<{ ok: boolean; updated: number; llm: boolean; scenes: { canonical: string; members: string[] }[] }>(
-      `/v2/projects/${projectId}/scenes/canonicalize`, { project_id: projectId }),
+  /** 归一建议 + 逐条影响（只算不写，一次文本模型调用，不出图）。
+   *  由用户点按钮触发 —— 别在打开面板时自动跑，那是白花一次模型调用。 */
+  previewSceneCanon: (projectId: string) =>
+    post<{ ok: boolean; llm: boolean; groups: ScenePreviewGroup[] }>(
+      `/v2/projects/${projectId}/scenes/preview`, {}),
+
+  /** 把**用户逐组确认过**的分组写进库（source=manual，AI 重跑不推翻）。
+   *
+   *  ⚠️ 后端还有一条 `POST /scenes/canonicalize`（算完直接全量写库），
+   *  这里**刻意不封装它**：归一是有损的（同一归一名下多行场景资产会被合并成
+   *  一行、删掉的那行可能已出过图），"一键全归一"等于让用户在没看过的合并上
+   *  也点了同意。那条路径只保留给 `stages_draft` 内部使用。见文档 U3。 */
+  applySceneGroups: (projectId: string,
+                     groups: { canonical: string; members: string[] }[]) =>
+    post<{ ok: boolean; applied_groups: number; updated: number;
+           assets: { renamed: number; merged: number; deleted: string[] } }>(
+      `/v2/projects/${projectId}/scenes/apply-groups`, { groups }),
 
   /** 服装解析报告（只读，花费闸门数据源：先报数，用户点了才出图） */
   costumeReport: (projectId: string) =>
     get<CostumeReport>(`/v2/projects/${projectId}/costume-report`),
 
   patchStage: (stageId: string, patch: Partial<Pick<StageInfo,
-    "stage_name" | "ep_from" | "ep_to" | "shot_from" | "shot_to" | "description" | "image_url" | "status" | "location" | "scene_bound">>) =>
+    "stage_name" | "ep_from" | "ep_to" | "shot_from" | "shot_to" | "description" | "image_url" | "status" | "location" | "scene_bound">>
+    & {
+      /** 换成**用户自己上传的图**时传 true：连同换图把旧造型描述清空。
+       *  见后端 `routes_v2._CLEAR_DESC_WHY`——旧描述是拆剧本时按文字写的，
+       *  与这张新图无关，留着它反而会在出片时压过参考图导致外观漂移。
+       *  ⚠️ 采用 AI 候选图**不要**传：那张图本来就是照着这段描述生的。 */
+      clear_description?: boolean;
+    }) =>
     fetchTracked(`${BASE}/v2/stages/${stageId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -1174,9 +1333,12 @@ export const api = {
     post<{ ok: boolean; already_alive?: boolean; stage?: StageInfo }>(
       `/v2/stages/${stageId}/restore`, {}),
 
-  /** 生成候选定妆图（不落库，选定后 patchStage image_url） */
-  stageCandidates: (stageId: string, n = 4) =>
-    post<{ urls: string[]; prompt: string }>(`/v2/stages/${stageId}/candidates`, { n }),
+  //: 这里曾有 `stageCandidates`（同步版 `POST /v2/stages/{id}/candidates`：一次请求里
+  //: 等图出完再返回）。**刻意不再封装**：候选定妆图统一走 job 化的
+  //: `submitAssetCandidates` / `latestAssetCandidates`（可关窗、可接回、TasksDrawer 可见）。
+  //: 两条路并存的后果已经发生过一次——2026-09-11 的复审因为只看到这个包装，
+  //: 误判"前端从来没有候选图入口"。后端那条同步路由仅为已安装的旧客户端保留，
+  //: 新代码不要再接它，详见 `docs/AUDIT-2026-09-11-全面复审.md` 的 U6。
 
   /** P1-2 资产轨拖拽落库：批量增删某角色/场景的注入覆写（一次事务）。
    *  向外拖=add（该镜生成时注入此参考图），向内拖=remove，reset=重置为 AI 判定。
@@ -1504,7 +1666,7 @@ export const api = {
   /** 一键成片（异步 job）：拆解 → 逐镜生成 → 拼接，进度 0-100 */
   submitOneClickFilm: (
     projectId: string,
-    opts?: { genAssets?: boolean; script?: string; videoModel?: string; llmModel?: string; promptPrefix?: string; width?: number; height?: number; fps?: number },
+    opts?: { genAssets?: boolean; script?: string; videoModel?: string; llmModel?: string; promptPrefix?: string; resolution?: string | null; aspect?: string | null },
   ) =>
     post<JobOut>("/v2/jobs", {
       kind: "one_click_film",
@@ -1515,9 +1677,14 @@ export const api = {
         video_model: opts?.videoModel ?? null,
         llm_model: opts?.llmModel ?? null,
         prompt_prefix: opts?.promptPrefix ?? null,
-        width: opts?.width ?? 1080,
-        height: opts?.height ?? 1920,
-        fps: opts?.fps ?? 30,
+        // ⚠️ 这里原来是 `width: opts?.width ?? 1080, height: opts?.height ?? 1920,
+        // fps: 30`。三个键**后端从来没读过**（服务端不再合成，成片由桌面端
+        // ffmpeg 出），而那两个 ?? 兜底还把"沿用项目设置"变成了每次都硬发
+        // 1080×1920——「本次参数」里改分辨率既不生效也不报错。
+        // 真正管用的是档位名 + 画幅，后端据此算 megapixels 下发给 Provider。
+        // null = 沿用项目设置：**不要**在这里用项目值兜底。
+        resolution: opts?.resolution ?? null,
+        aspect_ratio: opts?.aspect ?? null,
       },
     }),
 
@@ -1694,15 +1861,25 @@ export const api = {
 
   /** 改资产（kind=拖拽重分类 custom→character/location；imageUrl=换图；voiceUrl=换音色；
    *  prompt=造型/场景文字描述，出片时作为参考图的文字锚点喂给提示词优化器） */
-  patchAsset: (assetId: string, patch: { kind?: string; name?: string; imageUrl?: string; voiceUrl?: string; prompt?: string }) =>
+  patchAsset: (assetId: string, patch: { kind?: string; name?: string; imageUrl?: string;
+                                         /** null = **清除**该角色音色（后端约定见下） */
+                                         voiceUrl?: string | null; prompt?: string;
+                                         /** 换成用户自己上传的图时传 true：清空旧造型描述，
+                                          *  理由同 `patchStage` 的 `clear_description`。 */
+                                         clearPrompt?: boolean }) =>
     fetchTracked(`${BASE}/v2/assets/${assetId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         kind: patch.kind ?? null, name: patch.name ?? null,
         image_url: patch.imageUrl ?? null,
-        voice_url: patch.voiceUrl ?? null,
+        // ⚠️ 后端是 `if body.voice_url is not None: a.voice_url = body.voice_url or None`
+        //    （routes_v2 patch_asset）——即 **null = 不改，空串 = 清除**。
+        //    所以"清除音色"必须发 ""；照抄上面几行的 `?? null` 会变成静默不改：
+        //    界面按成功刷新、值却还在，用户会以为清除按钮坏了。
+        voice_url: patch.voiceUrl === null ? "" : (patch.voiceUrl ?? null),
         prompt: patch.prompt ?? null,
+        clear_prompt: patch.clearPrompt ?? null,
       }),
     }).then(async (r) => {
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -1823,12 +2000,27 @@ export const api = {
 
   /** 按 (kind,name) 换图/换音色/改造型描述（拖资产卡到场景轨段=替换参考图；无行则建） */
   upsertAssetImage: (projectId: string, kind: string, name: string,
-                     imageUrl?: string, voiceUrl?: string, prompt?: string) =>
+                     imageUrl?: string, voiceUrl?: string, prompt?: string,
+                     /** `clearPrompt` = 换成用户自己上传的图，连带清空旧造型描述，
+                      *  理由同 `patchStage` 的 `clear_description`。 */
+                     opts?: { clearPrompt?: boolean }) =>
     post<AssetInfo>("/v2/assets/upsert-image", {
       project_id: projectId, kind, name,
       image_url: imageUrl ?? null, voice_url: voiceUrl ?? null,
       prompt: prompt ?? null,
+      clear_prompt: opts?.clearPrompt ?? null,
     }),
+
+  /** 看图写一段造型/场景描述（资产弹窗的「AI 看图补写」按钮）。
+   *
+   *  ⚠️ **不落库**：结果回给输入框，由用户过目/改完失焦才存。
+   *  这是视觉反推的唯一入口——它以前是挂在换图链路上自动跑的，一次 ~8s 且
+   *  期间弹窗不许关闭，把"上传一张图"拖成几十秒的整页锁死（2026-09-10 摘除）。
+   *
+   *  失败会抛（后端回 502）：手动点的按钮静默返回空 = 按钮坏了。 */
+  describeImage: (imageUrl: string, kind: "character" | "location" = "character") =>
+    post<{ description: string }>("/v2/assets/describe-image",
+      { image_url: imageUrl, kind }),
 
   /** 把 /fw/media/... 相对地址补全为可下载完整地址（host 取自 BASE，不硬编码）
    *
