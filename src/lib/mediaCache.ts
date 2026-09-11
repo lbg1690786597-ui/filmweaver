@@ -252,6 +252,24 @@ export async function saveAudioProbes(table: Record<string, boolean>): Promise<v
   }
 }
 
+/**
+ * 删掉**某一个项目**的素材缓存目录（项目被彻底删除时调用）。
+ *
+ * 与 `clearLocalCache` 的区别是范围，不是性质：这里删的同样只是可再生的缓存。
+ * 不删的话，客户端上会永久留一份指向已不存在项目的孤儿目录——用户在
+ * 「本机缓存」里看到的占用永远降不下去，而且再没有任何界面能定位到它。
+ *
+ * 刻意不用 `cacheDirFor`：那个函数会顺手 `mkdir`，删除路径上调它等于
+ * 先把目录建出来再删掉，目录不存在时还会平白留下一个空目录。
+ */
+export async function removeProjectCache(projectId: string): Promise<void> {
+  if (!IS_TAURI || !projectId) return;
+  const dir = await join(await appDataDir(), CACHE_ROOT, projectId);
+  if (await exists(dir)) {
+    await remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
 export interface LocalCacheStats {
   /** 有缓存的项目数 */
   projects: number;
