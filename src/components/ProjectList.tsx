@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ProjectInfo, ProductionModeInfo } from "../api";
 import ProjectCards from "../features/projects/ProjectCards";
 import WindowControls from "../features/editor/WindowControls";
@@ -184,9 +184,15 @@ export default function ProjectList(p: Props) {
   }, [videoModel, modelModes, genMode]);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
+  /** 重拉项目列表。改名/删除/恢复后由 ProjectCards 回调触发——
+   *  数据归本组件所有，卡片层只发号施令，避免两处各存一份列表而漂移。 */
+  const reloadProjects = useCallback(() => {
     api.listProjects().then((r) => setProjects(r.projects)).catch((e) => setErr(String(e)));
   }, []);
+
+  useEffect(() => {
+    reloadProjects();
+  }, [reloadProjects]);
 
   const doCreate = async () => {
     if (!title.trim()) return;
@@ -361,7 +367,7 @@ export default function ProjectList(p: Props) {
       )}
 
       {/* Phase 6：卡片网格（缩略图 / 进度 / 时长 / 搜索）替换原纯文字列表 */}
-      <ProjectCards projects={projects} onOpen={p.onOpen} />
+      <ProjectCards projects={projects} onOpen={p.onOpen} onRefresh={reloadProjects} />
     </div>
   );
 }
