@@ -40,22 +40,27 @@ interface Props {
   panels: Partial<Record<LeftPanelTab, ReactNode>>;
   /** 面板标题栏右侧的操作区（随 Tab 变化）*/
   actions?: Partial<Record<LeftPanelTab, ReactNode>>;
+  /** 项目生产模式。真人剧的 ai-voice 面板是「角色音色」而不是「AI 配音」——
+   *  标题不跟着改的话，标题栏会和它下面的内容自相矛盾。 */
+  productionMode?: string | null;
 }
 
-export default function LeftPanel({ panels, actions }: Props) {
+export default function LeftPanel({ panels, actions, productionMode }: Props) {
   const tab = useEditorStore((s) => s.leftPanelTab);
   const content = panels[tab];
   const pending = PENDING[tab];
+  const title = tab === "ai-voice" && productionMode !== "narration"
+    ? "角色音色" : TITLES[tab];
 
   return (
     <>
       <div className="fw-lp-head">
-        <span className="fw-lp-title">{TITLES[tab]}</span>
+        <span className="fw-lp-title">{title}</span>
         <span className="fw-lp-actions">{actions?.[tab]}</span>
       </div>
       <div className="fw-lp-body">
         {content ?? (
-          <Placeholder title={TITLES[tab]} desc={pending?.desc} />
+          <Placeholder title={title} desc={pending?.desc} />
         )}
       </div>
     </>
