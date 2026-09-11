@@ -4,6 +4,7 @@ import { prefetcher } from "../lib/mediaCache";
 import { IS_TAURI } from "../lib/isTauri";
 import { tauriSnapshotIO } from "../lib/persistIO";
 import { isUsableSnapshot, makeSnapshot } from "../lib/snapshot";
+import { reconcileDetail } from "../lib/reconcileDetail";
 
 /** G4 状态分层 · 项目层：当前项目 + detail 快照 + 刷新（含 800ms 合并刷新）。
  *
@@ -37,12 +38,17 @@ export function useProject() {
     if (!id) return;
     const my = ++seq.current;
     try {
-      const d = await api.projectDetail(id);
+      const raw = await api.projectDetail(id);
       // 期间又发起了新请求 → 本次结果已过期，丢弃
       if (my !== seq.current) return;
       // 切项目时上一项目的 in-flight 请求也会走到这里，
       // clearDetail() 清不掉飞行中的 promise，所以再确认一次归属
       if (id !== (pid ?? projectId)) return;
+      // U2 第 3 点：把没变动的镜头/资产/分集**换回上一轮的对象引用**。
+      // 不做这一步的话，1424 镜的项目里只要有一个镜头出片，整份 JSON 都是
+      // 新对象 → `ShotCard` 的 memo 全判不等 → 1424 张卡片重渲染一遍。
+      // 详见 lib/reconcileDetail.ts（含"为什么不按下标配对""为什么不比 JSON 串"）。
+      const d = reconcileDetail(detailRef.current, raw);
       setDetail(d);
       detailRef.current = d;
       setSnapshotAt(null);        // 拿到真数据了，不再是快照
