@@ -3,23 +3,37 @@
  *
  * 三个区域：
  *   1. 已有旁白/配乐列表（来自后端 AudioClip）
- *   2. AI 配音（TTS：按角色生成旁白，参考音色可选）
+ *   2. 第二页签**按生产模式分叉**（见下）
  *   3. BGM / 音效：项目自有音频素材（用户上传后打 bgm/sfx 标签分类）。
  *      ⚠️ 不是平台内置曲库——本项目没有可分发的版权音乐，
  *      给假曲目不如如实呈现"你自己传了什么"（见文档 D-01 偏离登记）。
+ *
+ * ## 第二页签为什么要分叉（2026-09-10）
+ *
+ * 它原本无条件是「AI 配音」+「一键生成全部旁白」，而那个按钮只对**已存在的**
+ * AudioClip(kind=tts/narration) 做 TTS 批量合成——它不创建音色、也不创建旁白段。
+ * 真人剧全库根本不存在 tts 段（旁白段只由解说剧的「按剧本生成解说旁白」产出），
+ * 于是真人剧用户点它：任务提交、任务完成、什么都没发生。
+ * 后端其实在结果里写了 `note:"没有待合成的旁白"`，但前端不看，照报"✅ 完成"。
+ *
+ * 根因是**把解说剧功能摆给了真人剧**。真人剧音画一体，声音由视频生成时自带，
+ * 本就不该走 TTS；它在这里真正需要的是给每个角色**指定音色**
+ * （Asset.voice_url → jobs._auto_inject_voice_ref → 出片时作为参考音频）。
+ * 所以真人剧下整页换成「角色音色」管理，解说剧完全维持原样。
  */
 
 import { useEffect, useRef, useState } from "react";
 import {
   Volume2, Mic, Music, Play, Trash2, Loader2, RefreshCw, Upload, Tag, Scissors,
-  BookOpen,
+  BookOpen, X,
 } from "lucide-react";
-import type { AudioClipInfo, AssetInfo } from "../../api";
+import type { AudioClipInfo, AssetInfo, VoiceLibItem } from "../../api";
 import { api } from "../../api";
 import { fmtTime } from "../../types";
 import {
   useLoadState, describeLoadError, LOAD_LABELS,
 } from "../../stores/loadStateStore";
+import VoicePicker from "./VoicePicker";
 import "./AudioPanel.css";
 
 const STATUS_LABEL: Record<string, string> = {
@@ -148,6 +162,38 @@ export default function AudioPanel(p: Props) {
     finally { setDeletingId(null); }
   };
 
+  // ---- 真人剧：角色音色 ----
+  // 写入口与 AssetDialog 的「🎙 上传音色」是同一条：api.patchAsset({voiceUrl})。
+  // 改完必须 onProjectChanged()——assets 挂在项目 detail 上（App.tsx: assets=detail.assets），
+  // 只调 onAudioChanged 的话设置成功了界面仍显示"未设置"（解说音色栽过同一个坑）。
+  const [voiceBusyId, setVoiceBusyId] = useState<string | null>(null);
+  const [pickFor, setPickFor] = useState<AssetInfo | null>(null);
+  const [upFor, setUpFor] = useState<AssetInfo | null>(null);
+  const charVoiceRef = useRef<HTMLInputElement | null>(null);
+
+  const setCharVoice = async (a: AssetInfo, url: string | null, okMsg: string) => {
+    setVoiceBusyId(a.id);
+    try {
+      await api.patchAsset(a.id, { voiceUrl: url });
+      p.onToast(okMsg);
+      p.onProjectChanged?.();
+    } catch (e) { p.onToast(`设置失败：${String(e).slice(0, 140)}`); }
+    finally { setVoiceBusyId(null); }
+  };
+
+  const doUploadCharVoice = async (a: AssetInfo, f: File) => {
+    setVoiceBusyId(a.id);
+    try {
+      const r = await api.uploadMedia(f, p.projectId);
+      await api.patchAsset(a.id, { voiceUrl: r.url });
+      p.onToast(`🎙 「${a.name}」音色已设置`);
+      p.onProjectChanged?.();
+    } catch (e) { p.onToast(`上传失败：${String(e).slice(0, 140)}`); }
+    finally { setVoiceBusyId(null); }
+  };
+
+  const withVoice = chars.filter((a) => a.voice_url).length;
+
   return (
     <div className="fw-audio">
       <div className="fw-audio-tabs">
@@ -155,7 +201,7 @@ export default function AudioPanel(p: Props) {
           <Volume2 size={12} /> 已有 {p.audioClips.length > 0 && `(${p.audioClips.length})`}
         </button>
         <button className={tab === "tts" ? "on" : ""} onClick={() => setTab("tts")}>
-          <Mic size={12} /> AI 配音
+          <Mic size={12} /> {isNarration ? "AI 配音" : "角色音色"}
         </button>
         <button className={tab === "bgm" ? "on" : ""} onClick={() => setTab("bgm")}>
           <Music size={12} /> BGM
@@ -248,7 +294,10 @@ export default function AudioPanel(p: Props) {
 
             {p.audioClips.length === 0 ? (
               <div className="fw-audio-empty">
-                还没有音频片段。<br />可先「提取镜头原声」，或在「AI 配音」页签生成 TTS 旁白。
+                还没有音频片段。<br />
+                {isNarration
+                  ? "可先「提取镜头原声」，或在「AI 配音」页签生成解说旁白。"
+                  : "可先「提取镜头原声」把 AI 视频自带的声音剥到音频轨上。"}
               </div>
             ) : (
               <div className="fw-audio-list">
@@ -280,8 +329,105 @@ export default function AudioPanel(p: Props) {
           </>
         )}
 
-        {/* ---- AI 配音（TTS）---- */}
-        {tab === "tts" && (
+        {/* ---- 第二页签：解说剧 = AI 配音(TTS)；真人剧 = 角色音色 ---- */}
+        {tab === "tts" && !isNarration && (
+          <div className="fw-audio-tts">
+            <div className="fw-audio-hint">
+              这里设定的是<b>出片时该角色的说话声</b>：生成视频时会把这段音频作为
+              音色参考发给模型，让角色按这个声音说话。
+            </div>
+            <div className="fw-audio-hint">
+              留空也能出片——只是声音由模型自由发挥，<b>同一个角色在不同镜头里
+              可能不是一个声音</b>。设音色就是为了让它前后一致。
+              上传的音频只取前 15 秒。
+            </div>
+
+            {chars.length === 0 ? (
+              <div className="fw-audio-empty">
+                还没有角色资产。<br />
+                先在「AI 图片 / 资产」页生成或添加角色，再回来给他们指定音色。
+              </div>
+            ) : (
+              <>
+                <div className="fw-audio-sec">
+                  角色音色（{withVoice}/{chars.length} 已设置）
+                </div>
+                <div className="fw-audio-voicelist">
+                  {chars.map((a) => {
+                    const busy = voiceBusyId === a.id;
+                    return (
+                      <div key={a.id} className="fw-audio-voicerow">
+                        {a.image_url
+                          ? <img src={api.mediaUrl(a.image_url)} alt=""
+                              className="fw-audio-avatar" />
+                          : <span className="fw-audio-avatar ph">👤</span>}
+                        <div className="fw-audio-voiceinfo">
+                          <span className="fw-audio-char-name">{a.name}</span>
+                          {a.voice_url
+                            ? <span className="fw-audio-chip ok">
+                                <Volume2 size={9} /> 已设置
+                              </span>
+                            : <span className="fw-audio-chip dim">未设置 · 模型自由发挥</span>}
+                        </div>
+                        {/* 常显控件：藏在 hover 里等于用户眼里没这功能 */}
+                        <div className="fw-audio-voiceacts">
+                          <button title="试听" disabled={!a.voice_url || busy}
+                            onClick={() => a.voice_url &&
+                              p.onPreview(api.mediaUrl(a.voice_url), `音色 · ${a.name}`)}>
+                            <Play size={11} />
+                          </button>
+                          <button title="上传音色（音频或视频均可）" disabled={busy}
+                            onClick={() => { setUpFor(a); charVoiceRef.current?.click(); }}>
+                            {busy ? <Loader2 size={11} className="fw-spin" /> : <Upload size={11} />}
+                          </button>
+                          <button title="从音色库选" disabled={busy}
+                            onClick={() => setPickFor(a)}>
+                            <Music size={11} />
+                          </button>
+                          <button className="danger" title="清除音色"
+                            disabled={!a.voice_url || busy}
+                            onClick={() => void setCharVoice(a, null, `已清除「${a.name}」的音色`)}>
+                            <X size={11} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* 单个 input 复用给所有角色：upFor 记住这次是给谁传的。
+                每个角色各挂一个 input 会在角色多时凭空多出几十个 DOM 节点。 */}
+            <input ref={charVoiceRef} type="file" accept="audio/*,video/*" hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                const a = upFor;
+                setUpFor(null);
+                if (f && a) void doUploadCharVoice(a, f);
+              }} />
+
+            {pickFor && (
+              <VoicePicker
+                charName={pickFor.name}
+                currentUrl={pickFor.voice_url}
+                onPreview={p.onPreview}
+                onClose={() => setPickFor(null)}
+                onUploadInstead={() => {
+                  setUpFor(pickFor);
+                  // 等弹层卸载后再开文件选择器，否则 Esc/点遮罩会连带把它关掉
+                  setTimeout(() => charVoiceRef.current?.click(), 0);
+                }}
+                onPick={(v: VoiceLibItem) => void setCharVoice(
+                  pickFor, v.url, `🎙 「${pickFor.name}」音色设为「${v.name}」`)}
+              />
+            )}
+          </div>
+        )}
+
+        {/* ---- AI 配音（TTS）：解说剧专属 ---- */}
+        {tab === "tts" && isNarration && (
           <div className="fw-audio-tts">
             {!p.ttsAvailable ? (
               <div className="fw-audio-warn">
@@ -295,7 +441,12 @@ export default function AudioPanel(p: Props) {
                 </p>
                 {chars.length > 0 && (
                   <div className="fw-audio-voices">
-                    <div className="fw-audio-sec">角色音色（拖拽参考音频到角色卡）</div>
+                    {/* 原文案是「拖拽参考音频到角色卡」——**这里从来就没有 onDrop**，
+                        怎么拖都不会有反应。改成指向真正的入口：资产页角色弹窗的
+                        「🎙 上传音色」。（音色的消费方见 jobs._auto_inject_voice_ref） */}
+                    <div className="fw-audio-sec">
+                      角色音色（在「AI 图片/资产」页打开角色卡上传）
+                    </div>
                     {chars.map((a) => (
                       <div key={a.id} className="fw-audio-char">
                         {a.image_url
