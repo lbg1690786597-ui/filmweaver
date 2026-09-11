@@ -82,6 +82,7 @@ import { normalize as normalizeRenderPlan } from "./render/normalize";
 import { collectTrackFlags } from "./render/trackFlags";
 import { render as renderV2 } from "./render/renderer";
 import { localSources, prefetcher } from "./lib/mediaCache";
+import { runtimeWarning } from "./lib/runtime";
 import { probeCapabilities, hasFilter, hasTransition } from "./render/capabilities";
 import { planToSrt } from "./render/srt";
 import { save, open, confirm as tauriConfirm } from "@tauri-apps/plugin-dialog";
@@ -223,6 +224,23 @@ export default function App() {
   // 只管"设"，不管"清"：清（连同 blob 回收）在 resetWorkspace() 里，
   // 那里才知道 <video> 的 src 已经摘掉了、此刻回收谁都不会黑屏。
   useEffect(() => { localSources.setProject(projectId); }, [projectId]);
+
+  // 引擎过旧时在启动时说一句人话。
+  //
+  // 2026-09-10：有用户界面整个塌掉——弹窗没有底色、边框消失、内容互相压住。
+  // 根因是他机器上的 WebView2 运行时不认 oklch()/color-mix()（要 Chromium 111+），
+  // 含 var() 的颜色声明代换后整条作废。tokens.css 已用 @supports + hex 兜住主色，
+  // 但那 138 处 color-mix 的淡色底兜不住（参数是 var()，构建期算不出来）。
+  // 用户那侧只会看到"软件坏了"，不会知道该更新运行时——所以必须由我们说出来。
+  //
+  // 不做"只提示一次"：它只在运行时确实过旧时才出现，用户把 WebView2 更新掉之后
+  // 自然就不再出现了。为此存个 localStorage 反而会让人错过唯一一次提示。
+  useEffect(() => {
+    const w = runtimeWarning();
+    if (w) say(`⚠️ ${w}`, 12000);
+  }, [say]);
+
+
 
   // ---- 编辑层（P2-2 撤销栈）----
   const { pushUndo, doUndo, doRedo, clearUndo } = useUndo(say);
@@ -420,8 +438,8 @@ export default function App() {
   const doOneClick = async (opts: {
     genAssets: boolean;
     videoModel?: string | null;
-    width?: number;
-    height?: number;
+    resolution?: string | null;
+    aspect?: string | null;
   }) => {
     if (!projectId) return;
     // 刻意**不**关弹窗：它原地变成五段进度面板，用户能看到卡在哪一步。
@@ -429,10 +447,10 @@ export default function App() {
     try {
       const job = await api.submitOneClickFilm(projectId, {
         genAssets: opts.genAssets,
-        // 这三个是"本次覆写"，undefined 时后端沿用项目设置
+        // 这三个是"本次覆写"，null/undefined 时后端沿用项目设置
         videoModel: opts.videoModel ?? undefined,
-        width: opts.width,
-        height: opts.height,
+        resolution: opts.resolution,
+        aspect: opts.aspect,
       });
       trackJob(job, "one_click_film");
       say("▷ 一键成片已启动");
@@ -2230,9 +2248,10 @@ export default function App() {
           onRelaunch={() => relaunch()}
         />
       }
-      rail={<Rail />}
+      rail={<Rail productionMode={detail?.production_mode} />}
       leftPanel={
         <LeftPanel
+          productionMode={detail?.production_mode}
           panels={{
             /* Phase 3：媒体 / 音频 / 文本 / 转场 / 特效 / 调节 —— 新面板 */
             media: (
