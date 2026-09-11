@@ -185,6 +185,7 @@ console.log("\n③ 静态：改项目内容的入口都得进撤销栈");
 const app = read("src/App.tsx");
 const store = read("src/stores/timelineStore.ts");
 const asset = read("src/features/assets/AssetTrack.tsx");
+const injectAsset = read("src/features/assets/injectAsset.ts");
 const th = read("src/features/timeline/TrackHeader.tsx");
 const norm = read("src/render/normalize.ts");
 
@@ -249,7 +250,9 @@ ok("AssetTrack 的 onPushUndo 把 redo 声明成**必传**",
   "声明成可选的话，useUndo 会塞一个只弹「暂不支持重做」的桩，"
   + "重做按钮亮着却点了没反应");
 ok("五个资产轨入口一个不少",
-  (asset.match(/p\.onPushUndo\(/g) ?? []).length === 5);
+  ((asset + injectAsset).match(/(?:p|a)\.onPushUndo\(/g) ?? []).length === 5,
+  "第 5 个（拖资产卡进轨道）已挪进 injectAsset.ts，与镜头轨那条 lane 共用同一份实现，"
+  + "所以要合起来数；数少了说明真丢了一个入口");
 
 /* ================================================================== *
  * ⑤ 轨道开关的说明必须与它实际做的事一致
