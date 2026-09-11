@@ -8,6 +8,105 @@
  * 灰阶不会出现"某个色偏亮/偏脏"的问题，明暗主题切换也只需改 lightness 那一维。
  */
 
+/* ⚠️ 颜色 token 分两层写，别把它合并回一个 :root（2026-09-10 线上事故）
+ *
+ * `oklch()` 要 Chromium ≥ 111（2023-03）。用户机器上的 Edge WebView2 运行时若停在
+ * 更早版本，`background: var(--bg-panel)` 代换出来是它读不懂的值 —— 按规范这叫
+ * "invalid at computed-value time"，**整条声明作废**，且不会回退到同一规则里更早的
+ * 那条声明（那条在层叠阶段就没了）。产物里 1676 条颜色声明走 var()，只有 78 条是
+ * 硬编码 hex，于是界面塌成"排版还在、底色和边框全没了"。
+ *
+ * 所以回退**只能**靠 @supports：老引擎进不去下面的块，用外面那份 hex；
+ * 新引擎进得去，用原来的 oklch。写成 `--c-bg: #111417; --c-bg: oklch(...)` 是没用的
+ * —— 自定义属性在解析期不校验值，后一条永远赢。
+ *
+ * 外面那份 hex 由 `scripts/gen-color-fallback.mjs` 从下面的 oklch 算出来，
+ * **改了任何一个 oklch 值都要重跑 `--write`**，否则新老运行时的配色会对不上。
+ */
+/* >>> 老运行时颜色回退（由 scripts/gen-color-fallback.mjs 生成，勿手改）>>> */
+/* 老 WebView2 / 老 Chromium(<111) 不认 oklch()，会让所有 var() 颜色声明整条作废。
+   这里先用等价 hex 兜底；认得 oklch 的引擎走下面的 @supports，覆盖回原值。
+   两份值必须一致 —— 改了 oklch 记得重跑 scripts/gen-color-fallback.mjs --write。
+
+   配套的 `--x-rgb: r g b` 是同一颜色的 sRGB 三分量，给 color-mix() 的回退用：
+   `color-mix(in oklch, var(--c-accent) 14%, transparent)` 参数里带 var()，兜不住底，
+   由 vite 插件改写成前置的 `rgb(var(--c-accent-rgb) / 14%)`。三分量是纯数字，
+   任何引擎都认，且随主题切换，所以它**不能**放进 @supports 里。 */
+:root {
+  --c-bg: #121417;
+  --c-surface: #181b1e;
+  --c-raised: #202327;
+  --c-hover: #272b2e;
+  --c-active: #2d3135;
+  --c-border: #3e4348;
+  --c-disabled: #5a5e62;
+  --c-muted: #9a9fa5;
+  --c-text: #dbdee2;
+  --c-text-hi: #f3f5f8;
+  --c-track: #1b1e21;
+  --c-track-alt: #1e2124;
+  --c-accent: #00a5da;
+  --c-accent-dim: #0083ad;
+  --c-accent-hi: #00c7ff;
+  --c-success: #00a245;
+  --c-warning: #dc7f00;
+  --c-danger: #df202e;
+  --c-info: #0099e0;
+  --c-asset-char: #7679de;
+  --c-asset-loc: #009c5e;
+  --c-asset-ref: #ce6f33;
+  --c-bg-rgb: 18 20 23;
+  --c-surface-rgb: 24 27 30;
+  --c-raised-rgb: 32 35 39;
+  --c-hover-rgb: 39 43 46;
+  --c-active-rgb: 45 49 53;
+  --c-border-rgb: 62 67 72;
+  --c-disabled-rgb: 90 94 98;
+  --c-muted-rgb: 154 159 165;
+  --c-text-rgb: 219 222 226;
+  --c-text-hi-rgb: 243 245 248;
+  --c-track-rgb: 27 30 33;
+  --c-track-alt-rgb: 30 33 36;
+  --c-accent-rgb: 0 165 218;
+  --c-accent-dim-rgb: 0 131 173;
+  --c-accent-hi-rgb: 0 199 255;
+  --c-success-rgb: 0 162 69;
+  --c-warning-rgb: 220 127 0;
+  --c-danger-rgb: 223 32 46;
+  --c-info-rgb: 0 153 224;
+  --c-asset-char-rgb: 118 121 222;
+  --c-asset-loc-rgb: 0 156 94;
+  --c-asset-ref-rgb: 206 111 51;
+}
+[data-theme="light"] {
+  --c-bg: #f4f5f7;
+  --c-surface: #e9ebee;
+  --c-raised: #ffffff;
+  --c-hover: #dfe1e4;
+  --c-active: #d5d8db;
+  --c-border: #b4b8bc;
+  --c-disabled: #83878b;
+  --c-muted: #54595e;
+  --c-text: #191b1d;
+  --c-text-hi: #030304;
+  --c-track: #eceff1;
+  --c-track-alt: #e2e5e8;
+  --c-bg-rgb: 244 245 247;
+  --c-surface-rgb: 233 235 238;
+  --c-raised-rgb: 255 255 255;
+  --c-hover-rgb: 223 225 228;
+  --c-active-rgb: 213 216 219;
+  --c-border-rgb: 180 184 188;
+  --c-disabled-rgb: 131 135 139;
+  --c-muted-rgb: 84 89 94;
+  --c-text-rgb: 25 27 29;
+  --c-text-hi-rgb: 3 3 4;
+  --c-track-rgb: 236 239 241;
+  --c-track-alt-rgb: 226 229 232;
+}
+/* <<< 老运行时颜色回退结束 <<< */
+
+@supports (color: oklch(0% 0 0)) {
 :root {
   /* ---- 中性色阶（暗色模式基础）----
    *
@@ -53,7 +152,30 @@
   --c-asset-char:  oklch(62% 0.15 280);   /* 人物轨：紫 */
   --c-asset-loc:   oklch(60% 0.16 160);   /* 场景轨：绿 */
   --c-asset-ref:   oklch(64% 0.14 50);    /* 参考资产：琥珀 */
+}
 
+/* 亮色主题：只覆盖中性色阶，强调色/语义色沿用（OKLCH 下亮暗都够对比度）。
+   它必须和上面的暗色阶一起待在 @supports 里 —— 老引擎两份都用不了，
+   统一走生成的 hex 回退。 */
+[data-theme="light"] {
+  --c-bg:       oklch(97% 0.003 250);
+  --c-surface:  oklch(94% 0.004 250);
+  --c-raised:   oklch(100% 0 0);
+  --c-hover:    oklch(91% 0.005 250);
+  --c-active:   oklch(88% 0.006 250);
+  --c-border:   oklch(78% 0.008 250);
+  --c-disabled: oklch(62% 0.008 250);
+  --c-muted:    oklch(46% 0.010 250);
+  --c-text:     oklch(22% 0.006 250);
+  --c-text-hi:  oklch(10% 0.004 250);
+  --c-track:      oklch(95% 0.004 250);
+  --c-track-alt:  oklch(92% 0.005 250);
+}
+}
+/* ↑ @supports 到此为止。以下 token 与颜色无关，任何运行时都必须生效，
+   所以不能放进 @supports 里。 */
+
+:root {
   /* ---- 间距（4px 基准）---- */
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
   --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
@@ -88,20 +210,4 @@
   --inspector-w: 300px;   /* 右侧检查器宽度（可拖） */
   --topbar-h: 44px;       /* 顶栏高度 */
   --dock-h: 260px;        /* 底部时间轴高度（可拖） */
-}
-
-/* 亮色主题：只覆盖中性色阶，强调色/语义色沿用（OKLCH 下亮暗都够对比度） */
-[data-theme="light"] {
-  --c-bg:       oklch(97% 0.003 250);
-  --c-surface:  oklch(94% 0.004 250);
-  --c-raised:   oklch(100% 0 0);
-  --c-hover:    oklch(91% 0.005 250);
-  --c-active:   oklch(88% 0.006 250);
-  --c-border:   oklch(78% 0.008 250);
-  --c-disabled: oklch(62% 0.008 250);
-  --c-muted:    oklch(46% 0.010 250);
-  --c-text:     oklch(22% 0.006 250);
-  --c-text-hi:  oklch(10% 0.004 250);
-  --c-track:      oklch(95% 0.004 250);
-  --c-track-alt:  oklch(92% 0.005 250);
 }
