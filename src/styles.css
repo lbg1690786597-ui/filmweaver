@@ -19,6 +19,13 @@
   --danger: var(--c-danger);
   --ok: var(--c-success);
   --clip-bg: oklch(22% 0.04 250);
+  /* color-mix() 回退要用的 sRGB 三分量（见 styles/tokens.css 文件头）。
+     旧组件里 color-mix 的第一个参数写的是这些旧名字，得同样桥接过去，
+     否则 vite 的 fw-color-mix-fallback 插件生成的 rgb(var(--accent-rgb) / N%) 取不到值。 */
+  --accent-rgb: var(--c-accent-rgb);
+  --muted-rgb: var(--c-muted-rgb);
+  --danger-rgb: var(--c-danger-rgb);
+  --ok-rgb: var(--c-success-rgb);
 }
 :root[data-theme="light"] {
   --clip-bg: oklch(88% 0.02 250);
@@ -122,6 +129,15 @@ select {
 .lib-sec { margin: 10px 0 6px; font-size: var(--fs-sm); font-weight: 700; color: var(--muted); }
 .lib-sec.clickable { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; }
 .lib-sec.clickable:hover { color: var(--accent); }
+/* 分组标题行右侧的动作按钮（如「🔗 场景名归一」）：常显半透明、hover 变亮。
+   刻意不做 hover 才出现——藏进 hover 的按钮在用户眼里等于没这功能。
+   margin-left:auto 把它推到行尾；点击需在 tsx 里 stopPropagation（外层是折叠开关）。 */
+.lib-sec-act {
+  margin-left: auto; flex-shrink: 0; opacity: 0.6;
+  font-size: var(--fs-xs); padding: 1px 8px; font-weight: 400;
+  border: 1px solid var(--border);
+}
+.lib-sec-act:hover { opacity: 1; border-color: var(--accent); color: var(--accent); }
 
 /* ===== 响应式列数：条目最大宽 320px，面板拖宽自动 1→2→3 列，收窄跟随回落 ===== */
 .lib-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 8px; align-items: start; }
@@ -146,6 +162,15 @@ select {
 .adlg-meta { display: flex; flex-direction: column; gap: 6px; font-size: calc(12px * var(--fs-scale, 1)); min-width: 0; }
 .adlg-meta b { display: inline-block; min-width: 62px; color: var(--muted); font-weight: 400; margin-right: 6px; }
 .adlg-mini { padding: 2px 8px; font-size: var(--fs-sm); }
+/* 上传状态常驻行（AssetDialog）：成功/失败都必须看得见，不靠转瞬即逝的 toast。
+   失败那行不截断、允许换行 —— 原因才是用户真正要看的东西。 */
+.adlg-upstat {
+  margin-top: 6px; padding: 4px 8px; border-radius: 4px;
+  font-size: var(--fs-sm); line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+}
+.adlg-upstat-picking, .adlg-upstat-uploading { background: var(--c-raised); color: var(--c-muted); }
+.adlg-upstat-ok { background: rgba(46, 160, 67, .15); color: #3fb950; }
+.adlg-upstat-err { background: rgba(248, 81, 73, .15); color: #f85149; }
 
 /* 形象档案面板：15 个枚举轴。三列网格 —— 单列会把弹窗拉得比屏幕还高，
    而这些字段都只是一个短下拉，横向排得下。 */
