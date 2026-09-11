@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, JobPhase, Readiness, ShotInfo } from "../api";
 import { effectiveUrl, type Override } from "../lib/formState";
+import { isSseUp, shouldSkipTick } from "../lib/sseHealth";
 import { staleBadge, staleHint, needsRebreak } from "../lib/stale";
 import {
   useLoadState, describeLoadError, LOAD_LABELS,
@@ -41,6 +42,11 @@ interface Props {
   onCostumeScan: () => void;
   onToast: (m: string) => void;
 }
+
+/** 就绪度兜底重拉间隔（SSE 在线时）。比其余轮询的 15s 更慢：它是服务端
+ *  **全量重算**（1400 镜项目实测：进程内空载 ~35 ms，出片高负载期经 nginx
+ *  端到端 454 ms），而 SSE 在线时首帧/成片签名已经在驱动它了。 */
+const READINESS_FALLBACK_MS = 30000;
 
 const STATUS_META: Record<ShotInfo["status"], { label: string; cls: string }> = {
   pending:    { label: "待生成", cls: "st-pending" },
@@ -304,10 +310,21 @@ export default function ShotsPanel(p: Props) {
 
   useEffect(() => { loadRd(); }, [loadRd, ffDone, videoDone, p.generating]);
 
-  // 兜底：SSE 断线时签名不会变，job 运行期间每 5s 主动重拉一次（只读查询，很轻）
+  // 兜底：SSE 断线时签名不会变，job 运行期间主动重拉。
+  //
+  // ⚠️ 它在 1400 镜的项目上是一次**服务端全量重算**（出片高负载期端到端实测
+  // 454 ms），原注释「只读查询，很轻」在大项目上不成立。SSE 在线时上面那个
+  // 签名 effect 已经每张首帧/每条成片都触发一次重拉了，这条定时器纯属兜底，
+  // 所以降到 30s —— 比其余轮询的 15s 更慢，因为它是全工程最贵的一次只读调用。
+  // SSE 断线时仍保持 5s（那时签名不会变，它是唯一的更新来源）。
   useEffect(() => {
     if (!p.generating || !p.projectId) return;
-    const t = window.setInterval(loadRd, 5000);
+    let tick = 0;
+    const t = window.setInterval(() => {
+      tick += 1;
+      if (shouldSkipTick(tick, 5000, READINESS_FALLBACK_MS, isSseUp())) return;
+      loadRd();
+    }, 5000);
     return () => clearInterval(t);
   }, [p.generating, p.projectId, loadRd]);
 
@@ -340,20 +357,46 @@ export default function ShotsPanel(p: Props) {
   // 所以此时不能让用户直接点"补齐缺失资产"——那批图注定不全。
   const scanned = rd?.costumes?.scanned !== false;
 
-  const toggleExpand = (id: string) => setExpanded((prev) => (prev === id ? null : id));
-  const toggleSel = (id: string) =>
+  const toggleExpand = useCallback(
+    (id: string) => setExpanded((prev) => (prev === id ? null : id)), []);
+  const toggleSel = useCallback((id: string) =>
     setMultiSel((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
-    });
+    }), []);
 
-  const byEpisode = new Map<number, ShotInfo[]>();
-  for (const s of p.shots) {
-    const arr = byEpisode.get(s.episode) ?? [];
-    arr.push(s);
-    byEpisode.set(s.episode, arr);
-  }
+  /* U2 第 3 点的另一半：`ShotCard` 的 memo 光有稳定的 `s` 还不够 ——
+     `onSelect` / `onGenerate` / `onReprompt` / `onSwitchVersion` / `onAdvanced`
+     都是 App.tsx 里每次渲染新建的箭头函数（`onAdvanced={(s) => …}` 就写在 JSX 里），
+     props 里夹一个新函数就足以让 1424 张卡片全部重渲染。
+
+     这里用「最新值 ref + 恒定包装」而不是去 App.tsx 给十来个 handler 套 useCallback：
+     那些 handler 闭包捕获了大量 App 局部状态，逐个补依赖数组风险远大于收益，
+     漏一个依赖就是"点了按钮用的是上一轮的状态"这种极难查的 bug。
+     包装永远转发给最新的一份，行为与直传完全等价。 */
+  const latest = useRef(p);
+  latest.current = p;
+  const onSelect = useCallback((s: ShotInfo) => latest.current.onSelect(s), []);
+  const onAdvanced = useCallback((s: ShotInfo) => latest.current.onAdvanced(s), []);
+  const onSwitchVersion = useCallback(
+    (s: ShotInfo, v: number) => latest.current.onSwitchVersion(s, v), []);
+  const onGenerate = useCallback((ids: string[]) => latest.current.onGenerate(ids), []);
+  const onReprompt = useCallback((ids: string[]) => latest.current.onReprompt(ids), []);
+
+  // 分集分组：1424 镜时这是每次渲染一遍的 Map 重建。shots 引用稳住之后
+  // （见 lib/reconcileDetail.ts）useMemo 才拦得住，否则依赖每次都变，写了也白写。
+  const byEpisode = useMemo(() => {
+    const m = new Map<number, ShotInfo[]>();
+    for (const s of p.shots) {
+      const arr = m.get(s.episode) ?? [];
+      arr.push(s);
+      m.set(s.episode, arr);
+    }
+    return m;
+  }, [p.shots]);
+  const episodeGroups = useMemo(
+    () => [...byEpisode.entries()].sort((a, b) => a[0] - b[0]), [byEpisode]);
   const breakingDown = p.breakdownProgress !== null;
 
   return (
@@ -504,7 +547,7 @@ export default function ShotsPanel(p: Props) {
         </div>
       )}
       <div className="sp-list">
-        {[...byEpisode.entries()].sort((a, b) => a[0] - b[0]).map(([ep, shots]) => {
+        {episodeGroups.map(([ep, shots]) => {
           const staleCount = shots.filter((s) => s.stale).length;
           // 只有真的「切分失效」才提供重拆入口。以前不分原因一律给这个按钮：
           // 旁白时长变了（重出片即可）也引导用户重拆整集，代价是本集其它
@@ -539,10 +582,10 @@ export default function ShotsPanel(p: Props) {
                   generating={p.generating}
                   atCursor={p.cursorOrder === s.order}
                   imageModel={rd?.image_model}
-                  onSelect={p.onSelect} onToggleSel={toggleSel}
-                  onToggleExpand={toggleExpand} onAdvanced={p.onAdvanced}
-                  onSwitchVersion={p.onSwitchVersion} onGenerate={p.onGenerate}
-                  onReprompt={p.onReprompt} />
+                  onSelect={onSelect} onToggleSel={toggleSel}
+                  onToggleExpand={toggleExpand} onAdvanced={onAdvanced}
+                  onSwitchVersion={onSwitchVersion} onGenerate={onGenerate}
+                  onReprompt={onReprompt} />
               ))}
             </div>
           );
