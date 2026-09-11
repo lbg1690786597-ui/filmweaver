@@ -49,6 +49,65 @@
   min-width: 0;
 }
 .fw-pc-search input::placeholder { color: var(--c-muted); opacity: 0.7; }
+.fw-pc-clear {
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.fw-pc-clear:hover { color: var(--c-text-hi); }
+
+/* 排序：下拉选维度 + 单独一个升降序开关。
+   合成一个「时间↑/时间↓/名称↑…」的长下拉会让选项数翻倍，
+   且切方向要重新展开一次下拉。 */
+.fw-pc-sort,
+.fw-pc-dir,
+.fw-pc-trashbtn {
+  height: 30px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fw-pc-sort { padding: 0 var(--sp-2); }
+.fw-pc-dir {
+  width: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.fw-pc-trashbtn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-3);
+  color: var(--c-muted);
+}
+.fw-pc-sort:hover,
+.fw-pc-dir:hover,
+.fw-pc-trashbtn:hover { border-color: var(--c-accent-dim); color: var(--c-text-hi); }
+.fw-pc-trashbtn.on {
+  border-color: var(--c-accent);
+  color: var(--c-text-hi);
+}
+
+.fw-pc-err {
+  flex-shrink: 0;
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
 
 .fw-pc-count {
   display: flex;
@@ -186,6 +245,76 @@
   opacity: 0.7;
   margin-top: 2px;
 }
+
+/* 卡片右上角的改名/删除。
+   ⚠️ **常显**（半透明），hover 只是变亮 —— 不要写成 display:none + hover 显示。
+   本项目已有过教训：藏在 hover 里的行内按钮，在用户眼里等于这个功能不存在。 */
+.fw-pc-acts {
+  position: absolute;
+  right: var(--sp-1);
+  bottom: var(--sp-1);
+  display: flex;
+  gap: var(--sp-1);
+  opacity: 0.55;
+  transition: opacity var(--t-fast);
+}
+.fw-pc-card:hover .fw-pc-acts,
+.fw-pc-card:focus-within .fw-pc-acts { opacity: 1; }
+.fw-pc-acts button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: oklch(0% 0 0 / 0.55);
+  color: var(--c-text-hi);
+  cursor: pointer;
+}
+.fw-pc-acts button:hover { background: oklch(0% 0 0 / 0.8); }
+.fw-pc-acts button.danger:hover { color: var(--c-danger); }
+.fw-pc-acts button:disabled { opacity: 0.4; cursor: default; }
+
+/* 就地改名 */
+.fw-pc-rename { display: flex; flex-direction: column; gap: 2px; }
+.fw-pc-rename input {
+  width: 100%;
+  height: 24px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--c-accent-dim);
+  border-radius: var(--r-sm);
+  background: var(--c-bg);
+  color: var(--c-text-hi);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  outline: none;
+  min-width: 0;
+}
+.fw-pc-hint {
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.3;
+}
+
+/* 回收站：列表而非网格 —— 这里要看的是"什么时候删的、还能不能救"，
+   缩略图帮不上忙，反而让每一项都占掉一个卡片的高度。 */
+.fw-pc-trashlist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.fw-pc-trashrow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-surface);
+}
+.fw-pc-trashinfo { flex: 1; min-width: 0; }
 
 .fw-pc-empty {
   grid-column: 1 / -1;
