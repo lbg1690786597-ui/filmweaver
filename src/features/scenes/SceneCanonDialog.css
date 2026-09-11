@@ -1,0 +1,149 @@
+/* SceneCanonDialog.css — 场景名归一面板（U3）
+ *
+ * 配色的职责：把「确认了什么都不会变」「只改映射」「会删掉已出图的资产行」
+ * 三种后果**在视觉上分开**。混成一个样式列表的话，用户会以同一个心态
+ * 一路点下去 —— 而其中一类是不可逆的。
+ */
+
+.sc-dlg { gap: 10px; }
+
+.sc-intro {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  line-height: 1.7;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.sc-intro b { color: var(--text); font-weight: 600; }
+
+.sc-h {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--muted);
+  margin-top: var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--sp-1);
+}
+
+.sc-empty {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  padding: var(--sp-2) 0;
+}
+
+.sc-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+.sc-note { font-size: var(--fs-xs); }
+
+/* ── 现状：已合并的组 ── */
+.sc-cur {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-2);
+  background: var(--bg-elev);
+}
+.sc-cur-h {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  font-size: var(--fs-base); margin-bottom: var(--sp-1);
+}
+.sc-cur-h .muted { font-size: var(--fs-xs); }
+
+.sc-mem {
+  display: flex; align-items: center; gap: var(--sp-2);
+  font-size: var(--fs-sm); padding: 3px 0;
+  color: var(--text);
+}
+.sc-mem .muted { font-size: var(--fs-xs); flex-shrink: 0; }
+.sc-mem-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sc-mem.chg .sc-mem-name { color: var(--accent); }
+
+.sc-src {
+  flex-shrink: 0; font-size: var(--fs-xs); color: var(--muted);
+  padding: 0 4px; border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+}
+/* 手改过的映射要看得出来：AI 重跑不会推翻它，而确认别的组可能会 */
+.sc-src.manual {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 45%, transparent);
+}
+
+/* 行内操作按钮**常显**（半透明），hover 才变亮。
+   藏进 hover = 用户眼里没这功能（既往教训）。 */
+.sc-mini {
+  flex-shrink: 0; font-size: var(--fs-xs); padding: 2px 8px;
+  opacity: 0.55; border: 1px solid var(--border);
+}
+.sc-mini:hover:not(:disabled) { opacity: 1; border-color: var(--accent); }
+
+.sc-arrow { font-size: var(--fs-xs); color: var(--accent); flex-shrink: 0; }
+
+/* ── 建议组 ── */
+.sc-pv {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--r-lg);
+  padding: var(--sp-2);
+  background: var(--bg-elev);
+}
+.sc-pv.risk-alias { border-left-color: var(--accent); }
+.sc-pv.risk-override { border-left-color: var(--c-warning); }
+.sc-pv.risk-asset {
+  border-left-color: var(--danger);
+  background: color-mix(in oklch, var(--danger) 7%, var(--bg-elev));
+}
+
+.sc-pv-h {
+  display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
+  font-size: var(--fs-base); margin-bottom: var(--sp-1);
+}
+.sc-pv-h .muted { font-size: var(--fs-xs); }
+
+.sc-risk {
+  font-size: var(--fs-xs); padding: 0 5px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); color: var(--muted); flex-shrink: 0;
+}
+.sc-risk.alias { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, transparent); }
+.sc-risk.override, .sc-risk.asset {
+  color: var(--danger);
+  border-color: color-mix(in oklch, var(--danger) 55%, transparent);
+}
+
+/* 后果行：多行文本，按原样换行（consequenceText 里用 \n 分条） */
+.sc-cons {
+  white-space: pre-wrap;
+  font-size: var(--fs-sm); line-height: 1.6;
+  color: var(--danger);
+  margin-top: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+}
+.sc-keep { font-size: var(--fs-xs); line-height: 1.6; margin-top: 3px; }
+
+.sc-pv-act { display: flex; justify-content: flex-end; margin-top: var(--sp-2); }
+/* 全局没有 .btn.danger（只有 .primary/.ghost/.ok-btn），这里补一个：
+   不可逆那一组的按钮不能和"只改映射"长得一样。 */
+.sc-dlg .btn.danger {
+  background: var(--danger); border-color: var(--danger); color: var(--c-text-hi);
+}
+.sc-dlg .btn.danger:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--danger) 85%, white);
+}
+
+/* ── 无变化的组：默认折进一行 ── */
+.sc-unchanged {
+  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
+  font-size: var(--fs-xs);
+}
+.sc-unchanged-list {
+  flex-basis: 100%;
+  font-size: var(--fs-xs); line-height: 1.7;
+  max-height: 160px; overflow-y: auto;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+}
