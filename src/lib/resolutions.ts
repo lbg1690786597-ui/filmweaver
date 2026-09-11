@@ -71,3 +71,32 @@ export const ASPECTS = Object.keys(RESOLUTIONS);
 export function resListOf(aspect: string): ResOption[] {
   return RESOLUTIONS[aspect] ?? RESOLUTIONS["9:16"];
 }
+
+/** 档位由省到贵，顺序与后端 RESOLUTION_TIERS 的 megapixels 递增一致 */
+export const RES_TIERS: ResTier[] = ["480p", "720p", "1080p", "2k"];
+
+export type ResTier = ResOption["tier"];
+
+/** 后端回来的字符串是否是我们认得的档位（大小写不敏感，后端统一存小写） */
+export function isResTier(x: unknown): x is ResTier {
+  return typeof x === "string" && (RES_TIERS as string[]).includes(x.toLowerCase());
+}
+
+/**
+ * 取某画幅下某档位的具体尺寸。认不出档位就返回 null。
+ *
+ * 「本次参数」里只改画幅、不改分辨率时**必须**走这里：换画幅会换掉整张档位表，
+ * 按下标（旧代码的 ovResIdx）取的话，同一个下标在 9:16 表里是 1080p、
+ * 在别的表里也许是别的档——用户没碰分辨率，档位却跟着画幅偷偷变了。
+ * 按档位名取则天然稳定。
+ */
+export function resOfTier(aspect: string, tier: string | null | undefined): ResOption | null {
+  if (!isResTier(tier)) return null;
+  const t = tier.toLowerCase();
+  return resListOf(aspect).find((r) => r.tier === t) ?? null;
+}
+
+/** 档位的展示名（"沿用项目设置（720p）"这类文案用）；认不出就说"模型默认" */
+export function tierLabel(tier: string | null | undefined): string {
+  return isResTier(tier) ? tier.toLowerCase() : "模型默认";
+}
