@@ -90,7 +90,18 @@ function render(blocks) {
   return out.join("\n");
 }
 
-const css = readFileSync(TOKENS, "utf8");
+/**
+ * 行尾先归一成 LF 再比。本脚本比的是**颜色值**，不是行尾——而 `want` 永远是
+ * `\n` 拼出来的，一旦文件是 CRLF，逐字节比较必然不等，报出的却是
+ * "回退块与 oklch 原值不一致"，把人往颜色上引。
+ *
+ * 这不是假想情况：Windows runner 的 `core.autocrlf` 默认为 true，CI 检出的
+ * tokens.css 就是 CRLF，v0.8.9 的 beta 与正式两条构建都因此在
+ * `npm run build` 的第一步整条失败（2026-09-11）。本地 Linux 上永远复现不了。
+ * 归一之后行尾怎么变都不影响判断；仓库侧另有 `.gitattributes` 把检出锁成 LF，
+ * 两层各自独立生效。
+ */
+const css = readFileSync(TOKENS, "utf8").replace(/\r\n/g, "\n");
 const want = render(parseBlocks(css));
 const begin = css.includes(BEGIN) ? BEGIN : css.includes(BEGIN_ALT) ? BEGIN_ALT : null;
 
