@@ -1,0 +1,86 @@
+/* VoicePicker.css — 音色库选择器
+   盖在 AudioPanel / AssetDialog 之上，z-index 要高于 AssetDialog 的遮罩(50)。 */
+
+.fw-vp-mask {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(0, 0, 0, .5);
+  display: flex; align-items: center; justify-content: center;
+  /* 与 .drawer-mask 同理：钉住整个 grid，避免被隐式行挤扁 */
+  grid-area: 1 / 1 / -1 / -1;
+}
+
+.fw-vp {
+  width: 420px; max-width: 92vw; max-height: 70vh;
+  display: flex; flex-direction: column;
+  background: var(--c-raised);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .45);
+}
+
+.fw-vp-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+  font-size: var(--fs-sm); color: var(--c-text-hi);
+  flex-shrink: 0;
+}
+.fw-vp-x {
+  margin-left: auto; display: inline-flex; align-items: center;
+  border: none; background: transparent; color: var(--c-muted);
+  cursor: pointer; padding: 2px; border-radius: var(--r-sm);
+}
+.fw-vp-x:hover { background: var(--c-hover); color: var(--c-text); }
+
+.fw-vp-body { flex: 1 1 0; overflow-y: auto; min-height: 0; }
+
+/* ---- 空态：本组件的主要形态，不是边角料 ---- */
+.fw-vp-empty {
+  padding: var(--sp-4);
+  text-align: center;
+  color: var(--c-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+.fw-vp-empty-icon { font-size: 28px; line-height: 1.4; }
+.fw-vp-empty b { color: var(--c-text); }
+.fw-vp-empty p { margin: var(--sp-2) 0 0; }
+.fw-vp-empty-alt {
+  margin-top: var(--sp-3) !important;
+  padding-top: var(--sp-3);
+  border-top: 1px dashed var(--c-border);
+  text-align: left;
+}
+.fw-vp-empty .fw-vp-btn { margin-top: var(--sp-3); }
+
+/* ---- 有内容时的列表 ---- */
+.fw-vp-list { display: flex; flex-direction: column; }
+.fw-vp-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+}
+.fw-vp-row:hover { background: var(--c-hover); }
+.fw-vp-row.on { background: color-mix(in srgb, var(--c-accent) 14%, transparent); }
+.fw-vp-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.fw-vp-name {
+  font-size: var(--fs-sm); color: var(--c-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fw-vp-name em { color: var(--c-accent); font-style: normal; }
+.fw-vp-meta { font-size: var(--fs-xs); color: var(--c-muted); }
+
+.fw-vp-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px; flex-shrink: 0;
+  border: 1px solid var(--c-border); border-radius: var(--r-md);
+  background: var(--c-surface); color: var(--c-text);
+  font-size: var(--fs-xs); cursor: pointer;
+  transition: background var(--t-fast), border-color var(--t-fast);
+}
+.fw-vp-btn:hover:not(:disabled) { background: var(--c-hover); }
+.fw-vp-btn.primary {
+  background: var(--c-accent); border-color: var(--c-accent); color: var(--c-text-hi);
+}
+.fw-vp-btn.primary:hover:not(:disabled) { background: var(--c-accent-hi); }
+.fw-vp-btn:disabled { opacity: .55; cursor: default; }
