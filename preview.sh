@@ -5,8 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# base 用相对路径 → 产物同时兼容 /fw/app/ 反代访问与本地 file://
-npx vite build --base=./ 2>&1 | tail -1
+# 走 npm run build 而不是直接 npx vite build：build 脚本里串了 tsc 与两道颜色回退自检
+# （见 scripts/verify-oklch-fallback.mjs）。直接调 vite 会绕过它们，
+# 结果就是"dev 网页看着没事、装了客户端的老 WebView2 上却塌了"——2026-09-10 就是这么漏的。
+# base 已在 vite.config.ts 里固定为相对路径，产物同时兼容 /fw/app/ 反代与本地 file://。
+npm run build 2>&1 | tail -3
 
 DEST=/root/filmweaver-data/webapp
 mkdir -p "$DEST"
