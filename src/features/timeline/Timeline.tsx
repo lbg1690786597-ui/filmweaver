@@ -18,7 +18,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import type { Clip } from "../../types/timeline";
 import { ZOOM_MIN, ZOOM_MAX } from "../../types/timeline";
-import type { ShotInfo, AudioClipInfo, StageInfo, LocationInfo, AssetInfo, SubtitleClipInfo, TransitionInfo } from "../../api";
+import type { ShotInfo, AudioClipInfo, StageInfo, LocationInfo, AssetInfo, SubtitleClipInfo, TransitionInfo, AssetDragData } from "../../api";
 import { buildTimeline, buildOrderOffsetMap, secToPosition } from "../../adapters/shotToClip";
 import { useTimelineStore } from "../../stores/timelineStore";
 import TimelineRuler from "./TimelineRuler";
@@ -27,6 +27,7 @@ import ClipView from "./ClipView";
 import ContextMenu from "../../components/ContextMenu/ContextMenu";
 import type { MenuItem } from "../../components/ContextMenu/ContextMenu";
 import AssetTrack, { AssetTrackKind, AssetRun } from "../assets/AssetTrack";
+import { injectAssetIntoShot, snapSecToOrder } from "../assets/injectAsset";
 import { collectSnapPoints, snapRange } from "./snap";
 import {
   quantizeSec, trimOut, trimIn, outPatch, inPatch, minTrimSec,
@@ -150,7 +151,11 @@ interface Props {
                         kind: string; duration: number }) => void;
   /** Render V2：主轨 ↔ 叠加层互移（trackIndex=0 回主轨） */
   onMoveTrack: (shotId: string, trackIndex: number, startSec?: number) => void;
-  onPushUndo: (label: string, undo: () => Promise<void>) => void;
+  /** redo 可选：App 的 pushUndo 缺 redo 时会塞一个"暂不支持重做"的桩。
+   *  资产注入（AssetTrack / 镜头轨拖入）会传 redo，所以类型里必须有这一位，
+   *  否则拖到镜头轨的注入会退化成"能撤销、不能重做"。 */
+  onPushUndo: (label: string, undo: () => Promise<void>,
+               redo?: () => Promise<void>) => void;
   onToast: (m: string) => void;
   /** Phase 5：资产轨改动后重拉 stages + detail */
   onAssetsChanged: () => void;
@@ -1126,8 +1131,17 @@ export default function Timeline(p: Props) {
                   style={{ width: totalWidth }}
                   onDragOver={(e) => {
                     // 必须 preventDefault，否则浏览器默认拒绝放置、onDrop 不触发
+                    // —— 这正是"资产卡片拖不到轨道上"的机制：早退在 preventDefault
+                    // 之前，鼠标一路显示禁止、松手毫无反应、也没有任何报错。
+                    const t = e.dataTransfer.types;
+                    if (t.includes("application/x-fw-asset")) {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "copy";
+                      if (!dropHot) setDropHot(true);
+                      return;
+                    }
                     if (!p.onDropClip) return;
-                    if (!e.dataTransfer.types.includes("application/x-fw-clip")) return;
+                    if (!t.includes("application/x-fw-clip")) return;
                     e.preventDefault();
                     e.dataTransfer.dropEffect = "copy";
                     if (!dropHot) setDropHot(true);
@@ -1135,6 +1149,34 @@ export default function Timeline(p: Props) {
                   onDragLeave={() => setDropHot(false)}
                   onDrop={(e) => {
                     setDropHot(false);
+                    // 资产卡片落到镜头轨：等价于落到资产轨——在落点镜头注入。
+                    // 用户眼里"轨道"就是最显眼的这条，不该要求他们先找到那条
+                    // 22px 高的空资产轨才能拖。注入实现与资产轨共用一份。
+                    const rawAsset = e.dataTransfer.getData("application/x-fw-asset");
+                    if (rawAsset) {
+                      e.preventDefault();
+                      let d: AssetDragData;
+                      try { d = JSON.parse(rawAsset); } catch { return; }
+                      if (d.kind !== "character" && d.kind !== "location") {
+                        p.onToast("只有人物、场景资产可以注入镜头");
+                        return;
+                      }
+                      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                      const sec = Math.max(0, (e.clientX - r.left) / pxPerSec);
+                      const order = snapSecToOrder(offsetMap, sec);
+                      const sh = order == null ? undefined
+                        : p.shots.find((x) => x.order === order);
+                      if (order == null || !sh) { p.onToast("请拖到某个镜头上方"); return; }
+                      void injectAssetIntoShot({
+                        projectId: p.projectId, name: d.name,
+                        isLocation: d.kind === "location",
+                        shot: sh, order,
+                        onPushUndo: p.onPushUndo,
+                        onToast: p.onToast,
+                        onChanged: p.onAssetsChanged,
+                      });
+                      return;
+                    }
                     if (!p.onDropClip) return;
                     const raw = e.dataTransfer.getData("application/x-fw-clip");
                     if (!raw) return;
