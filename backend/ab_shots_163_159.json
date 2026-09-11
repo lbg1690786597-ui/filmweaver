@@ -1,0 +1,107 @@
+{
+  "project": "e3e5d6e517c6",
+  "shots": [
+    {
+      "id": "92d24d2d7c9d",
+      "order": 159,
+      "episode": 10,
+      "location": "夜 内 豪门宴会厅",
+      "characters": "[\"白薇\", \"顾耀东\"]",
+      "script_ref": "△白薇身穿奢华高定红裙，紧紧挽着顾耀东的手臂，昂着头接受众人的捧杀与讨好，一副“准女主人”姿态。",
+      "gen_prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] Live-action, cinematic, the shot begins from <Picture 1>, preserving the exact appearance, clothing, spatial placement of the subjects, and the grand ballroom layout. Bai Wei maintains her chin-up posture and triumphant, subtly condescending smile as she begins walking forward with a commanding matriarchal gait, tightening her entwined hand around Gu Yaodong's arm. Beside her, Gu Yaodong steps forward in sync with a composure. As they advance, surrounding guests turn their heads, nod flatteringly, and elevate their champagne flutes in mid-toast toward her. The camera pulls out with small amplitude at slow speed through the crowd, keeping Bai Wei and Gu Yaodong locked near the center of the frame while softly out-of-focus background figures step aside to yield the path.\n\noverall_soundscape: Low ambient ballroom chatter and discreet laughter echo under marble reverberation, accompanied by the subtle clinking of champagne flutes and soft rustle of evening gowns.\n\nnon_diegetic_music: A regal, slow-tempo orchestral piece featuring smooth violin melodies and gentle cellos, building steady dynamics throughout the shot.",
+      "duration_sec": 4.0,
+      "i2va_video": "/fw/media/generated/h3_87874cb5f235.mp4",
+      "first_frame": "/fw/media/generated/img_1a2642c295c4.png"
+    },
+    {
+      "id": "688648d511a2",
+      "order": 163,
+      "episode": 10,
+      "location": "夜 内 豪门宴会厅",
+      "characters": "[\"林晨\"]",
+      "script_ref": "△特写：林晨眼眶瞬间通红，眼泪在眼眶里打转，咬着下唇，身子微微颤抖。",
+      "gen_prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] Live-action, cinematic, an extreme close-up anchors on the young Asian person, Lin Chen, as shown in <Picture 1>, preserving their established facial features, lighting, and framing. Lin Chen's eyes turn bloodshot as tears quickly well up within the lower rims, reflecting subtle highlights. Lin Chen bites down tightly on the lower lip while subtle, controlled trembling spreads across their shoulders. The camera pushes in with small amplitude at slow speed toward the eyes, capturing the glistening tears that remain trapped within the rims without spilling down as the restrained expression holds through the end of the shot.\n\noverall_soundscape: Quiet indoor room ambience is punctuated only by subtle, shaky shallow breathing and the soft friction sound of fabric rustling from the physical trembling.\n\nnon_diegetic_music: A single sustained low cello note at a slow tempo, swelling slightly in volume before gently fading away.",
+      "duration_sec": 3.0,
+      "i2va_video": "/fw/media/generated/h3_250aa1f48a5f.mp4",
+      "first_frame": "/fw/media/generated/img_b109274d807b.png"
+    }
+  ],
+  "results": [
+    {
+      "model": "seedance-2.0-mini",
+      "order": 159,
+      "elapsed": 13.5,
+      "status": "failed",
+      "video_url": null,
+      "error": "HTTP 400: {\"error\":{\"code\":\"InputImageSensitiveContentDetected.PrivacyInformation\",\"message\":\"The request failed because the input image 'content[1]' 'content[2]' may contain real person. Request id: 021786517065934795aa3a4ba36fe885727fc31a219ca258ef64c\",\"param\":\"\",\"type\":\"BadRequest\"}}",
+      "prompt": "@图片1 为角色白薇，@图片2 为角色顾耀东，@图片3 为场景夜内豪门宴会厅。\n\n0-4 秒：在 @图片3 豪门宴会厅内，首帧完整呈现 @图片1 白薇 与 @图片2 顾耀东 的合影姿态与服装细节。@图片1 白薇 保持微微抬下巴的高傲姿态与带有掌控感的微小胜利笑容，紧挽 @图片2 顾耀东 的手臂，以优雅沉稳的主母步态向前迈步；身旁的 @图片2 顾耀东 步伐沉稳同步配合前进。二人向前推进时，周围宾客纷纷转头微笑颔首，举起手中的香槟杯向二人敬酒致意。镜头在人群中保持小幅度缓慢平稳拉远跟拍，将 @图片1 白薇 与 @图片2 顾耀东 始终锁定在画面中央，背景虚化的宾客向两侧让出通道。\n\n全程背景播放庄重缓慢的管弦乐，以流畅的小提琴主旋律与大提琴交织，音量随剧情推进稳步增强。环境音包含大理石空灵回响的宴会低语声、交谈欢笑声、香槟杯轻轻碰撞的脆响以及晚礼服摩擦的沙沙声。\n\n4K 高清，细节丰富，电影纪实写实风格，大理石环境光影自然，浅景深效果；面部稳定不变形、五官清晰、人体结构正常、动作自然流畅、不僵硬、画面无卡顿、无闪烁。",
+      "refs": [
+        "/fw/media/generated/img_c0e7ae02a314.png",
+        "/fw/media/generated/img_d0f61de95337.png",
+        "/fw/media/generated/img_9ddc3ede3ba7.png"
+      ],
+      "labels": [
+        "角色「白薇」",
+        "角色「顾耀东」",
+        "场景「夜 内 豪门宴会厅」"
+      ],
+      "inferred_mode": "full_reference"
+    },
+    {
+      "model": "minimax-h3-ref2v",
+      "order": 159,
+      "elapsed": 157.2,
+      "status": "done",
+      "video_url": "/fw/media/generated/h3_011c6ed90d28.mp4",
+      "error": null,
+      "prompt": "subject_definitions:\n<Subject 1> is the mature woman (Bai Wei) from <Picture 1>, maintaining an elegant hairstyle and sophisticated evening gown.\n<Subject 2> is the composed man (Gu Yaodong) from <Picture 2>, wearing formal tuxedo attire.\n<Subject 3> is the grand ballroom environment from <Picture 3>, featuring opulent marble architecture, chandeliers, and high-end event decor.\n\nsummary:\n[reference generation] The target video depicts <Subject 1> and <Subject 2> walking through <Subject 3> while surrounding guests raise their champagne flutes in a toast.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - Bai Wei's facial features, matriarchal posture, and evening gown are fully retained.\n<Subject 2> (appears in [Shot 1]): fully_preserved - Gu Yaodong's appearance, tuxedo, and composed demeanor are fully retained.\n<Subject 3> (appears in [Shot 1]): fully_preserved - the grand ballroom layout, architectural details, and luxury lighting are fully retained.\n\ndetailed_description:\nThe target video uses a cinematic live-action style with warm, elegant ballroom lighting and shallow depth of field.\n[Shot 1] A medium shot in <Subject 3>, the grand ballroom, frames <Subject 1>, Bai Wei, maintaining her chin-up posture and triumphant, subtly condescending smile as she begins walking forward with a commanding matriarchal gait. Her hand is tightly entwined around the arm of <Subject 2>, Gu Yaodong, who steps forward in sync beside her with calm composure. As they advance, surrounding guests turn their heads, nod flatteringly, and elevate their champagne flutes in mid-toast toward her. The camera pulls out with small amplitude at slow speed through the crowd, keeping <Subject 1> and <Subject 2> locked near the center of the frame while softly out-of-focus background figures step aside to yield the path.\n\noverall_soundscape:\nLow ambient ballroom chatter and discreet laughter echo under marble reverberation, accompanied by the subtle clinking of champagne flutes and soft rustle of evening gowns.\n\nnon_diegetic_music:\nA regal, slow-tempo orchestral piece featuring smooth violin melodies and gentle cellos, building steady dynamics throughout the shot.",
+      "refs": [
+        "/fw/media/generated/img_c0e7ae02a314.png",
+        "/fw/media/generated/img_d0f61de95337.png",
+        "/fw/media/generated/img_9ddc3ede3ba7.png"
+      ],
+      "labels": [
+        "角色「白薇」",
+        "角色「顾耀东」",
+        "场景「夜 内 豪门宴会厅」"
+      ],
+      "inferred_mode": "full_reference"
+    },
+    {
+      "model": "seedance-2.0-mini",
+      "order": 163,
+      "elapsed": 0.4,
+      "status": "failed",
+      "video_url": null,
+      "error": "HTTP 400: {\"error\":{\"code\":\"InvalidParameter\",\"message\":\"The parameter `contents[0].text.duration` specified in the request is not valid: the specified duration is not supported for model doubao-seedance-2-0-mini-r2v. Request id: 0217865170664247424dba2bd6e77b99d402060a9cf8c0fda234e\",\"param\":\"contents[0].text",
+      "prompt": "首帧完全参考@图片1中的主角「林晨」，保持其面部特征、光影与构图一致；背景融合@图片2的夜内豪门宴会厅环境氛围。\n\n0-3 秒：真人电影感极近特写镜头锁定@图片1的林晨。林晨双眼迅速充血泛红，下眼睑泛起晶莹泪光并折射微光，泪水克制地含在眼眶中始终未流下；林晨紧紧咬住下唇，肩膀带着受控的细微颤抖。镜头以慢速、小幅度平稳推向林晨的双眼，捕获其克制而深沉的表情。\n音频与音效：安静的室内环境音中，伴随着林晨细微颤抖的浅呼吸声，以及肢体微颤带起的衣物轻微摩擦声；背景配乐为单音低沉舒缓的大提琴声，音量微微增强后缓慢淡出。\n\n4K 高清，细节丰富，电影级真实质感，面部稳定不变形、五官清晰、人体结构正常、动作自然流畅、不僵硬、画面无卡顿、无闪烁。",
+      "refs": [
+        "/fw/media/generated/img_6afb327fb454.png",
+        "/fw/media/generated/img_9ddc3ede3ba7.png"
+      ],
+      "labels": [
+        "角色「林晨」",
+        "场景「夜 内 豪门宴会厅」"
+      ],
+      "inferred_mode": "full_reference"
+    },
+    {
+      "model": "minimax-h3-ref2v",
+      "order": 163,
+      "elapsed": 115.6,
+      "status": "done",
+      "video_url": "/fw/media/generated/h3_fac0aa85692d.mp4",
+      "error": null,
+      "prompt": "subject_definitions:\n<Subject 1> is the young Asian person, Lin Chen, from the reference images, with established facial features, dark hair, and expressive eyes under soft indoor lighting.\n\nsummary:\n[reference generation] The target video presents a close-up reaction shot of <Subject 1> experiencing intense, suppressed emotion, preserving character facial features and lighting across a single 3-second shot.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - Lin Chen's facial features, identity, soft indoor lighting, and framing are retained while adding the emotional eye trembling and tearing details.\n\ndetailed_description:\nThe target video features a dramatic, cinematic live-action style with shallow depth of field and soft indoor lighting.\n[Shot 1] An extreme close-up frames <Subject 1>, Lin Chen, preserving their established facial features, lighting, and composition. <Subject 1>'s eyes turn bloodshot as tears quickly well up within the lower rims, reflecting subtle highlights. <Subject 1> bites down tightly on the lower lip while subtle, controlled trembling spreads across their shoulders. The camera pushes in with small amplitude at slow speed toward <Subject 1>'s eyes, capturing the glistening tears that remain trapped within the rims without spilling down as the restrained expression holds through the final frame.\n\noverall_soundscape:\nQuiet indoor room ambience is punctuated only by subtle, shaky shallow breathing and the soft friction sound of fabric rustling from the physical trembling.\n\nnon_diegetic_music:\nA single sustained low cello note at a slow tempo, swelling slightly in volume before gently fading away.",
+      "refs": [
+        "/fw/media/generated/img_6afb327fb454.png",
+        "/fw/media/generated/img_9ddc3ede3ba7.png"
+      ],
+      "labels": [
+        "角色「林晨」",
+        "场景「夜 内 豪门宴会厅」"
+      ],
+      "inferred_mode": "full_reference"
+    }
+  ]
+}
