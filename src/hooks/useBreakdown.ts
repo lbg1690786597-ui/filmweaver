@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { api, JobOut, ProjectDetail, ShotInfo } from "../api";
+import { SSE_FALLBACK_MS, isSseUp, shouldSkipTick } from "../lib/sseHealth";
 import type { Say } from "./useToast";
 
 /** G4 状态分层 · 拆解 job 追踪 + 导出口径。
@@ -34,7 +35,9 @@ export function useBreakdown(opts: {
     setBdProgress(0);
     try {
       const j = await api.submitBreakdownAll(projectId, false, episodes);
+      let tick = 0;
       bdTimer.current = window.setInterval(async () => {
+        tick += 1;
         // 轮询回调必须自己吞异常：抛出去就是 unhandled rejection，
         // 而且 interval 不会因此停止，会一直空转到切项目为止。
         let s: JobOut;
@@ -45,11 +48,24 @@ export function useBreakdown(opts: {
           return;
         }
         setBdProgress(s.progress);
-        void refreshDetail();  // 实时把已拆完的集刷进镜头列表
+        // ⚠️ 这里**只降 refreshDetail，不降 jobStatus**（U1 第 1 点）。
+        //
+        // 两件事的成本差三个数量级：jobStatus 是几百字节，而 detail 在 1400 镜
+        // 的项目上是 1.6 MB —— 每 3s 拉一次就是 ~550 KB/s 持续下行，拆解要跑
+        // 好几分钟。而 SSE 在线时，后端**每拆完一集**就推一条 breakdown_all 的
+        // job 事件，`useProdJobs` 收到即 `refreshSoon()` —— 镜头照样逐集出现，
+        // 这条轮询的 detail 纯属重复。所以 SSE 在线时它降到 15s 兜底。
+        //
+        // 进度条则必须保持 3s：`bdProgress` 只有这里在写（SSE 的
+        // breakdown_all 分支只 refreshSoon、不碰进度），跟着降频的话，
+        // 百分比会变成 15s 跳一格，看起来像卡死。
+        if (!shouldSkipTick(tick, 3000, SSE_FALLBACK_MS, isSseUp())) {
+          void refreshDetail();  // 实时把已拆完的集刷进镜头列表
+        }
         if (s.status === "done" || s.status === "failed") {
           if (bdTimer.current) clearInterval(bdTimer.current);
           setBdProgress(null);
-          void refreshDetail();
+          void refreshDetail();  // 收尾这一次无条件拉：最后一集必须落地
           say(s.status === "done" ? "✅ 分镜与提示词生成完成" : "⚠️ 部分集拆解失败，可重拆");
         }
       }, 3000);
