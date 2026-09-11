@@ -62,7 +62,10 @@ console.log("\n④ 推荐档（首项）应为 1080p");
 for (const aspect of ASPECTS) {
   const first = RESOLUTIONS[aspect][0];
   if (first.tier !== "1080p") {
-    fail(`${aspect} 首项是 ${first.tier}，应为 1080p（用户默认选中它）`);
+    // 首项 = 下拉里"沿用项目设置"之后的第一个具体档，也是文案里标「(推荐)」
+    // 的那一档。⚠️ 它**不再是默认选中项**——默认是「沿用项目设置」
+    // （2026-09-10 起，见 verify-preflight-params.ts）。
+    fail(`${aspect} 首项是 ${first.tier}，应为 1080p（下拉里标「(推荐)」的那档）`);
   }
 }
 if (!failed) console.log("  ✅ 全部正确");
