@@ -27,6 +27,7 @@ import {
 import { api } from "../../api";
 import type { ShotInfo, StageInfo, LocationInfo, AssetInfo, AssetDragData } from "../../api";
 import ContextMenu, { MenuItem } from "../../components/ContextMenu/ContextMenu";
+import { injectAssetIntoShot } from "./injectAsset";
 import { inSpan } from "../timeline/virtual";
 import type { SpanRange } from "../timeline/virtual";
 import "./AssetTrack.css";
@@ -241,6 +242,7 @@ export default function AssetTrack(p: Props) {
   };
 
   // ---- 拖资产卡片进轨道 → 在落点镜头注入 ----
+  // 注入本身走 injectAsset.ts（镜头轨那条 lane 共用同一份实现）。
   const onLaneDrop = async (e: React.DragEvent, row?: AssetRow) => {
     e.preventDefault();
     setDropOrder(null);
@@ -256,24 +258,16 @@ export default function AssetTrack(p: Props) {
     if (order == null) { p.onToast("请拖到某个镜头上方"); return; }
     const sh = orderToShot.get(order);
     if (!sh) return;
-    if (sh.is_special) { p.onToast("外部素材镜头不参与 AI 参考注入"); return; }
 
-    const name = row?.name ?? d.name;
-    const isLoc = p.kind === "location";
-    try {
-      await api.refOverrides(p.projectId, name, { addShotIds: [sh.id], isLocation: isLoc });
-      p.onPushUndo(`「${name}」注入镜头 #${order}`,
-        async () => {
-          await api.refOverrides(p.projectId, name, { removeShotIds: [sh.id], isLocation: isLoc });
-          p.onChanged();
-        },
-        async () => {
-          await api.refOverrides(p.projectId, name, { addShotIds: [sh.id], isLocation: isLoc });
-          p.onChanged();
-        });
-      p.onToast(`「${name}」已注入镜头 #${order}（Ctrl+Z 可撤销）`);
-      p.onChanged();
-    } catch (err) { p.onToast(String(err)); }
+    await injectAssetIntoShot({
+      projectId: p.projectId,
+      name: row?.name ?? d.name,
+      isLocation: p.kind === "location",
+      shot: sh, order,
+      onPushUndo: p.onPushUndo,
+      onToast: p.onToast,
+      onChanged: p.onChanged,
+    });
   };
 
   const onLaneDragOver = (e: React.DragEvent) => {
