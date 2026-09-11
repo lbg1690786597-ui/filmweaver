@@ -352,34 +352,17 @@ export default function Inspector(p: InspectorProps) {
             </Section>
 
             <Section title="参考资产" Icon={ImageIcon}>
-              {chars.length === 0 && locs.length === 0 && !s.prev_tail_ref ? (
+              {chars.length === 0 && locs.length === 0 ? (
                 <div className="fw-insp-empty">本镜无参考资产注入</div>
               ) : (
-                <>
-                  <div className="fw-insp-chips">
-                    {chars.map((c) => (
-                      <span key={c} className="fw-insp-chip char">👤 {c}</span>
-                    ))}
-                    {locs.map((l) => (
-                      <span key={l} className="fw-insp-chip loc">📍 {l}</span>
-                    ))}
-                    {/* 尾帧接力：本镜与上一镜时间紧接且同场景时，上一镜的结尾画面
-                        也会作为参考图注入，用来消除硬切跳变。这里必须显示出来 ——
-                        否则用户看到的注入集合与实际下发的对不上。 */}
-                    {s.prev_tail_ref && (
-                      <span className="fw-insp-chip tail"
-                        title="上一镜的结尾画面作为参考图注入，让同场景连续镜头衔接自然">
-                        🔗 承接 #{s.prev_tail_ref.from_order}
-                      </span>
-                    )}
-                  </div>
-                  {s.prev_tail_ref && (
-                    <img className="fw-insp-thumb tail"
-                      src={api.mediaUrl(s.prev_tail_ref.url)}
-                      alt={s.prev_tail_ref.label} loading="lazy"
-                      title={s.prev_tail_ref.label} />
-                  )}
-                </>
+                <div className="fw-insp-chips">
+                  {chars.map((c) => (
+                    <span key={c} className="fw-insp-chip char">👤 {c}</span>
+                  ))}
+                  {locs.map((l) => (
+                    <span key={l} className="fw-insp-chip loc">📍 {l}</span>
+                  ))}
+                </div>
               )}
             </Section>
 
