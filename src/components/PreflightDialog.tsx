@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, CostumeReport, Readiness } from "../api";
 import { videoModelLabel, imageModelLabel, genModeLabel, productionModeLabel } from "../lib/modelLabels";
-import { ASPECTS, resListOf } from "../lib/resolutions";
+import { ASPECTS, resListOf, resOfTier, tierLabel } from "../lib/resolutions";
 
 /** 出片前二次确认弹窗（「▷ 一键成片」「▶ 全部生成视频」「🎬 批量首帧」共用）。
  *
@@ -36,12 +36,16 @@ interface Props {
   /** 先补齐首帧：shotIds 为缺首帧的镜头 */
   onGenFrames: (shotIds: string[]) => void;
   /** 一键成片全链路（仅 mode="film" 需要）。
-   *  videoModel/width/height 为本次覆写，null/undefined = 沿用项目设置。 */
+   *  videoModel/resolution/aspect 为本次覆写，null/undefined = 沿用项目设置。
+   *
+   *  ⚠️ 这里传的是**档位名**（"480p"/"720p"/…）与画幅串，不是像素宽高。
+   *  旧版传 width/height，而后端从头到尾没读过这两个键——真正下发给 Provider 的
+   *  是 megapixels + aspect_ratio，由档位名换算。传像素等于什么都没传。 */
   onFilm?: (opts: {
     genAssets: boolean;
     videoModel?: string | null;
-    width?: number;
-    height?: number;
+    resolution?: string | null;
+    aspect?: string | null;
   }) => void;
   /** 只补资产图（人物一致性的前置条件），补完停下让用户决定下一步 */
   onFillAssets: () => void;
@@ -94,7 +98,11 @@ export default function PreflightDialog(p: Props) {
   // null = 沿用项目设置（rd 里回的那套）。
   const [ovModel, setOvModel] = useState<string | null>(null);
   const [ovAspect, setOvAspect] = useState<string | null>(null);
-  const [ovResIdx, setOvResIdx] = useState(0);
+  //: 本次覆写的分辨率档位名；null = 沿用项目设置。
+  //  旧版存的是档位表下标且初值 0，有两个后果：① 面板永远显示表中第一项
+  //  （1080p），项目里选的 720p 从来没显示出来过；② 判"改没改"用的是
+  //  `idx !== 0`，于是用户**显式选 1080p** 与"没选"不可区分。存档位名两个都没了。
+  const [ovRes, setOvRes] = useState<string | null>(null);
   const [paramOpen, setParamOpen] = useState(false);
   const [videoModels, setVideoModels] = useState<{ key: string; label: string }[]>([]);
 
@@ -165,6 +173,11 @@ export default function PreflightDialog(p: Props) {
   const fillGap = rd?.assets.to_generate
     ?? (noImg.length + noAsset.length
       + (rd?.assets.locations_no_image.length ?? 0));
+
+  //: 本次实际生效的画幅（本次覆写 > 项目设置 > 竖屏兜底）。
+  //  分辨率档位表按画幅取，两处（下拉与提交）必须用同一个值，否则会出现
+  //  "面板上看的是这张表、发出去的是那张表"。
+  const curAspect = ovAspect ?? rd?.base_aspect ?? "9:16";
 
   // ---- 五段流程的每步状态（mode="film"）----
   // 由 progress + phase.key 共同推导：phase 命中即 running，progress 越过即 done。
@@ -522,10 +535,13 @@ export default function PreflightDialog(p: Props) {
               <div className="pf-params">
                 <button className="pf-params-head" onClick={() => setParamOpen(!paramOpen)}>
                   {paramOpen ? "▾" : "▸"} 本次参数
-                  {(ovModel || ovAspect) && <span className="pf-params-dot">已改</span>}
+                  {(ovModel || ovAspect || ovRes) && <span className="pf-params-dot">已改</span>}
                   <span className="muted">
                     {videoModelLabel(ovModel ?? rd.video_model)}
                     {" · "}{ovAspect ?? rd.base_aspect ?? "9:16"}
+                    {/* 摘要里必须带上分辨率：它是最花钱的一档参数，
+                        折起来看不见的话用户不会想到去展开确认 */}
+                    {" · "}{tierLabel(ovRes ?? rd.resolution)}
                   </span>
                 </button>
 
@@ -545,22 +561,27 @@ export default function PreflightDialog(p: Props) {
                     <label className="pf-param">
                       <span>画面比例</span>
                       <select value={ovAspect ?? ""}
-                        onChange={(e) => {
-                          setOvAspect(e.target.value || null);
-                          setOvResIdx(0);   // 换画幅后旧档位索引可能越界
-                        }}>
+                        onChange={(e) => setOvAspect(e.target.value || null)}>
                         <option value="">沿用项目设置（{rd.base_aspect ?? "9:16"}）</option>
                         {ASPECTS.map((a) => <option key={a} value={a}>{a}</option>)}
                       </select>
                     </label>
 
-                    {/* 分辨率依附于画幅：没改画幅时用项目画幅的档位表 */}
+                    {/* 分辨率依附于画幅：没改画幅时用项目画幅的档位表。
+                        换画幅**不再重置**这一项——存的是档位名，换表照样对得上，
+                        用户选的"480p"不会因为顺手改了画幅就跳回 1080p。 */}
                     <label className="pf-param">
                       <span>分辨率</span>
-                      <select value={ovResIdx}
-                        onChange={(e) => setOvResIdx(Number(e.target.value))}>
-                        {resListOf(ovAspect ?? rd.base_aspect ?? "9:16").map((r, i) => (
-                          <option key={r.label} value={i}>{r.label}</option>
+                      <select value={ovRes ?? ""}
+                        onChange={(e) => setOvRes(e.target.value || null)}>
+                        <option value="">
+                          沿用项目设置（{tierLabel(rd.resolution)}
+                          {resOfTier(curAspect, rd.resolution)
+                            ? ` · ${resOfTier(curAspect, rd.resolution)!.w}×${resOfTier(curAspect, rd.resolution)!.h}`
+                            : ""}）
+                        </option>
+                        {resListOf(curAspect).map((r) => (
+                          <option key={r.tier} value={r.tier}>{r.label}</option>
                         ))}
                       </select>
                     </label>
@@ -594,17 +615,14 @@ export default function PreflightDialog(p: Props) {
                 <button className="btn primary" disabled={nothingToDo}
                   title="拆解 → 资产 → 首帧 → 片段 → 拼接成片，已完成的环节自动跳过"
                   onClick={() => {
-                    // 只在用户真改过画幅/分辨率时才下发 width/height；
-                    // 没改就传 undefined，让后端沿用项目默认（别用前端算出来的值
-                    // 去覆盖，那会把"沿用"悄悄变成"锁定成当前档位"）
-                    const aspect = ovAspect ?? rd.base_aspect ?? "9:16";
-                    const res = resListOf(aspect)[ovResIdx];
-                    const changed = ovAspect !== null || ovResIdx !== 0;
+                    // 只把用户**真改过**的项下发；没改的传 null = 沿用项目设置。
+                    // 别用前端读到的项目值回填——那会把"沿用"变成"锁死成读到这一刻
+                    // 的值"，用户之后在项目设置里改了分辨率，这条任务还按老档位跑。
                     p.onFilm?.({
                       genAssets,
                       videoModel: ovModel,
-                      width: changed ? res?.w : undefined,
-                      height: changed ? res?.h : undefined,
+                      resolution: ovRes,
+                      aspect: ovAspect,
                     });
                   }}>
                   {p.hasScript === false ? "请先导入剧本"
