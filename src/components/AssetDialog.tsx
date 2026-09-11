@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, CharacterProfile, ProfileAxis, SceneGroup, SceneViewsOut, ShotInfo, StageInfo } from "../api";
 import { parseEpisodeInput } from "../lib/formState";
+import { compressImage, describeSaving } from "../lib/imageCompress";
+import {
+  CANDIDATE_COUNTS, candidateButtonLabel, candidateCostHint, defaultCandidateCount,
+} from "../features/assets/candidatePlan";
 import AutoTextarea from "./AutoTextarea";
+import VoicePicker from "../features/audio/VoicePicker";
 
 /** 统一资产详情弹窗的目标描述：
  *  - stage 有值 = 阶段上下文（主角阶段/配角唯一阶段）：可改阶段名/区间/确认/删除，生成写回 AssetStage
@@ -56,11 +61,26 @@ const epRanges = (eps: number[]): string => {
   return runs.map(([a, b]) => (a === b ? `第${a}集` : `第${a}-${b}集`)).join("、");
 };
 
-/** 后端 vision_desc.AUTO_PREFIX：带此前缀 = AI 看图写的造型，用户改过就不再被换图覆盖。
- *  弹窗里剥掉前缀显示（用户不该看见内部标记），只在旁边给一行说明。 */
+/** 后端 vision_desc.AUTO_PREFIX：库里带此前缀 = 早年 AI 看图自动写的造型。
+ *  2026-09-10 起不再产生新的带前缀数据（看图改成手动按钮、结果经用户过目才存），
+ *  这里只保留**读**路径：剥掉前缀显示，用户不该看见内部标记。 */
 const AUTO_PREFIX = "〔自动识图〕";
 const stripAuto = (s?: string | null): string =>
   (s ?? "").startsWith(AUTO_PREFIX) ? (s ?? "").slice(AUTO_PREFIX.length) : (s ?? "");
+
+/**
+ * 描述为空时，「✨生成」这一次临时套用的生图模板。
+ *
+ * ⚠️ **只在提交生图那一刻用，绝不落库**。以前它是输入框的初值，于是只要用户
+ * 碰一下输入框，`角色立绘, 林晨, 全身, 高质量, 短剧风格` 就被存成了这个角色的
+ * "造型描述"。而造型描述在出片时是要拼进**视频提示词**的（`jobs.py` 的
+ * ref_notes 段），最终会长成「参考图1（林晨）：角色立绘, 林晨, 全身, 高质量,
+ * 短剧风格」——对视频模型来说是纯噪声，还挤掉了真正该说的服装信息。
+ */
+const genTemplate = (kind: string, name: string): string =>
+  kind === "location" ? `场景概念图, ${name}, 电影感, 高质量`
+    : kind === "custom" ? ""
+      : `角色立绘, ${name}, 全身, 高质量, 短剧风格`;
 
 /** 统一资产详情弹窗：用途（集数区间）+ 阶段信息 + 生成参数（比例/分辨率/模型）+ 候选生成。
  *  资产页卡片单击、时间轴条目双击均打开此弹窗（轨道侧防误触）。 */
@@ -70,14 +90,14 @@ export default function AssetDialog(p: Props) {
   // 两者都是出片时喂给提示词优化器的"参考图文字锚点"，所以必须都能改、都能存。
   const savedDesc = t.stage ? t.stage.description : (t.assetPrompt ?? null);
   const descIsAuto = (savedDesc ?? "").startsWith(AUTO_PREFIX);
-  const [prompt, setPrompt] = useState(() =>
-    stripAuto(savedDesc)
-    || (t.kind === "location" ? `场景概念图, ${t.name}, 电影感, 高质量`
-      : t.kind === "custom" ? ""
-        : `角色立绘, ${t.name}, 全身, 高质量, 短剧风格`));
+  // 空就是空 —— **不再**用生图模板预填（见 genTemplate 的注释：预填的模板会被
+  // 当成真实造型描述存进库，再被拼进视频提示词）。没描述时 placeholder 给引导。
+  const [prompt, setPrompt] = useState(() => stripAuto(savedDesc));
   // 只有用户真的动过输入框才落库：轨道侧打开时 assetPrompt 可能没传进来，
-  // 此时框里是模板占位，若照常 onBlur 保存会把库里真实描述冲掉。
+  // 此时框里是空的，若照常 onBlur 保存会把库里真实描述冲掉。
   const [promptDirty, setPromptDirty] = useState(false);
+  //: 「AI 看图补写」在跑（只转这个按钮，不锁弹窗其它部分）
+  const [descBusy, setDescBusy] = useState(false);
   const [aspect, setAspect] = useState<string>(t.kind === "location" ? "16:9" : "9:16");
   const [hd, setHd] = useState(false);
   const [models, setModels] = useState<{ id: string; label: string }[]>(FALLBACK_MODELS);
@@ -101,7 +121,12 @@ export default function AssetDialog(p: Props) {
       .catch(() => { /* 旧后端无此接口：下拉为空，手填照样能存 */ });
   }, [p.projectId, t.stage?.id]);
   const [genBusy, setGenBusy] = useState(false);
-  const [genN, setGenN] = useState(4);   // 生成张数 1-4（用户可选）
+  /**
+   * 生成张数 1–4。默认值**随处境变**（口径与理由见 `features/assets/candidatePlan.ts`）：
+   * 还没有图时默认 1 张（第一次只求有，别一上手就花四倍钱），
+   * 已有图时默认 4 张（这是"换一张"，没有对比就没得挑）。
+   */
+  const [genN, setGenN] = useState(() => defaultCandidateCount(!!t.imageUrl));
   // 拿该角色已有的定妆图当参考（图生图）→ 换造型不换脸。默认开：
   // 裸文生图的结果是同一个角色每张脸都不一样，后续视频全废。
   const [keepFace, setKeepFace] = useState(true);
@@ -111,6 +136,61 @@ export default function AssetDialog(p: Props) {
   const voiceFileRef = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [curVoice, setCurVoice] = useState(t.voiceUrl ?? null);
+  // 音色库选择器：与「AI 配音/角色音色」面板共用同一个组件与同一条写入口
+  // （api.patchAsset({voiceUrl})）。两处各写一套的话，空态文案和赋值行为必然漂移。
+  const [voicePicking, setVoicePicking] = useState(false);
+  /**
+   * 上传的**明确**结果。原先整个上传过程只有按钮上一个「⏳」，成功/失败只发一条
+   * 转瞬即逝的 toast，用户的原话是"没有明确反馈是否上传成功"——就是这个。
+   * 这里改成弹窗内常驻一行状态，直到下一次上传才被覆盖。
+   */
+  const [upStat, setUpStat] = useState<
+    { phase: "picking" | "uploading" | "ok" | "err"; what: string; msg?: string } | null>(null);
+  /**
+   * 文件选择框已打开、还没回来。
+   *
+   * 这是"关掉小窗口上传就失败"的**真正机制**：`<input type="file">` 就长在本弹窗里，
+   * 系统选择框弹出时应用窗口在它后面；用户点回应用（点到遮罩上）→ 弹窗卸载 →
+   * 那个 input 一起消失 → 选完文件后的 change 事件**没有任何接收方**。
+   * 于是：文件选了、什么都没发生、也没有任何报错。
+   * 所以选择框未回来之前同样不能关窗，不只是"上传中不能关"。
+   */
+  const [picking, setPicking] = useState(false);
+  const busyUpload = uploading || picking;
+
+  /**
+   * 只在**选文件**期间挡住关闭。
+   *
+   * 2026-09-10 修正：这里原本连 `uploading` 一起挡，用户反馈"上传时整个页面被
+   * 锁住什么都干不了"。上传阶段挡是没有道理的——文件已经交给 `fetch`，请求
+   * 与组件生命周期无关，关掉弹窗上传照样跑完、照样落库、照样 toast。
+   * 真正必须挡的只有 `picking`：那时 `<input type="file">` 还长在弹窗里，
+   * 弹窗一卸载 input 就没了，选完文件的 change 事件没有任何接收方（见 picking 注释）。
+   */
+  const guardedClose = () => {
+    if (picking) {
+      p.onToast("⏳ 正在选择文件，选完或取消后再关闭窗口");
+      return;
+    }
+    p.onClose();
+  };
+
+  /** 打开系统文件选择框。用户取消（没选文件）时 change 不触发，靠窗口重新获得
+   *  焦点来解除 picking —— 否则取消一次就再也关不掉弹窗了。 */
+  const openPicker = (ref: React.RefObject<HTMLInputElement | null>, what: string) => {
+    setPicking(true);
+    setUpStat({ phase: "picking", what });
+    const done = () => {
+      window.removeEventListener("focus", done);
+      // 焦点回来时 change 可能还没派发，给一拍再判定
+      window.setTimeout(() => {
+        setPicking(false);
+        setUpStat((s) => (s && s.phase === "picking" ? null : s));
+      }, 350);
+    };
+    window.addEventListener("focus", done);
+    ref.current?.click();
+  };
 
   // ── 形象档案（角色专属）：这个角色**全剧统一**的长相。
   // 与上面的「造型描述」分工：档案是脸，造型是衣服。衣服每套一份，脸只有一份。
@@ -340,37 +420,83 @@ export default function AssetDialog(p: Props) {
   };
 
   /** 上传图片 → 直接作为资产图（替换 AI 生成的）。
+   *
+   *  两处 2026-09-10 的改动，都是用户实测反馈的直接结果：
+   *
+   *  ① **先压再传**（`compressImage`，超 2MB 或长边超 2048 才压）。定妆图多是
+   *     手机/单反原图，5~20MB 走公网就是几十秒，而它在织影里的用途只有"喂给
+   *     生图模型当参考"和"卡片缩略图"，都用不到四千像素。
+   *  ② **清空旧造型描述**。旧描述是拆剧本阶段（一张图都还没有时）按剧本文字
+   *     写的，与用户刚传的这张图毫无关系；但出片时它会作为参考图的文字锚点
+   *     注入，且提示词里明写「原稿中与之矛盾的服装描写一律以此为准改写」——
+   *     于是**文字压过参考图**，人物外观必然漂移。清空后走 `jobs.py` 的 blind
+   *     兜底：不写服装发型配饰，外观完全交给这张图钳制。
+   *     ⚠️ 这个清空**只在上传自己的图时做**；`pick()` 采用 AI 候选图不清，
+   *     那张图本来就是照着这段描述生出来的。
+   *
    *  预览立即更新（不等落库回包）；落库失败会 toast 并还原。 */
   const doUploadImage = async (f: File) => {
+    setPicking(false);
     setUploading(true);
+    const what = `图片「${f.name}」`;
+    setUpStat({ phase: "uploading", what, msg: "处理中…" });
     const prev = curImg;
     try {
-      const r = await api.uploadMedia(f, p.projectId);
+      const small = await compressImage(f);
+      if (small.compressed) {
+        setUpStat({ phase: "uploading", what, msg: `已压缩 ${describeSaving(small)}，上传中…` });
+      }
+      const r = await api.uploadMedia(small.file, p.projectId);
       setCurImg(r.url);   // 立即出预览
-      if (t.stage && !t.stage.virtual) await api.patchStage(t.stage.id, { image_url: r.url });
-      else if (t.assetId) await api.patchAsset(t.assetId, { imageUrl: r.url });
-      else await api.upsertAssetImage(p.projectId, t.kind, t.name, r.url);
+      if (t.stage && !t.stage.virtual) {
+        await api.patchStage(t.stage.id, { image_url: r.url, clear_description: true });
+      } else if (t.assetId) {
+        await api.patchAsset(t.assetId, { imageUrl: r.url, clearPrompt: true });
+      } else {
+        await api.upsertAssetImage(p.projectId, t.kind, t.name, r.url,
+                                   undefined, undefined, { clearPrompt: true });
+      }
+      // 库里已经清空了，输入框也必须跟着清 —— 否则框里还留着旧文字，
+      // 下一次失焦 `savePrompt` 会把它原样写回去，清空等于白做。
+      const hadDesc = !!prompt.trim();
+      setPrompt("");
+      savedRef.current = "";
+      setPromptDirty(false);
       setCands([]);
       p.onChanged();
-      p.onToast("✅ 已用上传图片替换资产图");
+      const cleared = hadDesc ? " · 旧造型描述已清空，出片将完全以这张图为准" : "";
+      setUpStat({
+        phase: "ok", what,
+        msg: `已替换为资产图${small.compressed ? `（压缩 ${describeSaving(small)}）` : ""}${cleared}`,
+      });
+      p.onToast(hadDesc
+        ? "✅ 已用上传图片替换资产图，并清空了与它无关的旧造型描述"
+        : "✅ 已用上传图片替换资产图");
     } catch (e) {
       setCurImg(prev);    // 落库失败还原预览
+      setUpStat({ phase: "err", what, msg: String(e).slice(0, 200) });
       p.onToast(`上传失败：${String(e).slice(0, 160)}`);
     }
     finally { setUploading(false); }
   };
 
-  /** 上传参考音色（音频/视频）→ Asset.voice_url；TTS 旁白按角色取音色 */
+  /** 上传参考音色（音频/视频）→ Asset.voice_url；真人剧出片时按角色注入 */
   const doUploadVoice = async (f: File) => {
+    setPicking(false);
     setUploading(true);
+    setUpStat({ phase: "uploading", what: `音色「${f.name}」` });
     try {
       const r = await api.uploadMedia(f, p.projectId);
       if (t.assetId) await api.patchAsset(t.assetId, { voiceUrl: r.url });
       else await api.upsertAssetImage(p.projectId, t.kind, t.name, undefined, r.url);
       setCurVoice(r.url);
       p.onChanged();
-      p.onToast(`🎙 「${t.name}」参考音色已设置（旁白合成将用此音色）`);
-    } catch (e) { p.onToast(String(e)); }
+      setUpStat({ phase: "ok", what: `音色「${f.name}」`, msg: "已设为该角色音色" });
+      p.onToast(`🎙 「${t.name}」参考音色已设置`);
+    } catch (e) {
+      setUpStat({ phase: "err", what: `音色「${f.name}」`, msg: String(e).slice(0, 200) });
+      p.onToast(String(e));
+    }
     finally { setUploading(false); }
   };
 
@@ -432,9 +558,13 @@ export default function AssetDialog(p: Props) {
    *  这段文字出片时会作为参考图的文字锚点喂给提示词优化器，所以必须持久化——
    *  以前非阶段资产改完提示词只留在组件 state 里，一关弹窗就没了。 */
   const savedRef = useRef(stripAuto(savedDesc));
-  const savePrompt = async () => {
-    if (!promptDirty) return;
-    const v = prompt.trim();
+  const savePrompt = async (override?: string) => {
+    // 无 override = 失焦触发：用户没动过就别发请求（轨道侧打开时框里可能
+    // 根本没拿到库里的真值，照常保存会把真描述冲掉）。
+    // 有 override = 「AI 看图补写」按钮塞进来的文字：它是程序填的，用户不会
+    // 去点一下再移开，**没有失焦事件可等**，所以必须显式存。
+    if (override === undefined && !promptDirty) return;
+    const v = (override ?? prompt).trim();
     if (v === savedRef.current.trim()) return;
     try {
       if (t.stage && !t.stage.virtual) await api.patchStage(t.stage.id, { description: v });
@@ -444,6 +574,33 @@ export default function AssetDialog(p: Props) {
       setPromptDirty(false);
       p.onChanged();
     } catch (e) { p.onToast(`描述保存失败：${String(e).slice(0, 160)}`); }
+  };
+
+  /**
+   * 「🔍 AI 看图补写」：看当前这张图，写一段造型/场景描述填进输入框并存下。
+   *
+   * 这是视觉反推**唯一**的入口。它以前是挂在换图/上传链路上自动跑的：一次
+   * 多模态调用 ~8s（还要把图整份 base64 上行），期间弹窗不许关闭 = 整页锁死，
+   * 用户看到的就是"上传非常非常慢而且什么都点不了"。改成手动按钮后，
+   * 不想要文字描述的人一秒都不用等；想要的人点一下、结果可当场改。
+   *
+   * 只转这个按钮自己，不进 `uploading` —— 它不该锁住弹窗的任何其它部分。
+   */
+  const doDescribe = async () => {
+    if (!curImg) { p.onToast("先上传或生成一张图，才有东西可看"); return; }
+    setDescBusy(true);
+    try {
+      // 后端只有"造型记录员"（写人物服装）与"置景记录员"（写空间陈设）两套题面。
+      // custom 多是道具/物件，用置景那套（材质配色）远比让它写"人物造型"合适。
+      const r = await api.describeImage(curImg, t.kind === "character" ? "character" : "location");
+      setPrompt(r.description);
+      setPromptDirty(false);
+      await savePrompt(r.description);
+      p.onToast("✅ 已按图写好描述并保存，可直接在框里修改");
+    } catch (e) {
+      p.onToast(`看图失败：${String((e as Error)?.message ?? e).slice(0, 160)}`);
+    }
+    finally { setDescBusy(false); }
   };
 
   // ---- 候选图接回：打开弹窗就问一次"这张资产最近一次候选生成怎么样了" ----
@@ -475,14 +632,17 @@ export default function AssetDialog(p: Props) {
   }, [p.projectId, t.kind, t.name, t.stage?.id]);
 
   const doGen = async () => {
-    if (!prompt.trim()) { p.onToast("先填写生图提示词"); return; }
+    // 描述为空也让生：套一次模板**只用于这一次提交**，不写回输入框、不落库
+    // （见 genTemplate 注释——它以前是输入框初值，被顺手存成了造型描述）。
+    const imagePrompt = prompt.trim() || genTemplate(t.kind, t.name);
+    if (!imagePrompt) { p.onToast("先填写生图提示词"); return; }
     setGenBusy(true);
     try {
       const useRef = !!p.baseRef && keepFace;
       await api.submitAssetCandidates({
         projectId: p.projectId, kind: t.kind, name: t.name,
         stageId: t.stage?.id ?? null,
-        prompt: prompt.trim(), modelId: model, size: sizeFor(aspect, hd), n: genN,
+        prompt: imagePrompt, modelId: model, size: sizeFor(aspect, hd), n: genN,
         // 角色资产：喂该角色已有的定妆图做参考，换造型不换脸。
         // 排除正在重生成的这一张（拿它自己当参考等于原地复制一版）
         useCharRef: useRef, excludeUrl: curImg,
@@ -511,7 +671,7 @@ export default function AssetDialog(p: Props) {
 
   const kindLabel = t.kind === "location" ? "场景" : t.kind === "custom" ? "自定义资产" : "角色";
   return (
-    <div className="drawer-mask" onClick={p.onClose}>
+    <div className="drawer-mask" onClick={guardedClose}>
       <div className="wizard wizard-lg" onClick={(e) => e.stopPropagation()}>
         <h2>{t.kind === "location" ? "🏞" : t.kind === "custom" ? "✨" : "👤"} {t.name}
           {t.stage && <span className="muted" style={{ fontWeight: 400 }}> · {t.stage.stage_name}</span>}
@@ -546,28 +706,69 @@ export default function AssetDialog(p: Props) {
                 {curVoice
                   ? <span>已设置 🎙 <button className="btn ghost adlg-mini"
                       onClick={() => { const a = new Audio(api.mediaUrl(curVoice)); void a.play(); }}>▶试听</button></span>
-                  : <span className="muted">未设置（旁白合成时可用角色音色）</span>}
+                  : <span className="muted">未设置（出片时该角色的说话声由模型自由发挥）</span>}
               </div>
             )}
             {/* 上传替换：图片直接替换 AI 资产图；角色可传参考音色 */}
             <div className="row" style={{ gap: 6, marginTop: 4 }}>
-              <button className="btn adlg-mini" disabled={uploading}
+              <button className="btn adlg-mini" disabled={busyUpload}
                 title="上传本地图片作为此资产图（替换 AI 生成）"
-                onClick={() => imgFileRef.current?.click()}>
+                onClick={() => openPicker(imgFileRef, "图片")}>
                 {uploading ? "⏳" : "📤 上传图片"}
               </button>
               {t.kind === "character" && (
-                <button className="btn adlg-mini" disabled={uploading}
-                  title="上传音频/视频作为此角色参考音色（旁白合成用其人声，取前 15s）"
-                  onClick={() => voiceFileRef.current?.click()}>
-                  {uploading ? "⏳" : "🎙 上传音色"}
-                </button>
+                <>
+                  <button className="btn adlg-mini" disabled={busyUpload}
+                    title="上传音频/视频作为此角色参考音色（出片时该角色按此音色说话，取前 15s）"
+                    onClick={() => openPicker(voiceFileRef, "音色")}>
+                    {uploading ? "⏳" : "🎙 上传音色"}
+                  </button>
+                  <button className="btn adlg-mini" disabled={busyUpload}
+                    title="从音色库挑一个音色（库还在建设中）"
+                    onClick={() => setVoicePicking(true)}>
+                    ♪ 从音色库选
+                  </button>
+                </>
               )}
             </div>
+            {/* 上传结果常驻一行：成功/失败都写清楚，不靠一闪而过的 toast。
+                ⚠️ 文案里**不再**写「请勿关闭窗口」——上传中现在是可以关窗的
+                （文件已交给 fetch，关窗不影响它跑完，见 guardedClose）。
+                选文件那一步才真的不能关。 */}
+            {upStat && (
+              <div className={`adlg-upstat adlg-upstat-${upStat.phase}`}>
+                {upStat.phase === "picking" && `⏳ 正在选择${upStat.what}…（选完或取消前请勿关闭窗口）`}
+                {upStat.phase === "uploading"
+                  && `⏳ 正在上传 ${upStat.what}…${upStat.msg ? ` ${upStat.msg}` : ""}（可以关掉窗口，传完会通知你）`}
+                {upStat.phase === "ok" && `✅ ${upStat.what} 上传成功 · ${upStat.msg}`}
+                {upStat.phase === "err" && `❌ ${upStat.what} 上传失败：${upStat.msg}`}
+              </div>
+            )}
             <input ref={imgFileRef} type="file" accept=".png,.jpg,.jpeg,.webp" hidden
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) void doUploadImage(f); e.target.value = ""; }} />
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void doUploadImage(f); else setPicking(false); e.target.value = ""; }} />
             <input ref={voiceFileRef} type="file" accept=".mp3,.wav,.aac,.m4a,.mp4,.mov" hidden
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) void doUploadVoice(f); e.target.value = ""; }} />
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void doUploadVoice(f); else setPicking(false); e.target.value = ""; }} />
+            {voicePicking && (
+              <VoicePicker
+                charName={t.name}
+                currentUrl={curVoice}
+                onClose={() => setVoicePicking(false)}
+                onUploadInstead={() => setTimeout(() => openPicker(voiceFileRef, "音色"), 0)}
+                onPick={async (v) => {
+                  setUpStat({ phase: "uploading", what: `音色「${v.name}」` });
+                  try {
+                    if (t.assetId) await api.patchAsset(t.assetId, { voiceUrl: v.url });
+                    else await api.upsertAssetImage(p.projectId, t.kind, t.name, undefined, v.url);
+                    setCurVoice(v.url);
+                    p.onChanged();
+                    setUpStat({ phase: "ok", what: `音色「${v.name}」`, msg: "已设为该角色音色" });
+                    p.onToast(`🎙 「${t.name}」音色设为「${v.name}」`);
+                  } catch (e) {
+                    setUpStat({ phase: "err", what: `音色「${v.name}」`, msg: String(e).slice(0, 200) });
+                    p.onToast(String(e));
+                  }
+                }} />
+            )}
           </div>
         </div>
 
@@ -835,13 +1036,46 @@ export default function AssetDialog(p: Props) {
           </div>
         )}
 
-        {/* 生成参数：提示词 + 比例/分辨率/模型/张数 */}
-        <label>{t.kind === "location" ? "场景描述" : "造型描述"}（也是生图提示词）
-          {descIsAuto && <span className="muted" style={{ fontWeight: 400 }}>
-            {" "}· AI 看图写的，改过就不再被换图覆盖</span>}
+        {/* 生成参数：造型描述 + 比例/分辨率/模型/张数 */}
+        <label>
+          <div className="row" style={{ alignItems: "baseline", gap: 8 }}>
+            <span style={{ flex: 1 }}>
+              {t.kind === "location" ? "场景描述" : "造型描述"}
+              {/* 名字要说实话：它**不是**"生图提示词"。原来的括注直接这么写着，
+                  但它真正的主业是出片时给这张参考图当**文字锚点**（拼进视频
+                  提示词）；只有本弹窗的「✨生成」在描述非空时会顺带拿它当图的
+                  提示词。用户按"提示词"的写法去填（"高质量, 短剧风格"这类），
+                  那些词就会跟着进视频提示词。 */}
+              <span className="muted" style={{ fontWeight: 400 }}>
+                {t.kind === "location"
+                  ? " · 这个场景有什么陈设、什么材质配色"
+                  : " · 这套造型的服装 / 发型 / 配饰"}
+              </span>
+            </span>
+            <button type="button" className="btn ghost adlg-mini"
+              disabled={descBusy || !curImg}
+              title={curImg
+                ? "让 AI 看当前这张图写一段描述（约 8 秒），写完可以直接改"
+                : "还没有图可看"}
+              onClick={() => { void doDescribe(); }}>
+              {descBusy ? "⏳ 看图中…" : "🔍 AI 看图补写"}
+            </button>
+          </div>
+          {descIsAuto && <div className="muted" style={{ fontWeight: 400 }}>
+            这段是早年 AI 看图自动写的，可直接修改</div>}
           <AutoTextarea className="drawer-ta" minHeight={64} value={prompt}
+            placeholder={t.kind === "location"
+              ? "例：老式客厅，胡桃木圆桌与藤编靠椅，米黄墙面，午后斜光"
+              : "例：米色双排扣风衣，内搭黑色高领，低马尾，银色细框眼镜"}
             onChange={(e) => { setPrompt(e.target.value); setPromptDirty(true); }}
             onBlur={() => void savePrompt()} />
+          {/* 留空是**正当选择**，不是没填完。用户上传自己的图时我们就是主动清空的：
+              没有文字，出片提示词便禁止书写服装发型（jobs.py 的 blind 兜底），
+              外观完全由参考图钳制——这比一段与图不符的旧文字可靠得多。 */}
+          <div className="muted" style={{ fontWeight: 400, fontSize: "calc(11px * var(--fs-scale, 1))" }}>
+            留空也可以：那样出片时会完全以上面这张图为准，不写任何服装文字。
+            填了就要与图一致，不一致会导致人物外观漂移。
+          </div>
         </label>
         <div className="row">
           <label style={{ flex: 1 }}>比例
@@ -862,7 +1096,7 @@ export default function AssetDialog(p: Props) {
           </label>
           <label style={{ width: 76 }}>张数
             <select value={genN} onChange={(e) => setGenN(Number(e.target.value))}>
-              {[1, 2, 3, 4].map((n2) => <option key={n2} value={n2}>{n2} 张</option>)}
+              {CANDIDATE_COUNTS.map((n2) => <option key={n2} value={n2}>{n2} 张</option>)}
             </select>
           </label>
         </div>
@@ -878,10 +1112,17 @@ export default function AssetDialog(p: Props) {
         )}
 
         <button className="btn primary" disabled={genBusy || candBusy} onClick={doGen}>
-          {candBusy ? "生成中…（可关掉弹窗，回来接着挑）"
-            : genBusy ? "提交中…"
-              : `✨ 生成（${genN} 张候选）`}
+          {candidateButtonLabel({
+            hasImage: !!curImg, n: genN, submitting: genBusy, running: candBusy,
+          })}
         </button>
+        {/* 花费口径摆在按钮正下方：候选是**按张计费**的，而"点选哪张才落库"这件事
+            不说清的话，用户会以为一点生成当前定妆图就被顶掉了（job 化之前确实如此）。 */}
+        {!candBusy && (
+          <div className="muted" style={{ fontSize: "calc(11px * var(--fs-scale, 1))", marginTop: -4 }}>
+            {candidateCostHint(genN, !!curImg)}
+          </div>
+        )}
         {cands.length > 0 && (
           <div className="cand-grid">
             {cands.map((u) => (
@@ -911,7 +1152,7 @@ export default function AssetDialog(p: Props) {
             }}>🗑 删除阶段</button>
           ) : <span />}
           <span>
-            <button className="btn ghost" onClick={p.onClose}>关闭</button>
+            <button className="btn ghost" onClick={guardedClose}>关闭</button>
           </span>
         </div>
       </div>
