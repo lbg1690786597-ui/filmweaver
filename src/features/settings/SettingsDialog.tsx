@@ -30,6 +30,7 @@ import {
 } from "../../lib/localRootStore";
 import "./SettingsDialog.css";
 import { productionModeLabel } from "../../lib/modelLabels";
+import { checkRuntime, runtimeWarning, MIN_CHROMIUM } from "../../lib/runtime";
 
 type Tab = "editor" | "ai" | "cache";
 
@@ -47,6 +48,9 @@ interface Props {
 
 export default function SettingsDialog(p: Props) {
   const [tab, setTab] = useState<Tab>("editor");
+  // 引擎能力是进程内的常量（同一个 WebView 不会中途换引擎），算一次就够。
+  const [rt] = useState(checkRuntime);
+  const rtWarn = runtimeWarning(rt);
   const [zoom, setZoom] = useState(() => readPref("tlZoom", ZOOM_DEFAULT));
   const [autoSave, setAutoSave] = useState(() => readPref("autoSave", true));
   const [snapping, setSnapping] = useState(() => readPref("snap", true));
@@ -317,10 +321,26 @@ export default function SettingsDialog(p: Props) {
                     单键指令仅在焦点不在输入框时生效，写字幕时不会误触发。
                   </div>
                 </Group>
+                <Group title="运行环境">
+                  {/* 2026-09-10：有用户界面整个塌掉（弹窗没底色、边框消失），
+                      根因是他机器上的 WebView2 运行时太旧、不认 oklch()/color-mix()。
+                      当时我们在服务端查遍源码与安装包都正常，却完全看不到用户那侧
+                      跑的是什么引擎——所以把它摆在这里：一张截图就能定位。 */}
+                  <Field label="渲染引擎">
+                    <span className="fw-set-val">
+                      {rt.chromium === null ? "未知" : `Chromium ${rt.chromium}`}
+                      {rt.degraded ? "（过旧）" : ""}
+                    </span>
+                  </Field>
+                  <div className="fw-set-note">
+                    {rtWarn ?? `配色特性完整可用（要求 Chromium ${MIN_CHROMIUM} 及以上）。`}
+                  </div>
+                </Group>
               </>
             )}
 
             {tab === "ai" && (
+
               <>
                 <Group title="生产策略">
                   <Field label="默认质量">
