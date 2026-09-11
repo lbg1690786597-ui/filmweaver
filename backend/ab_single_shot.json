@@ -1,0 +1,59 @@
+{
+  "project": "e3e5d6e517c6",
+  "shots": [
+    {
+      "id": "75375f0fae52",
+      "order": 57,
+      "episode": 4,
+      "location": "夜 内 云顶五星级酒店 宴会厅",
+      "characters": "[\"白薇\", \"工作人员\"]",
+      "script_ref": "△工作人员无比恭敬地递上贵宾号牌，周围几位高管纷纷侧目，露出惊艳与讨好的目光。",
+      "gen_prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\nintegrated_multimodal_description: [Shot 1] Live-action, cinematic, the shot anchors on the initial subjects, composition, and lighting established in <Picture 1>. Preserving the spatial relationships without altering the subjects' appearances, the camera pushes in with small amplitude at slow speed toward the golden pass held by the concierge. The concierge maintains a bowed posture while smoothly tilting the metallic card, catching warm light reflections across its polished surface. In the background, the corporate executives slowly widen their eyes, shifting from calm composure to subtle, admiring smiles as their focus tightens onto the pass by the end of the shot.\n\noverall_soundscape: Low indoor ambient acoustics inside a luxury lobby, accompanied by the quiet rustle of suit fabrics, soft shoe slides on the marble floor, and a faint metallic rustle as the VIP pass is tilted.\n\nnon_diegetic_music: Sustained legato string ensemble playing at a slow tempo, with rising harmonic layers that gradually swell in volume toward the end of the shot.",
+      "duration_sec": 3.5,
+      "i2va_video": "/fw/media/generated/h3_be7a6fd47e93.mp4",
+      "first_frame": "/fw/media/generated/img_9ddffdcac8be.png"
+    }
+  ],
+  "results": [
+    {
+      "model": "seedance-2.0-mini",
+      "order": 57,
+      "elapsed": 10.7,
+      "status": "failed",
+      "video_url": null,
+      "error": "HTTP 400: {\"error\":{\"code\":\"InputImageSensitiveContentDetected.PrivacyInformation\",\"message\":\"The request failed because the input image 'content[1]' 'content[2]' may contain real person. Request id: 0217865168516037d6713dc852f73f0cf900d2fbe3d44884d94f4\",\"param\":\"\",\"type\":\"BadRequest\"}}",
+      "prompt": "@图片1 作为首帧锁定初始构图与主体光影，场景映射为 @图片3 云顶五星级酒店宴会厅，背景色调典雅奢华。@图片1 角色「白薇」与背景中高管们保持初始空间关系及外观特征一致。\n\n0-3.5 秒：镜头以慢速、小幅度平稳向前推近，焦点逐渐紧锁在 @图片2 工作人员（迎宾员）手持的 VIP 金卡上。@图片2 工作人员保持优雅躬身姿态，手部平滑倾斜金卡，抛光金属表面折射出柔和的暖光。背景中的高管们眼神随焦点收紧，表情从最初的平静镇定自然过渡为微小的赞赏微笑。全程保持单一推镜运镜。\n\n音频与音效：全程伴随豪华宴会厅低沉环境背景声、西装布料轻微摩擦声、大理石地面鞋底滑动声以及金卡倾斜时的微弱金属质感音效；背景配乐为慢板持重连贯的弦乐合奏，带有上升的和声层，在结尾处音量渐强。\n\n4K 高清，写实电影级质感，光影层次丰富，无 CG 感；面部稳定不变形、五官清晰、人体结构正常、动作自然流畅、不僵硬、画面无卡顿、无闪烁；保持无字幕，避免生成任何文字，不要生成水印，不要生成 logo。",
+      "refs": [
+        "/fw/media/generated/img_8ef42342ab2b.png",
+        "/fw/media/generated/img_2802bde5d2b2.png",
+        "/fw/media/generated/img_3b478f9c7884.png"
+      ],
+      "labels": [
+        "角色「白薇」",
+        "角色「工作人员」",
+        "场景「夜 内 云顶五星级酒店 宴会厅」"
+      ],
+      "inferred_mode": "full_reference"
+    },
+    {
+      "model": "minimax-h3-ref2v",
+      "order": 57,
+      "elapsed": 136.8,
+      "status": "done",
+      "video_url": "/fw/media/generated/h3_f417d78d8338.mp4",
+      "error": null,
+      "prompt": "subject_definitions:\n<Subject 1> is the hotel concierge in <Picture 1>, wearing a dark professional uniform with polished buttons and maintaining a poised, respectful demeanor.\n<Subject 2> is the golden pass in <Picture 2>, featuring a sleek metallic surface with fine engraved details and high reflectivity.\n<Subject 3> is the group of corporate executives and the luxury hotel lobby environment in <Picture 3>, featuring well-tailored business suits, warm ambient lighting, and polished marble interiors.\n\nsummary:\n[reference generation] The target video shows a single-shot sequence inside a luxury hotel lobby where <Subject 1> tilts <Subject 2> forward while <Subject 3> react subtly in the background with admiring expressions.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1]): fully_preserved - the concierge's uniform, professional appearance, and posture are fully retained.\n<Subject 2> (appears in [Shot 1]): fully_preserved - the golden pass's metallic surface, engraved texture, and light reflection are fully retained.\n<Subject 3> (appears in [Shot 1]): fully_preserved - the executive suits, facial features, admiring reactions, and marble lobby environment are fully retained.\n\ndetailed_description:\nThe target video adopts a live-action cinematic visual style with soft, warm luxury indoor lighting and realistic textures.\n[Shot 1] A medium close-up frames <Subject 1>, the hotel concierge in a dark uniform from <Picture 1>, holding <Subject 2>, the sleek golden pass with fine engraved details from <Picture 2>. <Subject 1> maintains a respectful bowed posture while smoothly tilting the metallic pass forward at a measured pace, letting warm light reflections sweep across its polished surface. The camera pushes in with small amplitude at slow speed toward <Subject 2>. In the background, <Subject 3>, the corporate executives in tailored business suits seated within the luxury marble lobby from <Picture 3>, gradually widen their eyes, shifting from calm composure to subtle, admiring smiles as their focus tightens onto the pass by the end of the shot.\n\noverall_soundscape:\nLow indoor ambient acoustics resonate within the luxury lobby, accompanied by the quiet rustle of suit fabrics, soft shoe slides on the polished marble floor, and a faint metallic rustle as the golden pass is tilted.\n\nnon_diegetic_music:\nA sustained legato string ensemble plays at a slow tempo, with rising harmonic layers that gradually swell in volume toward the end of the shot.",
+      "refs": [
+        "/fw/media/generated/img_8ef42342ab2b.png",
+        "/fw/media/generated/img_2802bde5d2b2.png",
+        "/fw/media/generated/img_3b478f9c7884.png"
+      ],
+      "labels": [
+        "角色「白薇」",
+        "角色「工作人员」",
+        "场景「夜 内 云顶五星级酒店 宴会厅」"
+      ],
+      "inferred_mode": "full_reference"
+    }
+  ]
+}
