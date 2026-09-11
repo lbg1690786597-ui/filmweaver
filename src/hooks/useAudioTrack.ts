@@ -3,11 +3,35 @@ import { api, AudioClipInfo } from "../api";
 import type { Say } from "./useToast";
 import { useLoadState } from "../stores/loadStateStore";
 import { prefetcher } from "../lib/mediaCache";
+import { SSE_FALLBACK_MS, isSseUp, shouldSkipTick } from "../lib/sseHealth";
 
 /** 连续拿不到合成进度多少轮才提示（×5 秒轮询间隔）。
  *  1~2 轮是常见的网络抖动，为此弹提示是噪音；到第 3 轮（≈15 秒）
  *  就不再是抖动了，界面会一直停在「合成中」，必须说一声。 */
 const POLL_MISS_LIMIT = 3;
+
+/**
+ * 合成任务成功结束时该说什么——**取决于它到底合成了几段**。
+ *
+ * `run_tts_batch` 查不到可合成的段时，是以 `status=done` +
+ * `result={"clips": [], "note": "没有待合成的旁白"}` 结束的（这没错：任务本身
+ * 确实正常跑完了）。但这里以前只看 status，一律报「✅ 旁白合成完成」——
+ * 于是"提交成功、完成、什么都没出现"，用户只能怀疑是软件坏了。
+ * 真人剧项目**永远**走这条路（它根本不存在 tts 段），那句 ✅ 就是纯粹的谎话。
+ *
+ * result 解析失败按"完成"处理：那是后端换了格式，不是"没合成"，
+ * 这时报 ✅ 至少不会把成功说成失败。
+ */
+function doneMsg(result: string | null): string {
+  try {
+    const r = JSON.parse(result ?? "") as { clips?: unknown[]; note?: string };
+    if (Array.isArray(r.clips) && r.clips.length === 0) {
+      return `ℹ️ ${r.note || "没有需要合成的旁白"}`;
+    }
+    if (Array.isArray(r.clips)) return `✅ 旁白合成完成（${r.clips.length} 段）`;
+  } catch { /* 见上：解析不了就按完成说 */ }
+  return "✅ 旁白合成完成";
+}
 
 /** G4 状态分层 · 音频层：P2-4 音频轨（TTS 旁白 / 配乐）+ 合成 job 追踪。 */
 export function useAudioTrack(projectId: string | null, say: Say) {
@@ -53,16 +77,25 @@ export function useAudioTrack(projectId: string | null, say: Say) {
       setTtsJobId(j.id);
       pollMisses.current = 0;   // 上一次任务留下的计数不能算到这一次头上
       say("🔊 旁白合成已提交（单段约 1 分钟，可继续其他操作）");
+      let tick = 0;
       ttsTimer.current = window.setInterval(async () => {
+        tick += 1;
         try {
           const s = await api.jobStatus(j.id);
           pollMisses.current = 0;
-          refreshAudio();  // 逐段点亮
+          // 与拆解同理（U1 第 1 点）：**只降 refreshAudio，不降 jobStatus**。
+          // jobStatus 撑着 pollMisses 那条"连不上服务器"的提示与收尾 toast，
+          // 降频会让它迟到；而"逐段点亮"这件事 SSE 已经在做 —— 后端每段合成完
+          // 推一条 `audio` 事件，useProdJobs 收到即 refreshAudio()。
+          if (!shouldSkipTick(tick, 5000, SSE_FALLBACK_MS, isSseUp())) {
+            refreshAudio();  // 逐段点亮（SSE 断线时这是唯一来源）
+          }
           if (s.status === "done" || s.status === "failed") {
             if (ttsTimer.current) clearInterval(ttsTimer.current);
             setTtsJobId(null);
-            refreshAudio();
-            say(s.status === "done" ? "✅ 旁白合成完成" : `⚠️ 部分旁白合成失败：${(s.error ?? "").slice(0, 120)}`);
+            refreshAudio();   // 收尾这一次无条件拉
+            say(s.status === "done" ? doneMsg(s.result)
+              : `⚠️ 部分旁白合成失败：${(s.error ?? "").slice(0, 120)}`);
           }
         } catch {
           // 2.4：以前是「网络抖动忽略」。抖一下确实该忽略 —— 下一轮就好了，
