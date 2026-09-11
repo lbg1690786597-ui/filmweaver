@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, JobOut, JobPhase } from "../api";
+import { SSE_FALLBACK_MS, isSseUp, setSseUp, shouldSkipTick } from "../lib/sseHealth";
 import type { Say } from "./useToast";
 
 /** G4 状态分层 · 任务层：生产 job 轮询 + P2-3 服务端接回 + P2-5 SSE 订阅。
@@ -18,7 +19,6 @@ export function useProdJobs(opts: {
   const { projectId, say, refreshDetail, refreshSoon, refreshAudio, refreshSubtitles } = opts;
   const [prodJobs, setProdJobs] = useState<Record<string, JobOut>>({});
   const prodTimers = useRef<Record<string, number>>({});
-  const sseUp = useRef(false);
   const framesWarned = useRef<Set<string>>(new Set());
 
   /** 批量首帧收尾提示两类需要人工介入的镜头（SSE 与轮询都可能先到，用 ref 去重）：
@@ -79,7 +79,9 @@ export function useProdJobs(opts: {
     let tick = 0;
     prodTimers.current[jobId] = window.setInterval(async () => {
       tick += 1;
-      if (sseUp.current && tick % 5 !== 0) return;  // SSE 在线：轮询降为 15s 兜底
+      // SSE 在线：这条轮询只当 15s 兜底（同一条消息事件流已经推过了）。
+      // 规则与其余四处轮询共用，见 lib/sseHealth.ts。
+      if (shouldSkipTick(tick, 3000, SSE_FALLBACK_MS, isSseUp())) return;
       try {
         const s = await api.jobStatus(jobId);
         setProdJobs((prev) => ({ ...prev, [jobId]: s }));
@@ -175,10 +177,12 @@ export function useProdJobs(opts: {
         void refreshSubtitles?.();
       }
     }, {
-      onUp: () => { sseUp.current = true; },
-      onDown: () => { sseUp.current = false; },
+      // 事件流的通断是**进程级事实**：另外四处轮询（拆解 detail、就绪度、
+      // 旁白、以及本文件的 job 轮询）都按它决定要不要降到兜底节奏。
+      onUp: () => { setSseUp(true); },
+      onDown: () => { setSseUp(false); },
     });
-    return () => { close(); sseUp.current = false; };
+    return () => { close(); setSseUp(false); };
   }, [projectId, watchJob, finishJob, refreshSoon, refreshAudio, refreshSubtitles, warnFrameIssues]);
 
   /** 新提交的 job 入列并挂轮询 */
