@@ -1,0 +1,331 @@
+name: 构建 FilmWeaver Windows 安装包
+
+# 触发方式：手动点击 或 推送 tag(如 v0.1.0)
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  # ---- FFmpeg sidecar 版本锁定 ----
+  # 固定版本而非 ffmpeg-release-essentials.zip（那个永远指向最新版）：
+  # 浮动版本意味着同一个 tag 今天和下个月构建出的安装包里 ffmpeg 不是同一个，
+  # 出了渲染问题无从复现。升级 Render Engine 时再统一改这里。
+  #
+  # 校验和取自 gyan.dev 官方发布的 .sha256（与 zip 同目录同名）。
+  # 必须校验：实测这个 106MB 的包在弱网下会被静默截断成残缺 zip，
+  # 不校验就会打包一个坏的 ffmpeg.exe，直到用户点导出才暴露。
+  FFMPEG_VERSION: "9.0.1"
+  FFMPEG_URL: "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-essentials_build.zip"
+  FFMPEG_SHA256: "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 依赖
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: 安装前端依赖
+        run: npm install
+
+      # ---- 按 tag 决定构建哪一个软件（beta / 正式）----
+      # 同一份源码出两个**互相独立**的应用：
+      #   tag 含 -beta → FilmWeaver Beta，identifier .beta，连 dev 后端(/fw)
+      #   其余 tag     → FilmWeaver，     identifier 原样，连 prod 后端(/fwp)
+      #
+      # identifier 必须不同：Windows 用它认"是不是同一个应用"。
+      # 相同的话两者会互相覆盖安装、更新器也会把 beta 用户拉到正式版上去，
+      # 而"两个能同时装、各自更新"正是 beta 存在的意义。
+      - name: 按 tag 设定应用身份与后端地址
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $isBeta = $tag -match '-beta'
+          $conf = "src-tauri/tauri.conf.json"
+          $c = Get-Content $conf -Raw | ConvertFrom-Json
+
+          # tauri 的 version 字段不接受 -beta.1 这类预发布后缀（要求纯 x.y.z），
+          # 故版本号取 tag 里的数字部分，beta 身份由 productName/identifier 承载。
+          $ver = ($tag -replace '^v','') -replace '-beta.*$',''
+          $c.version = $ver
+
+          if ($isBeta) {
+            $c.productName = "FilmWeaver Beta"
+            $c.identifier  = "com.filmweaver.desktop.beta"
+            $apiBase   = "http://118.196.33.51:9080/fw"
+            $appcast   = "http://118.196.33.51:9080/fw/media/appcast/latest.json"
+          } else {
+            $c.productName = "FilmWeaver"
+            $c.identifier  = "com.filmweaver.desktop"
+            $apiBase   = "http://118.196.33.51:9080/fwp"
+            $appcast   = "http://118.196.33.51:9080/fwp/media/appcast/latest.json"
+          }
+
+          # 更新端点：两个软件各读各的 appcast，否则 beta 会被正式版的更新覆盖
+          $c.plugins.updater.endpoints = @($appcast)
+          $c | ConvertTo-Json -Depth 32 | Set-Content $conf -Encoding UTF8
+
+          # 前端后端地址（vite 构建时注入）
+          "VITE_FW_API_BASE=$apiBase" | Set-Content ".env.production" -Encoding UTF8
+
+          Write-Host "=== 本次构建 ==="
+          Write-Host "  tag        : $tag"
+          Write-Host "  productName: $($c.productName)"
+          Write-Host "  identifier : $($c.identifier)"
+          Write-Host "  version    : $ver"
+          Write-Host "  API base   : $apiBase"
+          Write-Host "  appcast    : $appcast"
+
+      # ---- 类型检查（含 scripts/，见 tsconfig.scripts.json）----
+      # 放在编译前：类型错误在这里 5 秒暴露，比 tauri build 十几分钟后失败便宜得多
+      - name: 类型检查
+        run: npm run typecheck
+
+      # ---- 纯逻辑验证（不需要 ffmpeg / 素材）----
+      # 字幕对齐的产物是**时间**：两条字幕重不重叠、末条会不会超出音频，
+      # 读代码看不出来，而这两样正是会毁掉成片的错误。
+      # 真音频那一节缺固件时自身会跳过（CI 上没有素材目录），故这里能硬失败。
+      - name: 字幕对齐与样式验证
+        run: npm run verify:subtitles
+
+      # ---- FFmpeg sidecar ----
+      # 缓存按 URL 做 key：版本不变就不重复下 106MB
+      - name: 缓存 FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-cache
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-win-x64
+
+      - name: 下载 FFmpeg（带 SHA256 校验）
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ffmpeg-cache | Out-Null
+          # gyan.dev 是个人站，高峰时会 503。加最多 5 次重试，每次退避 15s。
+          $maxAttempts = 5
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+            Write-Host "下载 FFmpeg $env:FFMPEG_VERSION（尝试 $i/$maxAttempts）..."
+            try {
+              Invoke-WebRequest -Uri $env:FFMPEG_URL -OutFile ffmpeg-cache/ffmpeg.zip -ErrorAction Stop
+              $actual = (Get-FileHash ffmpeg-cache/ffmpeg.zip -Algorithm SHA256).Hash.ToLower()
+              $expect = $env:FFMPEG_SHA256.ToLower()
+              if ($actual -ne $expect) {
+                Write-Host "::warning::校验和不匹配（尝试 $i）: 期望=$expect 实际=$actual"
+                Remove-Item ffmpeg-cache/ffmpeg.zip -Force
+                if ($i -lt $maxAttempts) { Start-Sleep 15; continue }
+                Write-Host "::error::FFmpeg 校验和在 $maxAttempts 次尝试后仍不匹配"; exit 1
+              }
+              Write-Host "✅ 校验通过: $actual"
+              break
+            } catch {
+              Write-Host "::warning::下载失败（尝试 $i）: $_"
+              if (Test-Path ffmpeg-cache/ffmpeg.zip) { Remove-Item ffmpeg-cache/ffmpeg.zip -Force }
+              if ($i -lt $maxAttempts) { Start-Sleep 15 } else { Write-Host "::error::下载 FFmpeg 失败，已重试 $maxAttempts 次"; exit 1 }
+            }
+          }
+
+      - name: 解出 sidecar 二进制
+        shell: pwsh
+        run: |
+          # Tauri sidecar 要求文件名带 target triple 后缀，且与
+          # tauri.conf.json 的 bundle.externalBin "binaries/ffmpeg" 对应。
+          #
+          # 只放 ffmpeg.exe，不放 ffprobe.exe：本项目前端一处都没调用 ffprobe
+          # （见 src/lib/localRender.ts —— 用 `ffmpeg -i` 的 stderr 探测音轨），
+          # 多打一个 ~80MB 的 exe 只会让安装包白白变大。
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries | Out-Null
+          Expand-Archive ffmpeg-cache/ffmpeg.zip -DestinationPath ffmpeg-tmp -Force
+          $exe = Get-ChildItem -Recurse ffmpeg-tmp -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { Write-Host "::error::压缩包里没找到 ffmpeg.exe"; exit 1 }
+          Copy-Item $exe.FullName "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe"
+          Remove-Item -Recurse -Force ffmpeg-tmp
+
+      # ---- 能力门禁 ----
+      # 「sidecar 能跑」不等于「渲染引擎能用」。essentials 构建如果缺了
+      # xfade / blend / gblur，转场和特效会**静默降级**——不报错、只是没效果，
+      # 等用户做完片子才发现。所以在打包前就断言这些能力存在。
+      - name: 验证 FFmpeg 能力满足渲染引擎需求
+        shell: pwsh
+        run: |
+          $ff = "src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe"
+          Write-Host "=== 版本 ==="
+          & $ff -hide_banner -version | Select-Object -First 1
+
+          # 与 src/render/capabilities.ts 的 NEEDED_FILTERS 保持一致。
+          # 缺任何一个都会让对应功能静默失效，故这里 exit 1 挡住发布。
+          $required = @(
+            "xfade","overlay","blend","split","scale","pad","rotate","crop",
+            "setpts","trim","concat",
+            "eq","colorbalance","unsharp","lut3d","curves","colorchannelmixer",
+            "gblur","boxblur","vignette","noise","rgbashift",
+            "atempo","afade","amix","volume","anullsrc",
+            "subtitles"
+          )
+          # ffmpeg -filters 的行格式是「空格 + 3字符标志位 + 空格 + 名称」，例如
+          #    .S. xfade             VV->V      Cross fade one video ...
+          #    TSC gblur             V->V       Apply Gaussian Blur filter.
+          # 不要用 [A-Z.]{3,} 去匹配标志位——贪婪量词会把标志位后的空格一起吞掉，
+          # 导致一个都匹配不上（实测 28 个必需滤镜全被误报为缺失，CI 直接红）。
+          # 改为按空白切分取第 2 列，比正则稳。
+          $have = (& $ff -hide_banner -filters 2>&1 | Out-String) -split "`r?`n"
+          $names = @{}
+          foreach ($line in $have) {
+            $parts = ($line.Trim() -split '\s+')
+            if ($parts.Count -ge 2) { $names[$parts[1]] = $true }
+          }
+          Write-Host "解析到 $($names.Count) 个滤镜"
+          $missing = @($required | Where-Object { -not $names.ContainsKey($_) })
+          if ($missing.Count -gt 0) {
+            Write-Host "::error::FFmpeg 缺少渲染引擎必需的滤镜: $($missing -join ', ')"
+            Write-Host "  该构建不适合本项目——换 full 构建或改用其他来源。"
+            exit 1
+          }
+          Write-Host "✅ $($required.Count) 个必需滤镜全部可用"
+
+          # H.264/H.265 解码：AI 生成的素材基本都是这两种
+          # 同上：按列取名，不用正则匹配标志位
+          $decNames = @{}
+          foreach ($line in ((& $ff -hide_banner -decoders 2>&1 | Out-String) -split "`r?`n")) {
+            $parts = ($line.Trim() -split '\s+')
+            if ($parts.Count -ge 2) { $decNames[$parts[1]] = $true }
+          }
+          foreach ($d in @("h264","hevc")) {
+            if (-not $decNames.ContainsKey($d)) {
+              Write-Host "::error::缺少 $d 解码器"; exit 1
+            }
+          }
+          Write-Host "✅ H.264 / H.265 解码可用"
+
+          # 字幕烧录依赖 libass；essentials 构建带，但确认一下
+          if (-not $names.ContainsKey("subtitles")) {
+            Write-Host "::error::缺少 subtitles 滤镜（字幕烧录不可用）"; exit 1
+          }
+
+          # xfade 转场：UI 给了 15 种，看这个构建支持几种。
+          # 这里**只警告不拦截**——编译器对不支持的转场会降级成硬切，
+          # 属于可接受的功能降级，不该挡住整个发布。
+          $ui = @("fade","fadeblack","fadewhite","dissolve","wipeleft","wiperight",
+                  "wipeup","wipedown","slideleft","slideright","slideup","slidedown",
+                  "circleopen","circleclose","zoomin")
+          $xf = & $ff -hide_banner -h filter=xfade 2>&1 | Out-String
+          $miss = $ui | Where-Object { $xf -notmatch "(?m)^\s{5,}$([regex]::Escape($_))\s+-?\d+\s" }
+          if ($miss) {
+            Write-Host "::warning::本构建不支持转场: $($miss -join ', ')（导出时降级为硬切）"
+          } else {
+            Write-Host "✅ UI 提供的 15 种转场全部支持"
+          }
+
+          # 硬件编码器：**列出即可，不实跑也不拦截**。
+          # GitHub Runner 是虚拟机，没有 NVIDIA/Intel/AMD 显卡，实跑必然失败
+          # （本项目 capabilities.ts 就因此坚持运行时实跑探测而非查列表）。
+          # 这里只确认这个构建**编译进了**这些编码器，用户机器上有硬件才会真正启用。
+          $encNames = @{}
+          foreach ($line in ((& $ff -hide_banner -encoders 2>&1 | Out-String) -split "`r?`n")) {
+            $parts = ($line.Trim() -split '\s+')
+            if ($parts.Count -ge 2) { $encNames[$parts[1]] = $true }
+          }
+          foreach ($e in @("h264_nvenc","h264_qsv","h264_amf")) {
+            if ($encNames.ContainsKey($e)) {
+              Write-Host "✅ 已编译 $e（用户端有对应硬件时启用）"
+            } else {
+              Write-Host "::warning::该构建未编译 $e —— 对应显卡的用户只能软件编码"
+            }
+          }
+
+      # ---- 渲染引擎离线验证 ----
+      # 用刚解出的 Windows ffmpeg.exe 真跑一遍分段/转场/多轨/特效，
+      # 确保「这个具体的 ffmpeg 二进制」能跑通渲染管线，而不只是"有这些滤镜"。
+      - name: 渲染管线实跑验证
+        shell: pwsh
+        env:
+          FFMPEG_BIN: ${{ github.workspace }}/src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+        run: npm run verify:render
+        continue-on-error: true
+
+      # ---- 内置字幕字体（思源黑体/宋体，SIL OFL 1.1）----
+      # 字体二进制 46MB，刻意不进 git（见 src-tauri/resources/fonts/.gitignore），
+      # 所以 CI 的 clone 里**没有**它们。而这一步在 2026-09-06 之前根本不存在：
+      # 打出的安装包里 resources/fonts/ 只有 README + LICENSE，运行时
+      # resolveResource 又只拼路径不校验存在 → libass 找不到 Noto 就静默换字形。
+      # 用户选了「思源黑体（内置）」、导出成功、字幕却是别的字体，零提示。
+      #
+      # fetch-fonts.sh 末尾自带体积断言（<1MB 即 exit 1），所以这一步失败
+      # 就是**挡住发布**——宁可不出包，也不出一个"内置字体"是空壳的包。
+      # shell: bash 用的是 runner 自带的 Git Bash（curl 可用）。
+      - name: 取回内置字体（缺失即中止发布）
+        shell: bash
+        run: bash scripts/fetch-fonts.sh
+
+      # tauri-action：编译 + 用私钥给更新包签名 + 发 Release（含安装包与 latest.json，供应用内自动更新）
+      - name: 编译并发布（含自动更新产物）
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: >-
+            ${{ contains(github.ref_name, '-beta') && 'FilmWeaver Beta 织影' || 'FilmWeaver 织影' }}
+            ${{ github.ref_name }}
+          releaseBody: |
+            ${{ contains(github.ref_name, '-beta') && '> ⚠️ **测试版** — 连接开发后端，功能尚在验证中，请勿用于正式生产。' || '' }}
+
+            本版聚焦**字幕**，并把成片合成整个搬到本机。
+
+            ### 字幕：一键从旁白生成，时间自动对齐
+            - 「文字」面板新增**「从旁白生成字幕」**——这是新的主入口。
+              解说旁白是软件自己合成的，文案本来就知道，所以不需要语音识别去"猜"：
+              直接在本机分析音频里的**真实停顿**来定位每句话的起止时间。
+              零联网、零费用，一段 35 秒的旁白约两秒出结果。
+            - 长句自动拆条（默认每条 ≤15 字），不会再出现一整屏念不完的字幕。
+            - 重新生成只会替换上一次自动生成的字幕，**手打的字幕和标题不动**。
+            - 语音识别仍然保留，用于真人录音、外部素材这类**没有文案**的情况。
+
+            ### 修好了三个一直存在的问题
+            - **自动字幕从来没成功过**：内部取音频时用错了类型，永远取到 0 条，
+              点了只会报"没有可识别的旁白音频"。已修正。
+            - **AI 把剧本符号念了出来**：`△`、`【冷笑】`、`(OS)` 这些标记此前被
+              原样送进配音，成片里真的会把动作标记的"△"念成"三角形"。
+              现在只剥离符号、**一个字都不改**。
+              ⚠️ 已合成过的旁白需要重新合成才会更新（会产生配音费用，故不自动重跑）。
+            - **字幕样式此前完全无效**：6 个预设在导出时被忽略，烧上去的永远是
+              一个固定的小字号。现在样式真正生效。
+
+            ### 字幕样式可编辑 + 播放器实时预览
+            - 字体、字号、颜色、描边、底框、位置、边距全部可调，
+              「应用到全部」一键刷整轨；项目级默认 + 单条覆写两层生效。
+            - 播放器里**边放边看**字幕效果，不用导出才知道长什么样。
+            - 内置思源黑体 / 思源宋体随包分发，用户机器没装也能正常显示；
+              也可以选用系统字体（会标注"换机器可能变形"）。
+
+            ### 成片合成全部改在本机完成
+            - 取消云端拼接与云端烧字幕，导出**只走本机 FFmpeg**：不上传素材、
+              不排队、不受服务器负载影响。
+            - 因此「一键成片」跑完后不再直接给出成片——它会把镜头和旁白都准备好，
+              成片请在桌面端点「导出」。
+
+            ---
+            应用内点「⟳ 检查更新」即可静默升级。
+            内置 FFmpeg ${{ env.FFMPEG_VERSION }}（无需用户另行安装）。
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-beta') }}
