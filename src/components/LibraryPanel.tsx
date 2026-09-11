@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { api, AssetInfo, DeletedStageInfo, EpisodeInfo, JobPhase, ShotInfo, StageInfo } from "../api";
+import { api, AssetInfo, DeletedStageInfo, EpisodeInfo, JobOut, JobPhase, ShotInfo, StageInfo } from "../api";
 import { LibClip, clipKind, fmtTime, probeDuration } from "../types";
+import { compressImage, describeSaving } from "../lib/imageCompress";
 import ShotsPanel from "./ShotsPanel";
 import AssetDialog, { AssetDialogTarget } from "./AssetDialog";
+import SceneCanonDialog from "../features/scenes/SceneCanonDialog";
 import AutoTextarea from "./AutoTextarea";
 
 interface Props {
@@ -165,6 +167,8 @@ export default function LibraryPanel(p: Props) {
   const [genPick, setGenPick] = useState<Set<string> | null>(null);  // null=弹窗关闭
   // ---- 统一资产详情弹窗（点击卡片打开：用途/阶段/参数/生成）----
   const [assetDlg, setAssetDlg] = useState<AssetDialogTarget | null>(null);
+  // ---- 场景名归一面板（U3）：预览 + 逐组确认，不提供"一键全归一" ----
+  const [sceneCanon, setSceneCanon] = useState(false);
   // ---- 删除 / 恢复资产（软删，后端打墓碑）----
   //
   // 用户的原话是「有些人物或场景资产并不重要，但自动生成时出错了」，
@@ -295,8 +299,22 @@ export default function LibraryPanel(p: Props) {
     try {
       const j = await api.submitAssetBatch(items, p.projectId);
       setAssetJob(j);
+      // ⚠️ 这条轮询**刻意不做 SSE 降频**（U1 第 1 点其余四处都降了）：
+      // 后端没有"资产"事件 —— events.publish 只有 job / shot / audio / resync，
+      // 而 useProdJobs 收到资产 job 事件时刷的是 detail，不是资产列表。
+      // 也就是说这里是资产图"逐张点亮"的**唯一**来源，降到 15s 就变成十几秒
+      // 才跳出一张图。资产列表本身是几十行 JSON（图走各自的缓存 GET），
+      // 3s 一次的代价远小于把用户晾在那儿。
       assetTimer.current = window.setInterval(async () => {
-        const s = await api.jobStatus(j.id);
+        // 回调必须自己吞异常：抛出去是 unhandled rejection，而且 interval
+        // 不会因此停下 —— 一次网络抖动就会在控制台刷屏到任务结束。
+        let s: JobOut;
+        try {
+          s = await api.jobStatus(j.id);
+        } catch (e) {
+          console.warn("[LibraryPanel] 资产生成状态轮询失败，稍后重试:", e);
+          return;
+        }
         setAssetJob(s);
         p.onRefresh();          // Asset 图逐张点亮
         p.onRefreshStages();    // 阶段定妆图逐张点亮
@@ -314,11 +332,21 @@ export default function LibraryPanel(p: Props) {
   const doCustomUpload = async (f: File) => {
     setCustomBusy(true);
     try {
-      const r = await api.uploadMedia(f, p.projectId);
+      // 与资产弹窗同一条压缩策略（超 2MB 或长边超 2048 才压）：这里传的同样是
+      // 手机/单反原图，原样直传就是几十秒的等待。见 lib/imageCompress.ts。
+      const small = await compressImage(f);
+      const r = await api.uploadMedia(small.file, p.projectId);
+      // 名字取**原**文件名：压缩会把后缀换成 .jpg，用压后的名字虽然结果相同，
+      // 但一旦将来改了输出格式就会莫名其妙地影响资产名。
       const name = f.name.replace(/\.[^.]+$/, "");
+      // 不带 prompt：上传的图没有对应的文字描述，**留空是对的**——
+      // 出片时会走"无描述则禁止书写服装/陈设"的兜底，外观完全由这张图钳制。
+      // 想要文字描述的话，打开资产弹窗点「🔍 AI 看图补写」。
       await api.createAsset({ projectId: p.projectId, kind: "custom", name, imageUrl: r.url });
       p.onRefresh();
-      p.onToast(`✅ 自定义资产「${name}」已创建`);
+      p.onToast(small.compressed
+        ? `✅ 自定义资产「${name}」已创建（图片已压缩 ${describeSaving(small)}）`
+        : `✅ 自定义资产「${name}」已创建`);
     } catch (e) { p.onToast(String(e)); }
     finally { setCustomBusy(false); }
   };
@@ -462,6 +490,9 @@ export default function LibraryPanel(p: Props) {
             const chars = live.filter((a) => a.kind === "character");
             const locs = live.filter((a) => a.kind === "location");
             const customs = live.filter((a) => a.kind === "custom");
+            // 镜头里写到的场景写法数：场景资产还没建时，归一入口靠它决定要不要显示
+            const shotLocCount = new Set(
+              p.shots.map((s) => (s.location ?? "").trim()).filter(Boolean)).size;
             const stagesOf = (name: string) =>
               p.stages.filter((s) => s.character_name === name)
                 .sort((a, b) => a.ep_from - b.ep_from);
@@ -599,13 +630,23 @@ export default function LibraryPanel(p: Props) {
                     )}
                   </>
                 )}
-                {/* ===== 🏞 场景大分组（可整体折叠） ===== */}
-                {locs.length > 0 && (
+                {/* ===== 🏞 场景大分组（可整体折叠） =====
+                    显示条件是「有场景资产 **或** 镜头里写了场景名」：归一入口在还没出
+                    任何场景图时就该能点（归一决定服装继承/基准帧共享，早改代价最小），
+                    而资产是在「资产」阶段才建的。只按 locs.length 判会把入口整段藏掉。 */}
+                {(locs.length > 0 || shotLocCount > 0) && (
                   <>
                     <div className="lib-sec clickable" onClick={() => toggleSec("locs")}>
                       <span className={`dock-caret ${secOpen.locs ? "open" : ""}`}>▶</span>
                       🏞 场景（{locs.length}）
                       <span className="muted" style={{ fontWeight: 400 }}> · 拖上场景轨=注入/换参考图</span>
+                      {/* 常显（半透明），不藏进 hover：藏起来的按钮等于没这功能。
+                          外层 div 是折叠开关，必须 stopPropagation 否则点它会折叠分组 */}
+                      <button className="btn ghost lib-sec-act"
+                        title="同一个空间的多种写法归为一组（决定服装继承与场景基准帧共享）"
+                        onClick={(e) => { e.stopPropagation(); setSceneCanon(true); }}>
+                        🔗 场景名归一
+                      </button>
                     </div>
                     {secOpen.locs && (
                       <div className="lib-cols">
@@ -895,6 +936,13 @@ export default function LibraryPanel(p: Props) {
             onChanged={() => { p.onRefresh(); p.onRefreshStages(); }} />
         );
       })()}
+
+      {/* 场景名归一：改了映射后服装继承与场景资产都可能变 → 两份都要重拉 */}
+      {sceneCanon && (
+        <SceneCanonDialog projectId={p.projectId}
+          onClose={() => setSceneCanon(false)} onToast={p.onToast}
+          onChanged={() => { p.onRefresh(); p.onRefreshStages(); }} />
+      )}
 
       {/* 自定义资产 · AI 生图弹窗 */}
       {customGen && (
