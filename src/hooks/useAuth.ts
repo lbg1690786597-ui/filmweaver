@@ -104,7 +104,9 @@ export function useAuth(onReconnect?: () => void) {
 
   const doLogout = async () => {
     const t = localStorage.getItem("fw_session");
-    if (t) { await api.logout(t).catch(() => {}); localStorage.removeItem("fw_session"); }
+    // 后端从 Authorization 头认主体（authHeaders() 自动带），不再传 body.token。
+    // 仍先判一次有没有 token：没有就没什么可吊销的，省一趟必然 401 的请求。
+    if (t) { await api.logout().catch(() => {}); localStorage.removeItem("fw_session"); }
     setUser(null);
     setLoginRequired(true);
   };
