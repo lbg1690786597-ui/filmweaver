@@ -113,6 +113,11 @@ export default function TasksDrawer({ projectId, onRetry, onLocateShot, onClose 
     "jobs", () => { void load(); }), [projectId]);
 
   // 有任务在跑时定时刷新，跑完自动停——不然用户得手动点刷新才知道结束了
+  //
+  // 这条**刻意不做 SSE 降频**（U1 第 1 点其余处都降了）：抽屉是条件挂载的，
+  // 只在用户把它打开时才跑，而打开它的人正是在盯着进度看。此外这里要的是
+  // **全量历史**（active=false，含失败/已完成两组），SSE 的 job 事件只覆盖
+  // 进行中的那几条，替不了它。
   useEffect(() => {
     const active = jobs?.some((j) => j.status === "running" || j.status === "pending");
     if (!active) return;
