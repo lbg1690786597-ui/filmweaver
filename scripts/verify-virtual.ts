@@ -209,12 +209,18 @@ ok("lane 仍保持满宽 totalWidth（3.3 的跟随滚动读 scrollWidth）",
   /className=\{`fw-tl-lane\$\{dropHot[\s\S]{0,200}?style=\{\{ width: totalWidth \}\}/.test(tlx)
   && /fw-tl-lane fw-tl-lane-asset" style=\{\{ width: totalWidth \}\}/.test(tlx),
   "按可见内容收窄 lane = 滚动条长度错、播放头跟随落点错，且都不报错");
-// keepIds 的两处（Set 内容 + useMemo 依赖）必须同时列全四种拖动状态：
+// keepIds 的两处（Set 内容 + useMemo 依赖）必须同时列全**每一种**拖动状态：
 // 少列在 Set 里 → 拖那一种时片段消失；少列在依赖里 → keepIds 是上一次的陈值，
 // 拖动开始的那一帧仍然把它剔掉。所以数**出现次数**，不是数是否出现过。
-ok("正在拖/修剪的片段进 keepIds（四种拖动状态，Set 与依赖两处都要列全）",
-  (tlx.match(/\[move\?\.clipId, previewDur\?\.id, previewOrder\?\.id, overlayDrag\?\.clipId\]/g)
-    ?? []).length === 2);
+//
+// 3.11 起是三种（`move` 移动 / `previewDur` 修剪 / `overlayDrag` 叠加层）。
+// 原第四种 `previewOrder` 是顺序拖动的"假位置"，已随顺序拖动改指针 transform 而整个删除
+// —— 位置不再进 React state，也就没有需要保活的片段。名字留在 `keepIds` 里会是在
+// 保活一个没人读的 state，故这条钉也随之收窄。**新增拖动状态时必须回来加名字。**
+ok("正在拖/修剪的片段进 keepIds（三种拖动状态，Set 与依赖两处都要列全）",
+  (tlx.match(/\[move\?\.clipId, previewDur\?\.id, overlayDrag\?\.clipId\]/g)
+    ?? []).length === 2,
+  "漏列在 Set 里 → 拖那种片段时它整段消失；漏列在依赖里 → 拖动首帧仍按陈值把它剔掉");
 ok("视口按桶量化后才进 state（不量化 = 每帧 setState，白省）",
   /bucketViewport\(el\?\.scrollLeft \?\? 0, el\?\.clientWidth \?\? 0\)/.test(tlx)
   && /sameViewport\(cur, next\) \? cur : next/.test(tlx));
