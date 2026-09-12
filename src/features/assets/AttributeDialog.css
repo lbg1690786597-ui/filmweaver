@@ -1,0 +1,102 @@
+/* AttributeDialog.css — 上传素材归属确认面板（3.11 A2）
+ *
+ * 配色的职责只有一个：把「这一行需要你动手」和「这一行会弄坏东西」
+ * 从其它行里**挑出来**。都是平静的灰蓝列表时，用户会一路滚到底点确认，
+ * 而那正是这个面板想避免的事。
+ */
+
+.ad-dlg { gap: 10px; }
+
+.ad-intro {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  line-height: 1.7;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.ad-intro b { color: var(--text); font-weight: 600; }
+
+.ad-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 52vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--sp-1);
+}
+
+.ad-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 4px 6px;
+  border-radius: var(--r-md);
+  border-left: 3px solid transparent;
+}
+.ad-row:hover { background: var(--bg-elev); }
+/* 多候选：必须人工选，左缘竖条 + 淡黄底一起用 —— 只靠颜色的话，
+   色觉障碍用户分不出它和普通行的区别 */
+.ad-row.need {
+  border-left-color: var(--c-warning);
+  background: color-mix(in oklch, var(--c-warning) 12%, transparent);
+}
+
+.ad-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  flex: none;
+  background: var(--bg-elev);
+}
+
+.ad-name { flex: 1; min-width: 0; }
+.ad-fname {
+  font-size: var(--fs-sm);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ad-rule {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ad-pick {
+  flex: none;
+  width: 260px;
+  max-width: 40vw;
+  font-size: var(--fs-sm);
+  padding: 4px 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text);
+}
+
+.ad-warn {
+  flex: none;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  color: var(--c-warning);
+  white-space: nowrap;
+}
+
+.ad-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.ad-stat { font-size: var(--fs-xs); line-height: 1.6; }
+.ad-btns { display: flex; gap: var(--sp-2); }
