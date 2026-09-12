@@ -465,3 +465,116 @@
   color: var(--c-danger);
   background: color-mix(in oklch, var(--c-danger) 12%, transparent);
 }
+
+/* ---- 3.11 指针拖拽：跟随浮层 ----
+   拖动时指针尾巴上跟一行字（资产名）。它由 `pointerDrag.makeGhost()` 直接
+   拼在 `<body>` 上，不经 React —— 拖动每秒上百帧，走组件树等于每帧整棵
+   轨道重渲，正是"来回闪烁"的成因之一。
+
+   `pointer-events: none` 是**功能刚需**，不是修饰：命中判定走
+   `document.elementFromPoint()`，浮层若能接事件，命中的永远是它自己，
+   落点会一路判成 null。 */
+.fw-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9999;
+  pointer-events: none;
+  will-change: transform;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  background: var(--c-accent);
+  color: #fff;
+  font-size: var(--fs-xs);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+/* ---- 3.11 R3 划区间浮层（局部重生成）----
+   复用 `.fw-tl-seampop*` 的头部/行/提示样式，只有它独有的部分写在这里：
+   浮层本体（比转场那个宽，因为要塞下三段时长条）、时长条、主按钮。
+
+   为什么单独一个类而不是给 `.fw-tl-seampop` 加修饰符：两边的**定位口径不同**
+   ——转场浮层按接缝中心偏移摆放，这个是按右键菜单坐标摆放且要夹进视口。
+   共用一个类迟早出现"改转场的位置把划区间也挪了"。 */
+.fw-tl-recutpop {
+  position: fixed;
+  z-index: 61;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-raised);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
+  font-size: var(--fs-xs);
+  color: var(--c-text);
+}
+
+/* 三段时长条。`flex` 给的是**时长数值**而不是比例——见 TSX 里的注释：
+   中间段短到按比例画不出来时，这里靠 `min-width` 兜住，保证它永远是个能看见的块。 */
+.fw-tl-recutbar {
+  display: flex;
+  gap: 2px;
+  height: 22px;
+}
+.fw-tl-recutbar .seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.fw-tl-recutbar .seg.a,
+.fw-tl-recutbar .seg.c {
+  background: color-mix(in oklch, var(--c-muted) 22%, transparent);
+  color: var(--c-muted);
+}
+/* 中间段用 accent：它是这个面板里**唯一要花钱**的那一段，
+   颜色是这里唯一能表达"这段不一样"的手段（另两段是白拿的）。 */
+.fw-tl-recutbar .seg.b {
+  background: color-mix(in oklch, var(--c-accent) 26%, transparent);
+  color: var(--c-accent);
+}
+.fw-tl-recutlegend {
+  display: flex;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+}
+.fw-tl-recutlegend span { flex: 1; text-align: center; }
+.fw-tl-recutlegend .b { color: var(--c-accent); }
+
+.fw-tl-recutgo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid var(--c-accent);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--c-accent) 16%, transparent);
+  color: var(--c-accent);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+.fw-tl-recutgo:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--c-accent) 26%, transparent);
+}
+/* 两条前端校验没过时置灰。但**它不是唯一的门**：真正的下限来自项目当前视频
+   模型，只有后端知道——所以按钮仍可能在通过前端校验后被后端 422 拦下，
+   那时文案原样弹 toast。这里置灰只是为了省掉一次必然失败的往返。 */
+.fw-tl-recutgo:disabled {
+  border-color: var(--c-border);
+  background: none;
+  color: var(--c-muted);
+  cursor: not-allowed;
+}
