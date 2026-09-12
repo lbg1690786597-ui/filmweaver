@@ -106,6 +106,15 @@ jobs:
       - name: 字幕对齐与样式验证
         run: npm run verify:subtitles
 
+      # ---- hook 顺序守卫（纯源码扫描，毫秒级）----
+      # 0.9.1 的 beta 就是**打开即黑屏**：`assetDropCtx` 那个 useMemo 写在五段
+      # 顶层早退之后，于是 App 的 hook 数随屏幕而变（登录页 181 / 编辑器 182），
+      # 切屏时 React 抛 #310 并卸载整棵树，只剩 body 深色底。
+      # 这条脚本把"hook 不许出现在早退之后"钉成不变式 —— 它抓的正是
+      # typecheck 抓不到、而用户一开软件就会撞上的那一类错。
+      - name: hook 顺序守卫（黑屏回归）
+        run: npx tsx scripts/verify-hookorder.ts
+
       # ---- FFmpeg sidecar ----
       # 缓存按 URL 做 key：版本不变就不重复下 106MB
       - name: 缓存 FFmpeg
