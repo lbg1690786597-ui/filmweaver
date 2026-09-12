@@ -88,6 +88,19 @@ export interface InspectorProps {
   playheadShotSec?: number | null;
   /** 5.6：把播放头挪到本镜的第 `sec` 秒（镜内素材秒）。 */
   onSeekShotSec?: (sec: number) => void;
+  /**
+   * 3.11 R1：把检查器打开到某一节并滚过去（`"versions"` = 版本区）。
+   *
+   * 存在理由：时间轴片段上的版本角标点进来时，用户要的是**那一节**，
+   * 而不是"检查器随便哪一节"。AI 页签很长，版本区在靠下的位置，
+   * 不滚过去等于让用户自己找 —— 那就还是回到了"入口太深"的老问题上，
+   * 而入口太深正是 R1 要修的东西。
+   *
+   * 由调用方置位、本组件用毕即回调 `onRevealed` 清掉，
+   * 这样重复点同一个角标也能重新滚一次（否则值没变，effect 不触发）。
+   */
+  revealSec?: string | null;
+  onRevealed?: () => void;
   onToast: (m: string) => void;
 }
 
@@ -108,6 +121,22 @@ export default function Inspector(p: InspectorProps) {
   useEffect(() => {
     if (overlayMode === "mosaic" || overlayMode === "cropzoom") setTab(overlayMode);
   }, [overlayMode]);
+
+  // 3.11 R1：滚到指定节（当前只有 "versions"）。版本区挂在 AI 页签下，
+  // 所以先翻页签再滚 —— 顺序反了的话节点还没渲染，`querySelector` 拿到 null。
+  // 两件事必须同一个 effect 里做，分两个 effect 会各滚一次（或第一个滚空）。
+  useEffect(() => {
+    if (!p.revealSec) return;
+    setTab("ai");
+    // 等这一帧的 DOM 落地；用 rAF 而不是 setTimeout(0)，避免多吞一帧的闪烁。
+    const id = requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(
+        `.fw-insp-sec[data-sec="${p.revealSec}"]`);
+      el?.scrollIntoView({ block: "start", behavior: "smooth" });
+      p.onRevealed?.();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [p.revealSec, p.shot?.id]);
 
   function selectTab(id: Tab) {
     if (id === "mosaic" || id === "cropzoom") setOverlayMode(id);
@@ -402,7 +431,10 @@ export default function Inspector(p: InspectorProps) {
               )}
             </Section>
 
-            <Section title="版本" Icon={History}>
+            {/* 3.11 R1：`data-sec` 给下面的 `reveal("versions")` 一个抓手 ——
+                时间轴片段上的版本角标点进来时，要滚到这一节，而不是让用户
+                自己在长面板里找。 */}
+            <Section title="版本" Icon={History} dataSec="versions">
               <VersionList shot={s} onSwitchVersion={p.onSwitchVersion} onToast={p.onToast} />
             </Section>
 
@@ -505,11 +537,13 @@ export default function Inspector(p: InspectorProps) {
 
 /* ---- 内部小组件 ---- */
 
-function Section({ title, Icon, children }: {
+function Section({ title, Icon, children, dataSec }: {
   title: string; Icon: typeof Layers; children: React.ReactNode;
+  /** 供 `reveal(sec)` 定位的可选锚点名（如 "versions"）。 */
+  dataSec?: string;
 }) {
   return (
-    <section className="fw-insp-sec">
+    <section className="fw-insp-sec" data-sec={dataSec}>
       <div className="fw-insp-sec-head"><Icon size={12} /> {title}</div>
       <div className="fw-insp-sec-body">{children}</div>
     </section>
