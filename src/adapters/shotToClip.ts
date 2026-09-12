@@ -154,6 +154,10 @@ export function shotToClip(s: ShotInfo, startSec: number, trackId: string): Clip
     isSpecial: s.is_special,
     status,
     currentVersion: s.adopted_version ?? undefined,
+    // 3.11 R1：版本角标的数据源。`?? undefined` 保住"后端没下发"和"有 0 条"
+    // 的区别 —— ClipView 用 `> 1` 判显示，两者都不会画，但语义不同：
+    // 0 条是"这镜一条都没有"（正常），undefined 是"我不知道"。
+    versionCount: s.version_count ?? undefined,
     promptState: s.prompt_state ?? undefined,
     refsStale: s.refs_stale,
     firstFrameUrl: s.first_frame_url ?? undefined,
