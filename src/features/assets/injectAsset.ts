@@ -19,7 +19,17 @@
  * 边界，否则用户以为改了、实际没改（AssetTrack 头注释里的老约束，这里沿用）。
  */
 import { api } from "../../api";
-import type { ShotInfo } from "../../api";
+import type { AssetDragData, ShotInfo } from "../../api";
+
+/** 资产轨的行/段在本模块里只用到这几个字段，用结构化子集声明，
+ *  免得让这个通用模块反过来依赖 AssetTrack 的完整类型。 */
+export interface RunRef {
+  id: string;
+  stageId?: string;
+  stageName?: string;
+  imageUrl?: string | null;
+}
+
 
 /** 秒坐标 → 最近的镜头 order（拖拽落点吸附用）。offsetMap: order → 绝对起始秒 */
 export function snapSecToOrder(
@@ -76,6 +86,82 @@ export async function injectAssetIntoShot(a: InjectArgs): Promise<boolean> {
     return true;
   } catch (err) {
     a.onToast(String(err));
+    return false;
+  }
+}
+
+export interface ReplaceRunArgs {
+  projectId: string;
+  /** 行名：角色名 / 归一场景名 */
+  rowName: string;
+  /** 拖进来的卡片 */
+  d: AssetDragData;
+  run: RunRef;
+  /** 这条轨是场景轨吗（决定 kind 归类） */
+  isLocation: boolean;
+  onPushUndo: (
+    label: string, undo: () => Promise<void>, redo: () => Promise<void>,
+  ) => void;
+  onToast: (m: string) => void;
+  onChanged: () => void;
+}
+
+/**
+ * 把一张图**换到某个造型段上**（拖卡片到段的落点）。
+ *
+ * 这是从 `AssetTrack.replaceStageImage` 原样搬过来的 —— 搬家的理由不是"想
+ * 复用"，而是 3.11 之后它有了**第二个调用方**：指针拖拽的落点判定在
+ * `useAssetDrop.ts` 里，也认 `.fw-at-run`。两份实现并存的话，"拖到段上"
+ * 会随拖拽通道不同而行为不同（撤销标签、virtual 段分支、custom 归类
+ * 三处都会漂），这是最难查的一类 bug。
+ *
+ * `virtual`（没有 AssetStage 行的服务端合成段）没有 stage 可 patch，
+ * 只能走 `upsertAssetImage`；这个分支必须留着，场景轨的段多半是 virtual。
+ */
+export async function replaceRunImage(a: ReplaceRunArgs): Promise<boolean> {
+  const d = a.d;
+  if (!d.imageUrl) {
+    // 没有图的自定义素材拖进来，意义是**归类**而不是换图
+    if (d.kind === "custom" && d.assetId) {
+      await api.patchAsset(d.assetId, { kind: a.isLocation ? "location" : "character" });
+      a.onToast(`「${d.name}」已归类，可在「AI 图片」里生成图`);
+      a.onChanged();
+      return true;
+    }
+    a.onToast(`「${d.name}」还没有图——先在「AI 图片」里生成`);
+    return true;
+  }
+
+  const kind = a.isLocation ? "location" : "character";
+  const stageId = a.run.stageId;
+  const isVirtual = !stageId || a.run.id.startsWith("loc:");
+  const prevImg = a.run.imageUrl ?? null;
+  const label = `替换「${a.rowName}${a.run.stageName ? `·${a.run.stageName}` : ""}」参考图`;
+  try {
+    const restore = async (img: string | null) => {
+      if (isVirtual) {
+        if (img) await api.upsertAssetImage(a.projectId, kind, a.rowName, img);
+      } else {
+        await api.patchStage(stageId!, { image_url: img ?? "" });
+      }
+    };
+    await restore(d.imageUrl);
+    if (d.kind === "custom" && d.assetId) {
+      await api.patchAsset(d.assetId, { kind });
+    }
+    a.onPushUndo(label,
+      async () => {
+        // 归类**不在**撤销范围内：原实现也没管（undo 只回图）。要一起回退的话
+        // 得先记住这张卡原来的 kind，而那个值不在本函数的入参里 —— 与其
+        // 猜一个，不如明确不做，保持与原路径一致。
+        await restore(prevImg); a.onChanged();
+      },
+      async () => { await restore(d.imageUrl); a.onChanged(); });
+    a.onToast(`已用「${d.name}」替换「${a.rowName}${a.run.stageName ? `·${a.run.stageName}` : ""}」的参考图`);
+    a.onChanged();
+    return true;
+  } catch (e) {
+    a.onToast(String(e));
     return false;
   }
 }
