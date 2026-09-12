@@ -1894,6 +1894,52 @@ export default function App() {
     localSources.setProject(null);
   }
 
+  // ---- 派生值（1/2）：需要在**早退分支之前**算出来的那部分 ----------------
+  //
+  // ⚠️ 6.9 黑屏修复：下面这两段（`shots` 与 `assetDropCtx`）原先位于五段
+  // `if (screen === ...) return ...` **之后**，于是 App 的 **hook 数量随屏幕而变**
+  // ——登录页 / 项目列表是 181 个，进编辑器是 182 个。React 按 fiber 位置逐个配
+  // 对 hook，多出第 182 个就抛 #310 "Rendered more hooks than during the previous
+  // render"，**整棵树卸载**，只剩 body 的深色底 —— 用户看到的就是"打开直接黑屏"。
+  //
+  // 移动是安全的：这两段只依赖 `detail` / `projectId` / `say` / `pushUndo` /
+  // `refreshDetail` / `stagedTransform`，而这些全部定义在上方，早退分支里没有任何
+  // 它们需要的局部变量。**不要把它们再挪回去。**
+
+  // totalSec / exportClips 来自 useCompose（与「快速导出」同口径，不另算一套）
+  // 2.2：在服务端 shots 上盖一层"拖动中还没落库"的 transform_meta。
+  // 播放器、特效面板、CropZoomOverlay、MosaicOverlay、ClipProperties 都从
+  // 这一个 shots 派生，所以盖在这里 = 六个读取方一次性跟手，零调用点改动。
+  // 没有待写项时 applyPending 原样返回同一个数组（不制造新引用）。
+  const shots = stagedTransform.applyPending(detail?.shots ?? []);
+
+  /** 资产卡拖到轨道上的落点上下文（3.11 P1）。
+   *
+   *  在 App 里组装：`pxPerSec`（缩放）与 `offsetMap`（镜头起始秒）都是
+   *  **时间轴侧**的事实，侧栏自己算不出来。
+   *
+   *  `pxPerSec` 是**取快照**而不是订阅 store：订阅的话每次缩放都会重建
+   *  context，而且重建发生在拖动**之前**——真正危险的是"拖动中途换口径"，
+   *  那会让落点在松手那一刻跳掉。拖动期间没人会去滚缩放轮（指针按着呢），
+   *  所以快照在两次拖动之间必然是最新的，且全程稳定。
+   *
+   *  依赖里带 `detail`：`refreshDetail()` 之后镜头集合可能整批换（重新拆解），
+   *  旧的 offsetMap 会把资产注进错误的镜头。
+   */
+  const assetDropCtx = useMemo<AssetDropCtx | undefined>(() => {
+    if (!projectId) return undefined;
+    return {
+      projectId,
+      shots,
+      offsetMap: buildOrderOffsetMap(shots),
+      pxPerSec: useTimelineStore.getState().pxPerSec,
+      onToast: say,
+      onPushUndo: pushUndo,
+      onChanged: () => void refreshDetail(),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, shots, detail]);
+
   // ---- 顶层门禁（6.7）----
   // 规则本身全在 `lib/appGate.ts`，这里只按结论渲染。搬走的理由见那个文件的开头：
   // 门禁是"错了就整个软件进不去"的逻辑，而写在 .tsx 里 node 下 import 不进来，
@@ -1947,12 +1993,6 @@ export default function App() {
   }
 
   // ---- 派生值：给 Inspector / TopBar 用 ----
-  // totalSec / exportClips 来自 useCompose（与「快速导出」同口径，不另算一套）
-  // 2.2：在服务端 shots 上盖一层"拖动中还没落库"的 transform_meta。
-  // 播放器、特效面板、CropZoomOverlay、MosaicOverlay、ClipProperties 都从
-  // 这一个 shots 派生，所以盖在这里 = 六个读取方一次性跟手，零调用点改动。
-  // 没有待写项时 applyPending 原样返回同一个数组（不制造新引用）。
-  const shots = stagedTransform.applyPending(detail?.shots ?? []);
   // ⚠️ 从最新的 shots 里**派生**，不要存对象快照。
   // usePlayer 只持有 id —— 存整个对象的话，refreshDetail() 换掉 detail.shots
   // 之后它仍指向旧对象，多个面板会长期显示/使用陈旧数据
@@ -1971,33 +2011,6 @@ export default function App() {
 
   /** Phase 1/3 过渡：旧 LibraryPanel 承担剧本/资产/镜头三个 Tab
    *  （它内部按 tab 切内容）。Phase 4 会拆成三个独立面板后删除此块。 */
-  /** 资产卡拖到轨道上的落点上下文（3.11 P1）。
-   *
-   *  在 App 里组装：`pxPerSec`（缩放）与 `offsetMap`（镜头起始秒）都是
-   *  **时间轴侧**的事实，侧栏自己算不出来。
-   *
-   *  `pxPerSec` 是**取快照**而不是订阅 store：订阅的话每次缩放都会重建
-   *  context，而且重建发生在拖动**之前**——真正危险的是"拖动中途换口径"，
-   *  那会让落点在松手那一刻跳掉。拖动期间没人会去滚缩放轮（指针按着呢），
-   *  所以快照在两次拖动之间必然是最新的，且全程稳定。
-   *
-   *  依赖里带 `detail`：`refreshDetail()` 之后镜头集合可能整批换（重新拆解），
-   *  旧的 offsetMap 会把资产注进错误的镜头。
-   */
-  const assetDropCtx = useMemo<AssetDropCtx | undefined>(() => {
-    if (!projectId) return undefined;
-    return {
-      projectId,
-      shots,
-      offsetMap: buildOrderOffsetMap(shots),
-      pxPerSec: useTimelineStore.getState().pxPerSec,
-      onToast: say,
-      onPushUndo: pushUndo,
-      onChanged: () => void refreshDetail(),
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, shots, detail]);
-
   const legacyPanel = (
     <LibraryPanel
       projectId={projectId}
