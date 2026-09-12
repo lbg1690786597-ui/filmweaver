@@ -198,3 +198,28 @@
   min-height: 20px;
 }
 .fw-at-empty svg { flex-shrink: 0; }
+
+/* ---- 3.11 指针拖拽的落点反馈 ----
+   资产卡改走指针通道之后（HTML5 DnD 在宿主里收不到事件，见 pointerDrag.ts），
+   落点提示不再由 `:hover` / `.drop-hot` 那种 React 状态驱动 —— 拖动期间一个
+   setState 都没有，全靠 `pointerDrag` 给命中的那个容器挂 `fw-drop-hot`。
+
+   ⚠️ 选择器必须写成 `.fw-at-lane.fw-drop-hot` 这种**元素+类**的组合，不能只写
+   `.fw-drop-hot`：镜头轨（`.fw-tl-lane`）用的是同一套机制，只写类名的话
+   两边会互相覆盖，改一边坏另一边。
+
+   还有一条容易被忽略的：光有 outline 不够。段是**有背景色**的，虚线框落在
+   段下面根本看不见，所以段上还要叠一层半透明高亮。 */
+.fw-at-lane.fw-drop-hot,
+.fw-at-empty.fw-drop-hot {
+  outline: 2px dashed var(--c-asset-char);
+  outline-offset: -2px;
+  background: color-mix(in oklch, var(--c-asset-char) 10%, transparent);
+}
+
+/* 落在**某一段**上 = 换这套造型的参考图（比"注入"更具体，提示也该更强） */
+.fw-at-run.fw-drop-hot {
+  outline: 2px solid var(--c-warning);
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 999px color-mix(in oklch, var(--c-warning) 22%, transparent);
+}
