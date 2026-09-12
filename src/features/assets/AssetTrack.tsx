@@ -27,7 +27,7 @@ import {
 import { api } from "../../api";
 import type { ShotInfo, StageInfo, LocationInfo, AssetInfo, AssetDragData } from "../../api";
 import ContextMenu, { MenuItem } from "../../components/ContextMenu/ContextMenu";
-import { injectAssetIntoShot } from "./injectAsset";
+import { injectAssetIntoShot, replaceRunImage } from "./injectAsset";
 import { inSpan } from "../timeline/virtual";
 import type { SpanRange } from "../timeline/virtual";
 import "./AssetTrack.css";
@@ -305,60 +305,16 @@ export default function AssetTrack(p: Props) {
 
   // ---- 替换资产图（拖资产卡到段上）----
   // 旧 CharacterTrack 的核心能力之一：拖一张图到某个造型段 = 换这套造型的定妆图。
-  // virtual 段（无 AssetStage 行，服务端合成出来的）没有 stage 可 patch，走 upsertAssetImage。
-  const replaceStageImage = async (
+  // 3.11 起实现搬到 injectAsset.ts 的 replaceRunImage —— 指针拖拽那条通道
+  // 也会落到段上（useAssetDrop.ts），两边必须走同一份实现，否则同一个手势
+  // 会因为"从哪个通道拖过来"而行为不同。
+  const replaceStageImage = (
     row: AssetRow, run: AssetRun, d: AssetDragData,
-  ): Promise<boolean> => {
-    if (!d.imageUrl) {
-      // custom 资产没有图时，拖进来的意义是"归类"，不是换图
-      if (d.kind === "custom" && d.assetId) {
-        await api.patchAsset(d.assetId, { kind: p.kind === "location" ? "location" : "character" });
-        p.onToast(`「${d.name}」已归类，可在「AI 图片」里生成图`);
-        p.onChanged();
-        return true;
-      }
-      p.onToast(`「${d.name}」还没有图——先在「AI 图片」里生成`);
-      return true;
-    }
-
-    const stageId = run.stageId;
-    const isVirtual = !stageId || run.id.startsWith("loc:");
-    const prevImg = run.imageUrl ?? null;
-    try {
-      if (isVirtual) {
-        await api.upsertAssetImage(p.projectId,
-          p.kind === "location" ? "location" : "character", row.name, d.imageUrl);
-      } else {
-        await api.patchStage(stageId, { image_url: d.imageUrl });
-      }
-      if (d.kind === "custom" && d.assetId) {
-        await api.patchAsset(d.assetId,
-          { kind: p.kind === "location" ? "location" : "character" });
-      }
-      p.onPushUndo(`替换「${row.name}${run.stageName ? `·${run.stageName}` : ""}」参考图`,
-        async () => {
-          if (isVirtual) {
-            if (prevImg) await api.upsertAssetImage(p.projectId,
-              p.kind === "location" ? "location" : "character", row.name, prevImg);
-          } else {
-            await api.patchStage(stageId!, { image_url: prevImg ?? "" });
-          }
-          p.onChanged();
-        },
-        async () => {
-          if (isVirtual) {
-            await api.upsertAssetImage(p.projectId,
-              p.kind === "location" ? "location" : "character", row.name, d.imageUrl!);
-          } else {
-            await api.patchStage(stageId!, { image_url: d.imageUrl! });
-          }
-          p.onChanged();
-        });
-      p.onToast(`已用「${d.name}」替换「${row.name}${run.stageName ? `·${run.stageName}` : ""}」的参考图`);
-      p.onChanged();
-    } catch (e) { p.onToast(String(e)); }
-    return true;
-  };
+  ): Promise<boolean> => replaceRunImage({
+    projectId: p.projectId, rowName: row.name, d, run,
+    isLocation: p.kind === "location",
+    onPushUndo: p.onPushUndo, onToast: p.onToast, onChanged: p.onChanged,
+  });
 
   /** 段上放下：优先当作"换图"，没有图信息才退回"注入" */
   const onRunDrop = async (e: React.DragEvent, row: AssetRow, run: AssetRun) => {
@@ -493,7 +449,8 @@ export default function AssetTrack(p: Props) {
 
   if (!rows.length) {
     return (
-      <div className="fw-at-empty" onDragOver={onLaneDragOver} onDrop={(e) => onLaneDrop(e)}>
+      <div className="fw-at-empty" data-row-kind={p.kind}
+        onDragOver={onLaneDragOver} onDrop={(e) => onLaneDrop(e)}>
         <KindIcon size={12} />
         {p.kind === "character" ? "尚无人物造型，可在「AI 图片」生成资产后拖到此处"
           : p.kind === "location" ? "尚无场景，拆解剧本后自动生成"
@@ -503,9 +460,10 @@ export default function AssetTrack(p: Props) {
   }
 
   return (
-    <div className={`fw-at kind-${p.kind}`}>
+    <div className={`fw-at kind-${p.kind}`} data-row-kind={p.kind}>
       {rows.map((row) => (
-        <div key={row.key} className="fw-at-row" style={{ height: p.rowHeight }}>
+        <div key={row.key} className="fw-at-row" data-row-name={row.name}
+          data-row-kind={p.kind} style={{ height: p.rowHeight }}>
           {/* 行头：角色/场景名 + 缩略图（sticky 跟随横向滚动） */}
           <div className="fw-at-rowhead" title={row.name}>
             {row.imageUrl
@@ -546,6 +504,10 @@ export default function AssetTrack(p: Props) {
                     run.manualAdd.length ? "has-manual" : "",
                   ].filter(Boolean).join(" ")}
                   style={{ left, width }}
+                  data-run-id={run.id}
+                  data-run-stage-id={run.stageId ?? ""}
+                  data-run-stage-name={run.stageName ?? ""}
+                  data-run-image={run.imageUrl ?? ""}
                   onClick={() => p.onSelectRun({ ...run, from, to, rowName: row.name, kind: p.kind })}
                   onMouseDown={(e) => { if (e.button === 0) beginMoveRun(e, row, run); }}
                   onDragOver={(e) => {
