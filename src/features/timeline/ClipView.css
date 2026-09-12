@@ -151,6 +151,29 @@
 /* 3.1：已修剪入点。用强调色而非警告色——这是用户主动做的编辑，不是异常 */
 .fw-clip-badge.cut { color: var(--c-accent); }
 
+/* 3.11 R1：版本角标。它是这批角标里**唯一带文字**的（`V3 · 4`），
+   所以不能沿用基类的写死 14px 宽 —— 会截成 `V…`。
+   基类的 14px 是给单图标角标用的（EyeOff / 剪刀），宽度按内容放开后
+   图标那几个仍然由 flex 居中撑满，视觉不变。
+   用 `--fs-xs` 而不是写死 px：界面字号乘子（`--fs-scale`）要能带动它。
+   `--fs-2xs` 这个 token **不存在** —— tokens.css 只有 xs…xl 六档。
+   文字色用 `--c-bg`（与 `.pf-step-no` 同款）：强调色是浅蓝，
+   白字在上面几乎看不见。 */
+.fw-clip-badge.ver {
+  width: auto;
+  min-width: 14px;
+  padding: 0 3px;
+  font-size: var(--fs-xs);
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  background: var(--c-accent);
+  color: var(--c-bg);
+  opacity: 1;
+  cursor: pointer;
+  border: 0;
+}
+.fw-clip-badge.ver:hover { filter: brightness(1.15); }
+
 /* trim 手柄（右边缘）*/
 .fw-clip-trim {
   position: absolute;
