@@ -43,6 +43,10 @@ import type { ClipEditPatch } from "./clipEdit";
 import { followScroll, FOLLOW_SUSPEND_MS } from "./playhead";
 import { createScrubber } from "./scrub";
 import type { ScrubPhase, Scrubber } from "./scrub";
+import { startDrag } from "./pointerDrag";
+import { buildSlots } from "./dragGeom";
+import { planRecut, dragCutA, dragCutB } from "./recutPlan";
+import { isTextInput } from "../../commands";
 import { rectIds, rangeIds, RANGE_HINT } from "./selection";
 import {
   bucketViewport, sameViewport, visibleSpan, visibleClips,
@@ -60,7 +64,7 @@ import {
   ChevronsLeft, ChevronsRight, Magnet,
   Trash2, EyeOff, Eye, Copy, Scissors as ScissorsIcon,
   RefreshCw, History, Gem, Layers, VolumeX, CopyPlus, Crosshair,
-  Shuffle, AlertTriangle, X, RotateCcw, Square,
+  Shuffle, AlertTriangle, X, RotateCcw, Square, Slice,
 } from "lucide-react";
 import "./Timeline.css";
 
@@ -143,6 +147,12 @@ interface Props {
    *  与 `onSplit` 分开是因为"哪一镜、切在第几秒"由 App 按播放头统一判定，
    *  时间轴这边不该再写第二套（这条时间轴的注释里记着前三个"第二套"如何漂移）。 */
   onSplitAtPlayhead: () => void;
+  /** 3.11 R2/R3：把某镜划成 A|B|C 三段，只有中间一段需要重新生成。
+   *  两个切点都是**镜内秒**（与 `onSplit` 同口径）。 */
+  onRecut: (shotId: string, cutA: number, cutB: number) => void;
+  /** 3.11 R3：撤销一次划分，把 A|B|C 合回原来那一镜。
+   *  `midShotId` 是中间那段的 id（轨道上看起来"待生成"的空段）。 */
+  onUndoRecut: (headShotId: string, midShotId: string) => void;
   /** 素材面板拖进来的片段（MediaPanel 设的 application/x-fw-clip）。
    *  此前 MediaPanel 的 tooltip 写着「拖到时间轴插入」，但没有任何落点
    *  接收这个 MIME —— 旧的 TimelineDock 被删时把 onDrop 一起带走了，
@@ -169,7 +179,7 @@ interface Props {
 }
 
 interface CtxState { x: number; y: number; clip: Clip }
-interface MoveState { clipId: string; shotId: string; startX: number; startOrder: number; overOrder: number }
+interface MoveState { clipId: string; shotId: string; startOrder: number; overOrder: number }
 
 export default function Timeline(p: Props) {
   const store = useTimelineStore();
@@ -180,7 +190,6 @@ export default function Timeline(p: Props) {
   // inSec 只在拖左边缘（3.1 修剪入点）时有值，用来在工具条上显示"从素材第几秒起"。
   const [previewDur, setPreviewDur] = useState<
     { id: string; sec: number; inSec?: number } | null>(null);
-  const [previewOrder, setPreviewOrder] = useState<{ id: string; order: number } | null>(null);
   /** 框选中的矩形（null = 没在框选）。3.8 起纵向可跨轨，故存的是**轨 id 集合**
    *  而不是单个 trackId —— 浮层要在每条被覆盖的 lane 里各画一条，拼成一个带子。 */
   const [marquee, setMarquee] = useState<
@@ -193,6 +202,13 @@ export default function Timeline(p: Props) {
   /** 3.6 正在编辑的转场（点接缝上的菱形打开）。用屏幕坐标定位，理由同右键菜单：
    *  轨道行有固定高度，浮层挂在行内会被裁掉。 */
   const [seamEdit, setSeamEdit] = useState<{ m: SeamMarker; x: number; y: number } | null>(null);
+  /** 3.11 R3 局部重生成：正在划区间的镜头。两个切点是**镜内秒**，
+   *  初值 `null` 表示"还没动过"——面板打开时按 1/3、2/3 给一个起点，
+   *  用户不满意再拖。存镜内秒而非绝对秒，是因为这条轨道上
+   *  镜头起点会随前面镜头的增删漂移，绝对秒会在一次 refresh 之后指到别人身上。 */
+  const [recutEdit, setRecutEdit] = useState<
+    { shotId: string; dur: number; cutA: number | null; cutB: number | null;
+      x: number; y: number } | null>(null);
 
   // 当前缩放（多处使用，提前取出——下方多个 effect 依赖它）
   const pxPerSec = store.pxPerSec;
@@ -367,11 +383,13 @@ export default function Timeline(p: Props) {
     return () => { el.removeEventListener("scroll", syncVp); ro?.disconnect(); };
   }, [syncVp]);
   const span = useMemo(() => visibleSpan(vp, GUTTER_W), [vp]);
-  /** 正在拖/修剪的那个必须留在 DOM 里，否则拖出视口时预览凭空消失（陷阱 ③）。 */
+  /** 正在拖/修剪的那个必须留在 DOM 里，否则拖出视口时预览凭空消失（陷阱 ③）。
+   *  3.11 起顺序拖动也靠它：被拖的块在拖动期间是**自己 transform 跟手**的，
+   *  一旦被视口裁剪掉，指针还按着、块却没了 —— 用户会以为拖丢了。 */
   const keepIds = useMemo(() => new Set(
-    [move?.clipId, previewDur?.id, previewOrder?.id, overlayDrag?.clipId]
+    [move?.clipId, previewDur?.id, overlayDrag?.clipId]
       .filter((x): x is string => !!x)),
-    [move?.clipId, previewDur?.id, previewOrder?.id, overlayDrag?.clipId]);
+    [move?.clipId, previewDur?.id, overlayDrag?.clipId]);
 
   /* ==== 3.6 转场接缝 ====================================================
    *
@@ -602,10 +620,73 @@ export default function Timeline(p: Props) {
     window.addEventListener("mouseup", onUp);
   }, [pxPerSec, p]);
 
+  // ---- move drag（改镜头顺序，3.11 P1：指针状态机）----
+  //
+  // 旧版是 `mousedown` + `window.mousemove` + 每帧两次 setState，四个症状
+  // 全在（看不到位置 / 不跟手 / 松手才跳 / 来回闪），机制逐条记在
+  // `pointerDrag.ts` 与 `dragGeom.ts` 的头注释里，这里不再重复。
+  //
+  // 这一版只做三件事，且都不是"每次移动都做"：
+  //   · pointermove → 直接写 `el.style.transform`（**不经 React**），块跟手；
+  //   · 落点变了 → 才 setState 一次（驱动插入指示器），它是离散的、本来就不常变；
+  //   · pointerup → 提交一次，然后元素由 React 按新 order 重画。
+  //
+  // ⚠️ 这里**没有** `previewStartSec` 了：旧版靠它把块重画到新 order 的位置，
+  // 那正是"松手才跳"的来源（拖动全程 order 是旧值，只在落点跨格时才动一格）。
+  // 现在块的位置由 transform 负责，React 只需要知道"落点指示器画在哪"。
+  const startClipDrag = useCallback((
+    ev: PointerEvent, clip: Clip, startOrder: number,
+  ) => {
+    const shotId = clip.shotId;
+    if (!shotId) return;
+    const el = document.querySelector<HTMLElement>(
+      `.fw-clip[data-shot-id="${shotId}"]`);
+    if (!el) return;
+
+    // 槽位表在这里造一次：拖动期间时间轴本身不变（改 order 要等服务端回，
+    // 而提交发生在松手之后），每次 pointermove 重算是白烧 CPU。
+    const offsets = buildOrderOffsetMap(p.shots);
+    const durations = new Map<number, number>();
+    for (const s of p.shots) durations.set(s.order, s.duration_sec ?? 5);
+
+    setMove({ clipId: clip.id, shotId, startOrder, overOrder: startOrder });
+    startDrag({
+      intent: "move",
+      el,
+      x0: ev.clientX, y0: ev.clientY,
+      scroll0: { left: scrollRef.current?.scrollLeft ?? 0,
+                 top: scrollRef.current?.scrollTop ?? 0 },
+      scroller: scrollRef.current,
+      pxPerSec,
+      shotId, fromOrder: startOrder,
+      startSec: offsets.get(startOrder) ?? clip.startSec,
+      durSec: clip.durationSec,
+      slots: buildSlots(offsets, durations),
+    }, {
+      onFrame: (_s, r) => {
+        // 只有**离散落点变化**才碰 React。指针每帧动 60~120 次，落点一秒钟
+        // 可能才变一两次 —— 这是"拖动期间不重渲整棵树"的关键。
+        if (r.toOrder == null || r.toOrder === startOrder) return;
+        setMove((m) => (m && m.overOrder === r.toOrder ? m : (m ? { ...m, overOrder: r.toOrder! } : m)));
+      },
+      onCommit: (s, r) => {
+        const to = r.toOrder ?? s.fromOrder ?? startOrder;
+        setMove(null);
+        if (to === startOrder) return;
+        void p.onPatch(shotId, { toOrder: to });
+      },
+      onCancel: () => setMove(null),
+    });
+  }, [pxPerSec, p.shots, p.onPatch]);
+
   // ---- move drag（改镜头顺序）----
   // 同 trim：落点走局部变量而非 state，避免闭包读到旧值。
   // 换位阈值取「一个镜头槽宽」：拖过半个槽才算跨一位，手抖不会误改顺序。
-  const beginMove = useCallback((e: React.MouseEvent, clip: Clip) => {
+  // 3.11：入口从 `React.MouseEvent` 放宽到 `React.PointerEvent`。
+  // 指针事件是 MouseEvent 的**子类**（多了 pointerId 等），所以下面这些只读
+  // clientX / altKey 的分支一行都不用改；而 ClipView 现在是在 `pointerdown`
+  // 里调进来的（宿主吞掉 HTML5 DnD 之后，指针事件是页内唯一可用的拖拽通道）。
+  const beginMove = useCallback((e: React.MouseEvent | React.PointerEvent, clip: Clip) => {
     // 6.9：音频/字幕是**按绝对时间自由拖**（改锚点），不是换 order。
     // 与叠加层同构，但落点要换算成「第几镜 + 镜内偏移」，见 onMoveClip。
     if (clip.entity !== "shot") { beginMoveNonShot(e, clip); return; }
@@ -653,34 +734,12 @@ export default function Timeline(p: Props) {
     }
 
     if (!clip.shotOrder) return;
-    const shotId = clip.shotId;
     const startOrder = clip.shotOrder;
-    const startX = e.clientX;
-    const slotPx = Math.max(24, clip.durationSec * pxPerSec);
-    let latest = startOrder;
-    const maxOrder = p.shots.length;
-    setMove({ clipId: clip.id, shotId, startX, startOrder, overOrder: startOrder });
-    document.body.style.cursor = "grabbing";
-    const onMove = (ev: MouseEvent) => {
-      const orderDelta = Math.round((ev.clientX - startX) / slotPx);
-      const next = Math.max(1, Math.min(maxOrder, startOrder + orderDelta));
-      if (next === latest) return;
-      latest = next;
-      setMove((m) => (m ? { ...m, overOrder: next } : null));
-      setPreviewOrder({ id: clip.id, order: next });
-    };
-    const onUp = async () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setMove(null); setPreviewOrder(null);
-      if (latest === startOrder) return;
-      // 同 trim：入栈由 onPatch(=patchTimeline) 统一负责，这里再推一次会重复。
-      await p.onPatch(shotId, { toOrder: latest });
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [pxPerSec, p]);
+    // `beginMove` 的入参放宽成了 union（叠加层那条分支是从 `mousedown` 进来的，
+    // 见它的注释），这里是唯一走到主轨分支的调用点，而它必然是 pointerdown ——
+    // 断言在这里把类型收窄回去，不改运行时行为。
+    startClipDrag(e.nativeEvent as PointerEvent, clip, startOrder);
+  }, [pxPerSec, p, startClipDrag]);
 
   // ---- 框选（3.8：跨轨）----
   // 轨道空白处拖出一个**时间 × 轨道**的矩形，落在里面的可操作 clip 全部选中。
@@ -840,6 +899,15 @@ export default function Timeline(p: Props) {
     if (clip.entity !== "shot") return otherMenuItems(clip);
     const shot = p.shots.find((s) => s.id === clip.shotId);
     const isOverlay = (shot?.track_index ?? 0) > 0;
+    // 3.11 R3：这一段是不是某次「划出待重生成区间」留下的中间段？
+    // 判据是 `stale_reason === "recut"` —— 这是后端在 recut 时**专门**打上的标记，
+    // 比"它没有画面"可靠：没画面的正常 AI 镜头多了去了，那些不能撤销。
+    // 撤销要传的是 head 的 id，而 head 是**前一行**：recut 保证三行相邻，
+    // 所以 `order - 1` 就是它（同一项目内 order 唯一；`p.shots` 本来就是
+    // 单项目的镜头表，不必再按 project_id 过滤）。
+    const recutHead = shot?.stale_reason === "recut"
+      ? p.shots.find((s) => s.order === shot.order - 1)
+      : undefined;
     return [
       { id: "regen", label: "重新生成", icon: <RefreshCw size={12} />,
         disabled: !clip.shotId, onClick: () => clip.shotId && p.onRegenerate([clip.shotId]) },
@@ -873,6 +941,34 @@ export default function Timeline(p: Props) {
           || store.playheadSec >= clip.startSec + clip.durationSec - 0.5,
         onClick: () => clip.shotId
           && p.onSplit(clip.shotId, store.playheadSec - clip.startSec) },
+      // 3.11 R3 局部重生成：选中整镜划出 A|B|C，只重做中间那段。
+      //
+      // 与上面「分割」的区别就是用户要的那件事：分割切出来的两段**都保留原画面**，
+      // 而这里切出来的中间段是**空的**、等着你去生成。用户想表达的是
+      // "前 3 秒和后 3 秒能用，中间 4 秒重做"——只有这条路径能表达。
+      //
+      // 门槛是"这一镜得先有画面"：没出片的镜头整段都要生成，划线没有意义。
+      { id: "recut", label: "划出待重生成区间…", icon: <Slice size={12} />,
+        disabled: !clip.shotId || !shot?.video_url || isOverlay,
+        onClick: () => {
+          if (!clip.shotId) return;
+          // 面板摆右键菜单**同一处**（`ctx` 就是刚点出来的那个菜单的坐标），
+          // 并把它关掉：两个浮层叠在一起，用户点滑块时点到的是菜单。
+          setRecutEdit({ shotId: clip.shotId, dur: clip.durationSec,
+                         cutA: null, cutB: null,
+                         x: ctx?.x ?? 120, y: ctx?.y ?? 120 });
+          setCtx(null);
+        } },
+      // 3.11 R3：撤销上一次划分。挂在**中间段自己身上**而不是别处，
+      // 因为划错区间时用户眼睛盯着的就是轨道上那块空段 —— 右键它、退回去，
+      // 是最短的路径。撤销之后三行复原成一行，这一行本身也消失了。
+      //
+      // 只有在中间段**还没出片**时才给这一项：一旦重新生成过，撤销会丢掉
+      // 已付费的画面（后端也会 409），此时不给入口比给了再报错更清楚。
+      ...(recutHead && !shot?.video_url ? [{
+        id: "undoRecut", label: "撤销划分（合回一段）", icon: <Undo2 size={12} />,
+        onClick: () => p.onUndoRecut(recutHead.id, shot!.id),
+      } as MenuItem] : []),
       { id: "sep2", label: "", separator: true },
       // Render V2 多轨：主轨 ↔ 叠加层互移。
       // 移到叠加层时用当前播放头作为起点——用户刚在那儿看画面，
@@ -947,8 +1043,35 @@ export default function Timeline(p: Props) {
     };
   }, []);
 
+  /** 3.11 P2：在时间轴里按一下，就把**键盘焦点**收回到时间轴上。
+   *
+   *  用户报的"退格键无效"，机制在这里：全局快捷键（`commands/index.ts` 的
+   *  `useCommands`）有一道门禁 —— `isTextInput(e.target)` 为真时，除 Esc 外的
+   *  所有命令一律跳过。而 `e.target` 是**当前聚焦的元素**，不是鼠标位置：
+   *  只要此前在侧栏某个输入框里点过一下（改标题、填提示词、搜素材……），
+   *  焦点就一直留在那个 `<input>` 上，此后在时间轴上选片段、按 Backspace，
+   *  事件目标仍然是那个输入框 —— 命中 `INPUT`，删除命令被静默吃掉。
+   *
+   *  修法不是"删掉门禁"（那会让用户在输入框里按退格删掉时间轴片段），
+   *  而是让焦点跟着**用户的注意力**走：点进时间轴就把焦点收回时间轴。
+   *  容器加了 `tabIndex={-1}` 以可聚焦，但**不进 Tab 序**（它只是个焦点容器，
+   *  不是可操作控件）。 */
+  const claimFocus = useCallback((e: React.PointerEvent) => {
+    const root = e.currentTarget as HTMLElement;
+    // 时间轴**自己**也有输入框（片段内联改名等）：在里面点是"我要打字"，
+    // 不是"我要操作时间轴"，不能把焦点夺回来 —— 那会让内联编辑一按就失焦。
+    if (isTextInput(e.target)) return;
+    if (root.contains(document.activeElement)) return;   // 焦点已经在里面
+    // 焦点此刻可能停在**侧栏的**输入框上（那就是 Backspace 失效的现场）。
+    // 直接 focus(root) 就够：焦点只有一个，挪走之后 `isTextInput(e.target)`
+    // 自然为假，命令恢复生效。不需要先 blur —— 前提是**别** preventDefault。
+    root.focus({ preventScroll: true });
+  }, []);
+
   return (
-    <div className={`fw-tl ${p.maximized ? "maximized" : ""}${altHeld ? " alt-armed" : ""}`}>
+    <div className={`fw-tl ${p.maximized ? "maximized" : ""}${altHeld ? " alt-armed" : ""}`}
+      tabIndex={-1}
+      onPointerDownCapture={claimFocus}>
       {/* ---- 工具条 ---- */}
       <div className="fw-tl-toolbar">
         <button className="fw-tl-tbtn" title="适配全宽 (Ctrl+0)"
@@ -1022,9 +1145,11 @@ export default function Timeline(p: Props) {
             {previewDur.inSec !== undefined && ` · 入点 ${previewDur.inSec.toFixed(1)}s`}
           </span>
         )}
-        {move && previewOrder && previewOrder.order !== move.startOrder && (
+        {/* 3.11：落点读数由 `move.overOrder` 驱动（拖动期间它只在跨格时变），
+            不再有 `previewOrder` 那个"假位置"。读数跟着指示器走，两者同一来源。 */}
+        {move && move.overOrder !== move.startOrder && (
           <span className="fw-tl-live" title="松手后提交">
-            #{move.startOrder} → #{previewOrder.order}
+            #{move.startOrder} → #{move.overOrder}
           </span>
         )}
         <span className="fw-tl-summary" title="可导出段数 · 总时长">
@@ -1215,13 +1340,20 @@ export default function Timeline(p: Props) {
                       宽度一塌滚动条和落点跟着塌。 */}
                   {visibleClips(track.clips, pxPerSec, span, keepIds).map((clip) => {
                     const isDragging = move?.clipId === clip.id;
+                    // 「落点」= 别的块要给被拖的块让出来的那个 order。
+                    // 被拖的块自己**不算**落点（判据里的 `!isDragging`）——
+                    // 否则它会在原位亮一圈"要放到这"，与它正被拖走明显矛盾。
                     const isDropTarget = move !== null && !isDragging
-                      && clip.shotOrder === (previewOrder?.order ?? move?.overOrder);
+                      && clip.shotOrder === move.overOrder;
+                    // ⚠️ 3.11：被拖的块**不再**按落点重画位置。
+                    // 旧版这里给它一个 `previewStartSec`（落点那一格的起点），
+                    // 于是"DOM transform 跟手"和"React 按格重画"为同一个像素打架，
+                    // 松手时又跳一次 —— 用户报的"看不到拖动位置 / 松手突然移动 /
+                    // 来回闪"三个症状都源于此。现在位置全部交给 transform，
+                    // React 只管落点高亮（上面那行）。
                     const previewStart = overlayDrag?.clipId === clip.id
                       ? overlayDrag.startSec
-                      : isDragging && previewOrder
-                        ? (offsetMap.get(previewOrder.order) ?? clip.startSec)
-                        : undefined;
+                      : undefined;
                     const previewD = previewDur?.id === clip.id ? previewDur.sec : undefined;
                     return (
                       <ClipView key={clip.id} clip={clip} pxPerSec={pxPerSec}
@@ -1287,7 +1419,14 @@ export default function Timeline(p: Props) {
                           if (shot) p.onSelectShot(shot);
                         }}
                         onContextMenu={(e) => { e.preventDefault(); setCtx({ x: e.clientX, y: e.clientY, clip }); }}
-                        onBeginMove={(e) => beginMove(e, clip)}
+                        onPointerDownBody={(e) => beginMove(e, clip)}
+                        /* 3.11 R1：版本角标 → 打开检查器的版本区。
+                           与右键菜单的「版本历史」同一件事，只是搬到角标上：
+                           角标告诉用户"有几版"，点它才看得见是哪几版。 */
+                        onShowVersions={clip.shotId ? () => {
+                          const shot = p.shots.find((s) => s.id === clip.shotId);
+                          if (shot) p.onShowVersions(shot);
+                        } : undefined}
                         onBeginTrim={(e) => beginTrim(e, clip)}
                         onBeginTrimIn={(e) => beginTrimIn(e, clip)}
                         onDoubleClick={() => {
@@ -1423,6 +1562,77 @@ export default function Timeline(p: Props) {
           </div>
         </>
       )}
+
+      {/* 3.11 R3 划区间浮层：把这一镜切成 A|B|C，只重做中间那段。
+          用两个滑块而不是画两条可以拖的刀线：刀线要么做在轨道内（被行裁掉、
+          与被禁用的宿主拖放抢指针），要么做成一整套带命中区的 overlay ——
+          而这里真正要确定的只有**两个数**，滑块是这两个数最短的呈现。 */}
+      {recutEdit && (() => {
+        // 三个数怎么算、两个滑块怎么互夹、哪些切点不该提交，都在 `recutPlan.ts`
+        // 里（有单测钉着）。这里只负责画。
+        const { a: a0, b: b0, head, mid, tail, why } =
+          planRecut(recutEdit.dur, recutEdit.cutA, recutEdit.cutB);
+        return (
+          <>
+            <div className="fw-tl-seampop-mask" onMouseDown={() => setRecutEdit(null)} />
+            <div className="fw-tl-recutpop"
+              style={{ left: Math.max(8, Math.min(recutEdit.x, window.innerWidth - 300)),
+                       top: Math.max(8, Math.min(recutEdit.y, window.innerHeight - 260)) }}>
+              <div className="fw-tl-seampop-hd">
+                <Slice size={12} />
+                <b>划出待重生成区间</b>
+                <button className="fw-tl-seampop-x" title="关闭"
+                  onClick={() => setRecutEdit(null)}><X size={12} /></button>
+              </div>
+              <div className="fw-tl-seampop-hint">
+                前后两段保留原画面，中间这段重新生成。
+              </div>
+
+              {/* 三段时长条。**不按比例画**：一镜可能 60s，中间段只有 2s，
+                  按真实比例画出来那 2s 是一道缝，用户看不出自己划了多大。
+                  数字才是这里的主角，条形只负责"前中后"的次序感。 */}
+              <div className="fw-tl-recutbar">
+                <span className="seg a" style={{ flex: Math.max(head, 0.001) }}>{head.toFixed(1)}s</span>
+                <span className="seg b" style={{ flex: Math.max(mid, 0.001) }}>{mid.toFixed(1)}s</span>
+                <span className="seg c" style={{ flex: Math.max(tail, 0.001) }}>
+                  {tail.toFixed(1)}s</span>
+              </div>
+              <div className="fw-tl-recutlegend">
+                <span className="a">保留</span><span className="b">待生成</span><span className="c">保留</span>
+              </div>
+
+              <label className="fw-tl-seampop-row">
+                起点
+                <input type="range" min={0.1} max={Math.max(recutEdit.dur - 0.2, 0.2)} step={0.1}
+                  value={a0}
+                  onChange={(e) => setRecutEdit({ ...recutEdit, cutA: dragCutA(
+                    { a: a0, b: b0, head, mid, tail, why }, Number(e.target.value)) })} />
+                <span className="fw-tl-seampop-val">{a0.toFixed(1)}s</span>
+              </label>
+              <label className="fw-tl-seampop-row">
+                终点
+                <input type="range" min={0.2} max={Math.max(recutEdit.dur - 0.1, 0.2)} step={0.1}
+                  value={b0}
+                  onChange={(e) => setRecutEdit({ ...recutEdit, cutB: dragCutB(
+                    { a: a0, b: b0, head, mid, tail, why }, Number(e.target.value), recutEdit.dur) })} />
+                <span className="fw-tl-seampop-val">{b0.toFixed(1)}s</span>
+              </label>
+
+              <div className={`fw-tl-seampop-hint${why ? " bad" : ""}`}>
+                {why ?? `将在轨道上多出 2 行（本镜共 ${recutEdit.dur.toFixed(1)}s）`}
+              </div>
+
+              <button className="fw-tl-recutgo" disabled={!!why}
+                onClick={() => {
+                  p.onRecut(recutEdit.shotId, a0, b0);
+                  setRecutEdit(null);
+                }}>
+                <Slice size={12} /> 划出区间
+              </button>
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
