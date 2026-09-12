@@ -251,16 +251,19 @@ console.log("\n⑦ 造型描述不再被模板污染");
 /* ================================================================== */
 console.log("\n⑧ 自定义资产上传走同一条策略");
 {
-  const lib = read("src/components/LibraryPanel.tsx");
-  ok("LibraryPanel 上传自定义资产也先压",
-    /const small = await compressImage\(f\)/.test(lib)
-    && /api\.uploadMedia\(small\.file/.test(lib),
+  // 3.11 起「上传自己的图」不再是 LibraryPanel 自己的一段上传代码，而是
+  // 走 useMediaPipeline → 归属确认面板统一落库。断言因此改盯**唯一实现处**：
+  // 曾经三份各写各的，正是"只修一处等于没修"的来源。
+  const dlg = read("src/features/assets/AttributeDialog.tsx");
+  ok("归属确认面板落库前先压（各入口共用这一处）",
+    /const small = await compressImage\(a\.file\)/.test(dlg)
+    && /api\.uploadMedia\(small\.file/.test(dlg),
     "同一个用户、同样的原图，只是入口不同——只修一处等于没修");
   {
-    // 只看 doCustomUpload 这一段：同文件里的 doCustomGen **应该**带 prompt
-    // （那条路上 prompt 就是生成这张图用的提示词，两者天然一致）。
-    const seg = lib.slice(lib.indexOf("const doCustomUpload"),
-                          lib.indexOf("const doCustomGen"));
+    // 只看到 createAsset 那一支为止（upsert 分支本来就带 clearPrompt，
+    // 那是另一件事，见下一条断言）。
+    const seg = dlg.slice(dlg.indexOf('if (a.kind === "create")'),
+                          dlg.indexOf('} else if (a.kind === "upsert")'));
     ok("上传的图不编造 prompt",
       seg.includes("createAsset(") && !/prompt:/.test(seg),
       "上传的图没有对应文字描述，留空才对：出片走「无描述则禁止书写服装/陈设」的兜底，"
