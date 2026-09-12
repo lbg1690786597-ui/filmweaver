@@ -14,8 +14,9 @@ import {
   File, Plus, Trash2, Play, Check, FolderOpen, Pencil,
 } from "lucide-react";
 import { api } from "../../api";
-import type { ShotInfo } from "../../api";
-import { LibClip, clipKind, fmtTime, probeDuration } from "../../types";
+import type { AssetInfo, ShotInfo } from "../../api";
+import { LibClip, fmtTime } from "../../types";
+import { useMediaPipeline, type MediaPipeline } from "../../hooks/useMediaPipeline";
 import "./MediaPanel.css";
 
 type Filter = "all" | "video" | "audio" | "image" | "used";
@@ -41,14 +42,37 @@ interface Props {
   /** R2 重命名素材（只改展示名，不影响 url 与镜头关联） */
   onRenameClip: (id: string, name: string) => void;
   onToast: (m: string) => void;
+  /** 归属确认要用：已有资产做候选池。**不强求**——不传时只是不能归属到资产，
+   *  素材池本身照常工作（图片仍可上传、可拖轨）。 */
+  assets?: AssetInfo[];
+  /** 归属落库后父级重拉资产（让资产页立刻出现新归属的图） */
+  onAssetsChanged?: () => void;
+  /** 归属时把某张图改判成"挂到资产"，它先前那个池片段要撤掉——
+   *  否则同一张图既在资产页又在时间轴上，用户会以为是两张。 */
+  onRemoveClips?: (ids: string[]) => void;
+  /** 上传管道。App 顶层已经建了一个（系统拖入要用），传进来就复用它——
+   *  两边各建一个的话，归属面板会变成两个实例，图片拖进来弹的是 A、
+   *  点上传弹的是 B，用户会看到"有时候弹有时候不弹"。 */
+  mediaPipeline?: MediaPipeline;
 }
 
 export default function MediaPanel(p: Props) {
   const [filter, setFilter] = useState<Filter>("all");
   const [density, setDensity] = useState<Density>("grid");
   const [q, setQ] = useState("");
-  const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
+  // 上传 + 归属确认收敛在 useMediaPipeline 里（与资产页、系统拖放共用同一份），
+  // 面板这里只负责"按钮点了把文件递过去"。
+  const own = useMediaPipeline({
+    projectId: p.projectId,
+    onToast: p.onToast,
+    onAddClips: p.onAddClips,
+    onRemoveClips: p.onRemoveClips,
+    assets: p.assets,
+    onAssetsChanged: p.onAssetsChanged,
+  });
+  const { uploadFiles, uploading, attributionDialog } = p.mediaPipeline ?? own;
 
   /** 素材是否已入轨：外部素材镜头的 video_url 与素材 url 相同 */
   const usedUrls = useMemo(
@@ -65,21 +89,7 @@ export default function MediaPanel(p: Props) {
     });
   }, [p.clips, filter, q, usedUrls]);
 
-  const doUpload = async (files: FileList) => {
-    setUploading(true);
-    const added: LibClip[] = [];
-    try {
-      for (const f of Array.from(files)) {
-        const r = await api.uploadMedia(f, p.projectId);
-        const kind = clipKind(f.name);
-        const dur = await probeDuration(api.mediaUrl(r.url), kind);
-        added.push({ id: r.file_id, name: f.name, url: r.url, size: f.size, kind, duration: dur });
-      }
-      p.onAddClips(added);
-      p.onToast(`已上传 ${added.length} 个素材`);
-    } catch (e) { p.onToast(String(e)); }
-    finally { setUploading(false); }
-  };
+  const doUpload = (files: FileList) => { void uploadFiles(Array.from(files)); };
 
   /** 拖到时间轴：payload 与 TimelineDock/Timeline 的 onDrop 约定一致 */
   const onDragStart = (e: React.DragEvent, c: LibClip) => {
@@ -212,6 +222,10 @@ export default function MediaPanel(p: Props) {
           })}
         </div>
       )}
+
+      {/* 上传后的归属确认（图片才有）。放在面板内部而不是 App 顶层：
+          它归属的是"这一批刚上传的图"，状态跟面板走，面板不在了它就该没了。 */}
+      {attributionDialog}
     </div>
   );
 }
