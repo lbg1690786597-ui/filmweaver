@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { api, AssetInfo, DeletedStageInfo, EpisodeInfo, JobOut, JobPhase, ShotInfo, StageInfo } from "../api";
-import { LibClip, clipKind, fmtTime, probeDuration } from "../types";
-import { compressImage, describeSaving } from "../lib/imageCompress";
+import type { AssetDragData } from "../api";
+import { LibClip, fmtTime } from "../types";
+import { useMediaPipeline, type MediaPipeline } from "../hooks/useMediaPipeline";
 import ShotsPanel from "./ShotsPanel";
 import AssetDialog, { AssetDialogTarget } from "./AssetDialog";
 import SceneCanonDialog from "../features/scenes/SceneCanonDialog";
 import AutoTextarea from "./AutoTextarea";
+import { startDrag } from "../features/timeline/pointerDrag";
+import {
+  assetDropTargetAt, assetHotElement, commitAssetDrop,
+} from "../features/assets/useAssetDrop";
+import type { AssetDropCtx } from "../features/assets/useAssetDrop";
+
+/** 卡片拖出去的载荷。就是 `AssetDragData`，这里起个别名只因它在两个通道里
+ *  都当"数据"用，读代码时名字更贴切。 */
+type AssetDragPayload = AssetDragData;
 
 interface Props {
   projectId: string;
@@ -49,6 +59,9 @@ interface Props {
   onFirstFrames: (shotIds?: string[]) => void;
   /** 按当前资产重写镜头提示词（job，纯文本）。shotIds 缺省=全部镜头 */
   onReprompt: (shotIds?: string[]) => void;
+  /** 上传管道。App 顶层已经建了一个（系统拖入要用），传进来就复用它，
+   *  避免同一时刻存在两个归属面板实例（见 useMediaPipeline 头注释）。 */
+  mediaPipeline?: MediaPipeline;
   /** 首帧精控 pipeline（job，已弃用）：资产 → 全部首帧 → 全部片段。
    * 已被顶栏「▷ 一键成片」替代（后者合并了此功能），但接口保留以免回归。 */
   onPipeline: (opts: { genAssets: boolean; stopAfter?: "assets" | "frames" }) => void;
@@ -60,6 +73,16 @@ interface Props {
   onTabChange?: (t: Tab) => void;
   /** Phase 1：页签条由外层 LeftPanel 标题栏承担时隐藏自身页签 */
   hideTabs?: boolean;
+  /**
+   * 资产卡拖到轨道上的落点上下文（3.11）。
+   *
+   * 由 App 组装 —— 它才知道 `pxPerSec`（缩放）、`offsetMap`（镜头起始秒）
+   * 和 `pushUndo`。面板自己算的话，缩放一变侧栏的落点就与时间轴对不上了，
+   * 而那是**静默**的：拖上去能放、只是放错镜头。
+   *
+   * 不传 = 只保留旧的 HTML5 通道（网页版沿用，回归安全）。
+   */
+  assetDropCtx?: AssetDropCtx;
 }
 
 export type Tab = "script" | "assets" | "shots";
@@ -69,10 +92,23 @@ export default function LibraryPanel(p: Props) {
   const [innerTab, setInnerTab] = useState<Tab>("script");
   const tab = p.tab ?? innerTab;
   const setTab = (t: Tab) => { p.onTabChange ? p.onTabChange(t) : setInnerTab(t); };
-  const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const scriptFileRef = useRef<HTMLInputElement>(null);
+
+  /** 「上传自己的图」的归属确认。与媒体池上传共用同一套规则与面板
+   *  （见 `useMediaPipeline` 头注释）：两边各写一份的话，"资产页传"和
+   *  "媒体池传"迟早会给出不同的归属结果。 */
+  const ownPipeline = useMediaPipeline({
+    projectId: p.projectId,
+    onToast: p.onToast,
+    onAddClips: p.onAddClips,
+    assets: p.assetsMeta,
+    // 资产页的落库会新增/覆盖资产行，两处都要重拉：refresh 是资产列表，
+    // refreshStages 是角色分层（新挂上去的图要在分层里立刻可见）。
+    onAssetsChanged: () => { p.onRefresh(); p.onRefreshStages(); },
+  });
+  const { uploadFiles, uploading, attributionDialog } = p.mediaPipeline ?? ownPipeline;
 
   // ---- 剧本页：导入 → 弹窗确认分集 → 按集文本框编辑 ----
   const [draft, setDraft] = useState<{ text: string; episodes: EpisodeInfo[] } | null>(null);
@@ -130,22 +166,12 @@ export default function LibraryPanel(p: Props) {
     finally { setSavingEp(null); }
   };
 
-  const importFiles = async (files: FileList) => {
-    setUploading(true); setErr("");
-    try {
-      const added: LibClip[] = [];
-      for (const f of Array.from(files)) {
-        // P1-3：先本地探测时长，再随上传落库（media_clips，项目维度持久化）
-        const kind = clipKind(f.name);
-        const blobUrl = URL.createObjectURL(f);
-        const duration = await probeDuration(blobUrl, kind).finally(
-          () => URL.revokeObjectURL(blobUrl));
-        const r = await api.uploadMedia(f, p.projectId, duration);
-        added.push({ id: r.file_id, name: r.name, url: r.url, size: r.size, kind, duration });
-      }
-      p.onAddClips(added);
-    } catch (e) { setErr(String(e)); }
-    finally { setUploading(false); }
+  // 素材池的「＋ 上传」也走同一条管道：它跟媒体面板的上传是同一件事，
+  // 只是入口在资产页。以前这里自己传一遍，于是同一个文件从资产页传不会
+  // 触发图片归属、从媒体面板传会 —— 同一个动作两种结果。
+  const importFiles = (files: FileList) => {
+    setErr("");
+    void uploadFiles(Array.from(files));
   };
 
   // ---- 资产页角色分层（修 E3）：展开的角色 + 合并勾选 ----
@@ -329,27 +355,11 @@ export default function LibraryPanel(p: Props) {
   };
 
   // ---- 自定义资产：上传图 / AI 生图 ----
-  const doCustomUpload = async (f: File) => {
-    setCustomBusy(true);
-    try {
-      // 与资产弹窗同一条压缩策略（超 2MB 或长边超 2048 才压）：这里传的同样是
-      // 手机/单反原图，原样直传就是几十秒的等待。见 lib/imageCompress.ts。
-      const small = await compressImage(f);
-      const r = await api.uploadMedia(small.file, p.projectId);
-      // 名字取**原**文件名：压缩会把后缀换成 .jpg，用压后的名字虽然结果相同，
-      // 但一旦将来改了输出格式就会莫名其妙地影响资产名。
-      const name = f.name.replace(/\.[^.]+$/, "");
-      // 不带 prompt：上传的图没有对应的文字描述，**留空是对的**——
-      // 出片时会走"无描述则禁止书写服装/陈设"的兜底，外观完全由这张图钳制。
-      // 想要文字描述的话，打开资产弹窗点「🔍 AI 看图补写」。
-      await api.createAsset({ projectId: p.projectId, kind: "custom", name, imageUrl: r.url });
-      p.onRefresh();
-      p.onToast(small.compressed
-        ? `✅ 自定义资产「${name}」已创建（图片已压缩 ${describeSaving(small)}）`
-        : `✅ 自定义资产「${name}」已创建`);
-    } catch (e) { p.onToast(String(e)); }
-    finally { setCustomBusy(false); }
-  };
+  //
+  // 「上传自己的图」不再直接建成 `kind: "custom"` —— 那正是用户抱怨的那个 bug：
+  // 每个文件都被送进唯一一类**永远不会被注入到镜头**的资产里。现在交给归属面板
+  // 按文件名/目录判它到底是谁，custom 只是"实在认不出来"时的一个选项。
+  const doCustomUpload = (f: File) => { void uploadFiles([f]); };
   const doCustomGen = async () => {
     if (!customGen || !customGen.name.trim() || !customGen.prompt.trim()) return;
     setCustomBusy(true);
@@ -368,11 +378,57 @@ export default function LibraryPanel(p: Props) {
   };
 
   /** 资产卡拖拽起手：payload 进 dataTransfer，轨道侧 onDrop 解析 */
-  const dragStartAsset = (e: React.DragEvent, data: {
-    assetId: string | null; kind: string; name: string; imageUrl: string | null; stageId?: string;
-  }) => {
+  const dragStartAsset = (e: React.DragEvent, data: AssetDragPayload) => {
     e.dataTransfer.setData("application/x-fw-asset", JSON.stringify(data));
     e.dataTransfer.effectAllowed = "copy";
+  };
+
+  /**
+   * 资产卡拖拽起手（**3.11 主管道**）。
+   *
+   * 桌面端里上面那个 HTML5 `draggable` **根本不会触发** —— 宿主装了 OS 级
+   * `IDropTarget`，指针一路是禁止光标，页面拿不到 `dragstart`。所以这里再挂一条
+   * 指针通道：`pointerdown` 起手、越过阈值才成型（因此不影响点击打开详情）、
+   * 松手用 `elementFromPoint` 定落点。机理见 `pointerDrag.ts` 头注释。
+   *
+   * 两条通道**同时留着**：网页版（浏览器里跑 `/fw/app/`）没有那个宿主，
+   * 走的仍是 `dataTransfer`，删掉就回归了。判据不是"哪个更新"，
+   * 而是指针通道在宿主下能跑、HTML5 不能。
+   */
+  const dragStartAssetPointer = (
+    e: React.PointerEvent, data: AssetDragPayload,
+  ) => {
+    if (e.button !== 0) return;
+    // 卡片身兼多职（点开详情、勾选合并阶段、按删除键）。在这些**控件**上按下
+    // 时不能接管：`preventDefault()` 会顺手把复选框的切换也挡掉。
+    // 判据是"按在了交互控件上"，不是"按在了卡片上"。
+    const t = e.target as HTMLElement;
+    if (t.closest("button, input, textarea, select, a, [contenteditable]")) return;
+    // 卡片里有 <img>，浏览器会自起一次原生图片拖拽并把指针流打断
+    e.preventDefault();
+    const scroller = e.currentTarget.closest<HTMLElement>(".fw-tl-scroll")
+      ?? document.querySelector<HTMLElement>(".fw-tl-scroll");
+    startDrag({
+      intent: "asset",
+      el: null,                     // 卡片留在原地，不跟手（它本来就不该离开侧栏）
+      label: data.name,
+      x0: e.clientX, y0: e.clientY,
+      scroll0: { left: scroller?.scrollLeft ?? 0, top: scroller?.scrollTop ?? 0 },
+      scroller,
+      pxPerSec: 1,                  // 资产落点按镜头吸附，不用像素→秒换算
+      data,
+    }, {
+      hotTarget: (r) => assetHotElement(assetDropTargetAt(r.hit)),
+      onCommit: (_s, r) => {
+        const target = assetDropTargetAt(r.hit);
+        const ctx = p.assetDropCtx;
+        if (!ctx) return;
+        void commitAssetDrop(target, data, r.clientX, ctx).then((ok) => {
+          if (!ok) p.onToast(`把小图拖到轨道或资产段的「${data.name}」上才能放进去`);
+        });
+      },
+      onCancel: () => { /* 没构成拖动 = 点击，交给 onClick 打开详情 */ },
+    });
   };
 
   return (
@@ -513,6 +569,8 @@ export default function LibraryPanel(p: Props) {
                     draggable
                     onDragStart={(e) => dragStartAsset(e, {
                       assetId: a.id, kind: "character", name: a.name, imageUrl: cover ?? null })}
+                    onPointerDown={(e) => dragStartAssetPointer(e, {
+                      assetId: a.id, kind: "character", name: a.name, imageUrl: cover ?? null })}
                     onClick={() => { setOpenChar(open ? null : a.name); setMergeSel(new Set()); }}>
                     <span className={`dock-caret ${open ? "open" : ""}`}>▶</span>
                     {cover
@@ -536,6 +594,9 @@ export default function LibraryPanel(p: Props) {
                             stage: s, imageUrl: s.image_url, voiceUrl: a.voice_url,
                             assetPrompt: a.prompt })}
                           onDragStart={(e) => dragStartAsset(e, {
+                            assetId: null, kind: "character", name: s.character_name,
+                            imageUrl: s.image_url, stageId: s.id })}
+                          onPointerDown={(e) => dragStartAssetPointer(e, {
                             assetId: null, kind: "character", name: s.character_name,
                             imageUrl: s.image_url, stageId: s.id })}>
                           <input type="checkbox" title="勾选 2 个以上可合并"
@@ -608,6 +669,9 @@ export default function LibraryPanel(p: Props) {
                                         assetPrompt: a.prompt })}
                                       onDragStart={(e) => dragStartAsset(e, {
                                         assetId: a.id, kind: "character", name: a.name,
+                                        imageUrl: img, stageId: st?.id })}
+                                      onPointerDown={(e) => dragStartAssetPointer(e, {
+                                        assetId: a.id, kind: "character", name: a.name,
                                         imageUrl: img, stageId: st?.id })}>
                                       {img
                                         ? <img className="lib-stage-thumb" src={api.mediaUrl(img)} alt="" />
@@ -658,6 +722,8 @@ export default function LibraryPanel(p: Props) {
                               kind: "location", name: a.name, assetId: a.id,
                               stage: null, imageUrl: a.image_url, assetPrompt: a.prompt })}
                             onDragStart={(e) => dragStartAsset(e, {
+                              assetId: a.id, kind: "location", name: a.name, imageUrl: a.image_url })}
+                            onPointerDown={(e) => dragStartAssetPointer(e, {
                               assetId: a.id, kind: "location", name: a.name, imageUrl: a.image_url })}>
                             {a.image_url
                               ? <img src={api.mediaUrl(a.image_url)} alt={a.name} />
@@ -682,9 +748,10 @@ export default function LibraryPanel(p: Props) {
                 {secOpen.custom && (
                   <>
                     <div className="row">
-                      <button className="btn" style={{ flex: 1 }} disabled={customBusy}
+                      <button className="btn" style={{ flex: 1 }}
+                        title="上传后会先猜它属于哪个角色/场景，确认后才入库"
                         onClick={() => customFileRef.current?.click()}>
-                        {customBusy ? "处理中…" : "＋ 上传图片"}
+                        {uploading ? "上传中…" : "＋ 上传图片"}
                       </button>
                       <button className="btn" style={{ flex: 1 }} disabled={customBusy}
                         onClick={() => setCustomGen({ name: "", prompt: "" })}>🎨 AI 生图</button>
@@ -703,6 +770,8 @@ export default function LibraryPanel(p: Props) {
                             kind: "custom", name: a.name, assetId: a.id,
                             stage: null, imageUrl: a.image_url, assetPrompt: a.prompt })}
                           onDragStart={(e) => dragStartAsset(e, {
+                            assetId: a.id, kind: "custom", name: a.name, imageUrl: a.image_url })}
+                          onPointerDown={(e) => dragStartAssetPointer(e, {
                             assetId: a.id, kind: "custom", name: a.name, imageUrl: a.image_url })}>
                           {a.image_url
                             ? <img src={api.mediaUrl(a.image_url)} alt={a.name} />
@@ -982,6 +1051,10 @@ export default function LibraryPanel(p: Props) {
           onGotoAssets={() => setTab("assets")} onToast={p.onToast}
           hasScript={epContents.length > 0} />
       )}
+
+      {/* 上传图片后的归属确认（见 useAttribution）。渲染在这里而不是 App 顶层：
+          它归属的是"这一批刚上传的图"，状态跟面板走。 */}
+      {attributionDialog}
     </aside>
   );
 }
