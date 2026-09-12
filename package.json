@@ -1,7 +1,7 @@
 {
   "name": "filmweaver-desktop",
   "private": true,
-  "version": "0.8.9",
+  "version": "0.9.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,7 @@
     "accept:batch4": "tsx scripts/accept-batch4.ts",
     "smoke:mask": "tsx scripts/smoke-maskexport.ts",
     "verify:all": "npm run typecheck && npm run verify:ui && npm run verify:render && npm run verify:subtitles && npm run verify:export && npm run verify:baseline",
-    "verify:ui": "tsx scripts/verify-contrast.ts && tsx scripts/verify-css-coverage.ts && tsx scripts/verify-snap.ts && tsx scripts/verify-trim.ts && tsx scripts/verify-clipedit.ts && tsx scripts/verify-playhead.ts && tsx scripts/verify-scrub.ts && tsx scripts/verify-selection.ts && tsx scripts/verify-transitions.ts && tsx scripts/verify-layout.ts && tsx scripts/verify-resolutions.ts && tsx scripts/verify-export-perms.ts && tsx scripts/verify-f16-reset.ts && tsx scripts/verify-form-state.ts && tsx scripts/verify-save-state.ts && tsx scripts/verify-staged-write.ts && tsx scripts/verify-shot-rev.ts && tsx scripts/verify-load-state.ts && tsx scripts/verify-undo.ts && tsx scripts/verify-waveform.ts && tsx scripts/verify-virtual.ts && tsx scripts/verify-collapse.ts && tsx scripts/verify-appcast-channel.ts && tsx scripts/verify-bundled-fonts.ts && tsx scripts/verify-case-collision.ts && tsx scripts/verify-project-list.ts && tsx scripts/verify-image-compress.ts && tsx scripts/verify-preflight-params.ts && tsx scripts/verify-sse-poll.ts && tsx scripts/verify-detail-reconcile.ts && tsx scripts/verify-scene-canon.ts && tsx scripts/verify-candidate-stills.ts && tsx scripts/verify-crlf-safe.ts",
+    "verify:ui": "tsx scripts/verify-contrast.ts && tsx scripts/verify-css-coverage.ts && tsx scripts/verify-snap.ts && tsx scripts/verify-trim.ts && tsx scripts/verify-clipedit.ts && tsx scripts/verify-playhead.ts && tsx scripts/verify-scrub.ts && tsx scripts/verify-selection.ts && tsx scripts/verify-transitions.ts && tsx scripts/verify-layout.ts && tsx scripts/verify-resolutions.ts && tsx scripts/verify-export-perms.ts && tsx scripts/verify-f16-reset.ts && tsx scripts/verify-form-state.ts && tsx scripts/verify-save-state.ts && tsx scripts/verify-staged-write.ts && tsx scripts/verify-shot-rev.ts && tsx scripts/verify-load-state.ts && tsx scripts/verify-undo.ts && tsx scripts/verify-waveform.ts && tsx scripts/verify-virtual.ts && tsx scripts/verify-collapse.ts && tsx scripts/verify-appcast-channel.ts && tsx scripts/verify-bundled-fonts.ts && tsx scripts/verify-case-collision.ts && tsx scripts/verify-project-list.ts && tsx scripts/verify-image-compress.ts && tsx scripts/verify-preflight-params.ts && tsx scripts/verify-sse-poll.ts && tsx scripts/verify-detail-reconcile.ts && tsx scripts/verify-scene-canon.ts && tsx scripts/verify-candidate-stills.ts && tsx scripts/verify-crlf-safe.ts && tsx scripts/verify-draggeom.ts && tsx scripts/verify-attribute.ts && tsx scripts/verify-recutplan.ts",
     "ui:shot": "tsx scripts/ui-shot.ts"
   },
   "dependencies": {
