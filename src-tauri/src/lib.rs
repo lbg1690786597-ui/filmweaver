@@ -32,7 +32,10 @@ pub fn run() {
         // 给 JS：Windows 下那是 `\\?\C:\...` 的 verbatim 路径，直接用会导致
         // 后端 `open()`/`Path::new()` 判断异常。统一走 `normalize_path` 剥前缀。
         .on_window_event(|window, event| {
-            use tauri::Emitter;
+            // `Emitter` 给 `emit`，`Manager` 给 `state` —— 两个都要。`state` 是
+            // `Manager` 上的方法，漏掉这个导入时它**看起来**像是 `Window` 自己
+            // 没有这个方法（E0599 的报错就是这么说的），而不是"缺个 use"。
+            use tauri::{Emitter, Manager};
             if let tauri::WindowEvent::DragDrop(drag) = event {
                 // `Over` / `Leave` 没有路径 —— 前端只拿它们驱动落点提示的开合，
                 // 真正要用的路径在 `Enter` / `Drop` 里。
