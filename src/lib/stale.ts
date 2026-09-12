@@ -18,6 +18,10 @@ const BADGE: Record<StaleReason, string> = {
   rebreak: "需重拆",
   reprompt: "需重出提示词",
   regen: "待重生成",
+  // 3.11 R2：`recut` 划出来的中间段。它与 `regen` 是**同一档**（都不必重拆、
+  // 不必重出提示词，出片就能解决），但徽标得分开：用户看到"待重生成"会以为
+  // 是旁白时长变了那种，而这一段根本没有自己的画面，是从零开始出的。
+  recut: "待生成",
 };
 
 /** 兜底文案（老后端没有 stale_hint 时用）。措辞与后端 _LABEL 保持一致。 */
@@ -25,6 +29,7 @@ const HINT: Record<StaleReason, string> = {
   rebreak: "本集正文已修改，镜头切分已过期（需重新拆解本集）",
   reprompt: "本镜拆解已修改，提示词基于旧拆解（需重新生成提示词后再出片）",
   regen: "旁白时长已变，现有视频与新时长对不上（重新生成即可）",
+  recut: "这是你划定的区间，尚无对应的提示词（先看/改本镜依据，再重新生成）",
 };
 
 const FALLBACK_BADGE = "已过期";
@@ -42,9 +47,10 @@ export function staleHint(s: Pick<ShotInfo, "stale_reason" | "stale_hint">): str
 /**
  * 这镜（这集）需要**重新拆解**吗？
  *
- * 只有 rebreak 与老数据(null) 需要。reprompt/regen 重拆是过度施救：
+ * 只有 rebreak 与老数据(null) 需要。reprompt/regen/recut 重拆是过度施救：
  * 会把本集其它已调好的镜头连同已出的片一起冲掉。
  */
 export function needsRebreak(s: Pick<ShotInfo, "stale" | "stale_reason">): boolean {
-  return !!s.stale && s.stale_reason !== "reprompt" && s.stale_reason !== "regen";
+  return !!s.stale && s.stale_reason !== "reprompt"
+    && s.stale_reason !== "regen" && s.stale_reason !== "recut";
 }
