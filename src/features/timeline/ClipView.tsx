@@ -39,6 +39,18 @@ interface Props {
    *  mousemove/mouseup 生命周期在 Timeline 的 `beginMarquee` 里，
    *  这里再写一份必然与它漂移。 */
   onAltMouseDown?: (e: React.MouseEvent) => void;
+  /** 3.11 P1：主体按下时交给时间轴的指针状态机（拖到别的位置换 order）。
+   *
+   *  为什么它替代了原来的 `mousedown` 就开拖：指针状态机要能从**按下那一刻**
+   *  就拿到会话（`x0/y0`、该片段的槽位表、起点时长），而"点"与"拖"的分流
+   *  在它内部（4px 阈值）。片段这边只负责"按下"和"选中"两件事，
+   *  不判断到底是点还是拖 —— 判据只有一处（`DRAG_THRESHOLD_PX`）。
+   *
+   *  ⚠️ 它是 `pointerdown` 而不是 `mousedown`：WebView2 宿主吞掉的是 HTML5
+   *  拖放事件族（dragstart/dragover/drop），**不吞** pointer/mouse —— 但
+   *  pointer 一族还额外带着 `pointerId`（给 `setPointerCapture` 用），
+   *  所以新的通道一律走 pointer。见 pointerDrag.ts 头注释。 */
+  onPointerDownBody?: (e: React.PointerEvent) => void;
   pxPerSec: number;
   selected: boolean;
   /** 单镜时长上限（秒），仅用于 trim 手柄的提示文案。
@@ -58,11 +70,13 @@ interface Props {
   trackLocked: boolean;
   onSelect: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
-  onBeginMove: (e: React.MouseEvent) => void;
   onBeginTrim: (e: React.MouseEvent) => void;
   /** 3.1：拖左边缘修剪入点。只有已出片的镜头会渲染这个手柄。 */
   onBeginTrimIn?: (e: React.MouseEvent) => void;
   onDoubleClick: () => void;
+  /** 3.11 R1：点版本角标 → 打开检查器的版本区。
+   *  不传就不渲染角标（音频/字幕轨本就没有版本概念）。 */
+  onShowVersions?: (e: React.MouseEvent) => void;
 }
 
 function ClipViewInner(p: Props) {
@@ -108,14 +122,28 @@ function ClipViewInner(p: Props) {
   return (
     <div className={cls}
       style={{ left, width }}
+      data-shot-id={c.shotId ?? undefined}
       onMouseDown={(e) => {
         if (e.button !== 0) return;
         // Alt 一律交给时间轴统一处理：点 = 在此切一刀，拖 = 框选。
-        // 这里**不能**再走 onSelect/onBeginMove —— 否则 Alt+拖会变成
+        // 这里**不能**再走 onSelect/onPointerDownBody —— 否则 Alt+拖会变成
         // "选中并把这个片段拖走"，用户想框选却把素材挪了位置。
         if (e.altKey && p.onAltMouseDown) { p.onAltMouseDown(e); return; }
         p.onSelect(e);
-        if (!p.trackLocked) p.onBeginMove(e);
+      }}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        // Alt 起手是"点哪切哪 / 框选"，那个手势的整个生命周期在 Timeline
+        // 的 `beginMarquee` 里（它挂在 lane 的 onMouseDown 上）—— 这里
+        // 连 pointer 都不要再起一次，否则一次按下会同时开两套覆盖层。
+        if (e.altKey) return;
+        if (p.trackLocked) return;
+        // 3.11：抑制这次按下的**默认行为**（WebView2 里是"拖动选区 / 原生
+        // 图片拖拽"，Windows 上还会连带出指针样式闪烁）。CSS 的 `user-select:
+        // none` 挡的是选中结果，挡不住拖拽手势本身；而原生拖拽一旦起手，
+        // 指针事件流会被打断 —— 表现就是"拖到一半突然不动了"。
+        e.preventDefault();
+        p.onPointerDownBody?.(e);
       }}
       onContextMenu={p.onContextMenu}
       onDoubleClick={p.onDoubleClick}
@@ -172,6 +200,21 @@ function ClipViewInner(p: Props) {
             title={`已修剪：从素材第 ${c.clipInSec.toFixed(1)}s 起，取 ${c.durationSec.toFixed(1)}s`}>
             <Scissors size={9} />
           </span>
+        )}
+        {/* 3.11 R1：版本角标 —— 「重新生成」不覆盖旧版这件事的**唯一**主路径证据。
+            只在这一镜真有多个版本时出现（`> 1`）：1 版是常态，满屏的 `V1 · 1版`
+            会变成噪声，真出过的反而看不出来。
+            点它打开检查器版本区（App 那条 onShowVersions 路径），
+            所以这里要 stopPropagation —— 否则会先触发片段的选中/拖动。 */}
+        {!collapsed && c.entity === "shot" && (c.versionCount ?? 0) > 1
+          && p.onShowVersions && (
+          <button className="fw-clip-badge ver"
+            title={`共 ${c.versionCount} 个版本${c.currentVersion != null ? `，当前 V${c.currentVersion}` : ""}；点开可切回任意一版`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); p.onShowVersions!(e); }}>
+            V{c.currentVersion ?? "?"} · {c.versionCount}
+          </button>
         )}
       </div>
 
