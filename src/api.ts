@@ -296,6 +296,17 @@ export interface ShotInfo {
    *  channel=渠道或网络故障（值得重试）| other */
   fail_kind?: "moderation" | "channel" | "other" | null;
   adopted_version: number | null;
+  /**
+   * 3.11 R1：该镜的历史版本**总数**（含当前采用的那版）。
+   *
+   * 1 = 从没重新生成过。片段上的 `V3 · 3版` 角标读它，为的就是让"重新生成
+   * 不会覆盖旧版"这件事在**主操作路径上**看得见 —— 版本列表本来只挂在
+   * Inspector 里，而"右键→重新生成"根本不经过那里。
+   *
+   * 老后端（或老数据）不下发时是 undefined，按"不知道"处理：不画角标，
+   * 而不是画成 0 版（那是句谎话）。见 `shotToClip`。
+   */
+  version_count?: number;
   is_special: boolean;
   /** 拆解阶段预生成的提示词（"拆解镜头并生成提示词"第二阶段产物） */
   gen_prompt: string | null;
@@ -307,7 +318,7 @@ export interface ShotInfo {
    *           （出片时后端会自动弃用旧 gen_prompt、从 script_ref 重优化）
    *  regen    只是旁白时长变了 → 画面依据没变，**重出片即可**，出完自动清标记
    *  null     本字段上线前的老数据，原因未知，按最保守的 rebreak 提示 */
-  stale_reason?: "rebreak" | "reprompt" | "regen" | null;
+  stale_reason?: "rebreak" | "reprompt" | "regen" | "recut" | null;
   /** 后端按 stale_reason 出的那句人话（文案在后端，避免前后端各拼一份漂移）。
    *  老后端/老数据拿不到 → 回落 staleHint() 的兜底文案 */
   stale_hint?: string | null;
@@ -534,6 +545,21 @@ export interface SceneGroup {
     source: string;
     time_of_day: string | null;
     int_ext: string | null;
+  }[];
+}
+
+/** 角色归一字典里的一组（`listCharacterAliases`）。
+ *  与 `SceneGroup` 同构，少一个 shots 计数：角色出场镜头数前端已能从
+ *  `characters` 的排序里拿到，多查一遍是白查。 */
+export interface CharAliasGroup {
+  canonical: string;
+  members: {
+    raw_name: string;
+    /** manual = 用户改过（AI 重跑归一不会推翻）；ai/auto = 自动归一 */
+    source: string;
+    /** 人生阶段（少年/中年…）。同一人的不同时期归到同一 canonical，
+     *  靠它区分——归属时若文件名带阶段线索，走 AssetStage 而不是改主图 */
+    age_stage: string | null;
   }[];
 }
 
@@ -1231,6 +1257,34 @@ export const api = {
     post<{ ok: boolean; shot_id: string; order: number; duration: number }>(
       `/v2/shots/${headShotId}/unsplit`, { tail_shot_id: tailShotId }),
 
+  /** 3.11 R2：把一镜划成 A|B|C 三段，只有中间 B 段需要重新生成。
+   *
+   *  两个切点都是**镜内秒**（与 `splitShot` 的 `atSec` 同口径）。
+   *  后端会校验两侧边距与 B 段长度下限（下限按项目当前视频模型取），
+   *  不合法时返回 422 的 `detail` 文案，直接展示给用户即可。
+   *
+   *  ⚠️ 副作用是**这一镜变成三行**、后面所有镜头的 order 后移两位。
+   *  调用方必须 `refreshDetail()`，否则时间轴上看到的是错位的旧列表。 */
+  recutShot: (shotId: string, cutA: number, cutB: number) =>
+    post<{ ok: boolean; head_shot_id: string; mid_shot_id: string;
+           tail_shot_id: string;
+           head_duration: number; mid_duration: number; tail_duration: number;
+           min_duration: number }>(
+      `/v2/shots/${shotId}/recut`, { cut_a: cutA, cut_b: cutB }),
+
+  /** 3.11 R3：撤销一次 `recutShot`，把 A|B|C 合回原来那一镜。
+   *
+   *  必须传的是**中间段**的 id（画面上看起来"待生成"的那一段）。后端据它
+   *  反查 head / tail，并校验三行确实来自一次 recut，任一条不满足给 409 文案。
+   *
+   *  ⚠️ 中间段**一旦重新生成过就不能撤销**了（那是已付费的画面），此时后端
+   *  返回 409 而不是静默丢弃 —— 调用方应当把文案原样展示给用户，让他自己决定。
+   *
+   *  ⚠️ 与 `recutShot` 一样会改变 order（-2），调用后必须 `refreshDetail()`。 */
+  undoRecutShot: (headShotId: string, midShotId: string) =>
+    post<{ ok: boolean; shot_id: string; order: number; duration: number }>(
+      `/v2/shots/${headShotId}/undo-recut`, { mid_shot_id: midShotId }),
+
   /** 版本历史（R2 精编器回退面板，契约 C10） */
   shotVersions: (shotId: string) =>
     get<{ versions: { version_no: number; video_url: string | null; model_id: string | null; prompt: string | null; meta: Record<string, unknown> | null; created_at: string | null }[] }>(`/v2/shots/${shotId}/versions`),
@@ -1290,6 +1344,15 @@ export const api = {
   /** 服装解析报告（只读，花费闸门数据源：先报数，用户点了才出图） */
   costumeReport: (projectId: string) =>
     get<CostumeReport>(`/v2/projects/${projectId}/costume-report`),
+
+  /** 角色归一字典（只读）：同一角色的各种写法 + 角色清单。
+   *
+   *  与 `listScenes` 对称。3.11「上传素材自动归属」用它按**别名**认人——
+   *  `小陆.png` 得先知道 `小陆` 是「陆明」的别名才归得对。
+   *  `characters` 是已归一的角色清单（按出场镜头数降序），做前缀匹配的候选池。 */
+  listCharacterAliases: (projectId: string) =>
+    get<{ groups: CharAliasGroup[]; characters: string[] }>(
+      `/v2/projects/${projectId}/characters/aliases`),
 
   patchStage: (stageId: string, patch: Partial<Pick<StageInfo,
     "stage_name" | "ep_from" | "ep_to" | "shot_from" | "shot_to" | "description" | "image_url" | "status" | "location" | "scene_bound">>
