@@ -57,6 +57,14 @@ export interface Clip {
   mediaUrl?: string;       // 当前采用版本的视频
   thumbUrl?: string;
   label: string;           // 展示名（AI 镜头 = #order，外部素材 = special_name）
+  /**
+   * 3.11 R1：该镜的历史版本总数（后端 `version_count`）。1 = 从没重新生成过。
+   *
+   * 只有镜头有。它驱动的角标是"重新生成不覆盖"这件事**唯一**摆在主路径上的证据：
+   * 用户在时间轴上右键重新生成，画面变了，但他得能一眼看见"上一版还在"。
+   * `undefined` = 后端没下发（老数据），按不知道处理，不画角标。
+   */
+  versionCount?: number;
 
   // ---- 3.1 取片窗口（对应后端 clip_in_sec / clip_dur_sec）----
   /** 入点：从素材的第几秒开始取。undefined = 从头（未修剪过 / 未分割过）。
