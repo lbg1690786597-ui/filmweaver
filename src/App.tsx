@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api, APP_VERSION, JobOut, ShotInfo, sendQueuedWrite } from "./api";
 import type { TransformMeta, TransformPatchOpts } from "./api";
@@ -14,6 +14,7 @@ const TIER_LABEL: Record<QualityTier, string> = {
 };
 import { LibClip, fmtTime } from "./types";
 import LibraryPanel, { Tab as LibTab } from "./components/LibraryPanel";
+import type { AssetDropCtx } from "./features/assets/useAssetDrop";
 import ProjectList from "./components/ProjectList";
 import ShotAdvanced from "./components/ShotAdvanced";
 import FineCut from "./components/FineCut";
@@ -93,6 +94,8 @@ import {
 } from "./lib/filename";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useTimelineStore } from "./stores/timelineStore";
+import { useMediaPipeline } from "./hooks/useMediaPipeline";
+import { subscribeOsDrop, kindOfPath, baseNameOf, readDropped } from "./desktop/osDrop";
 import { useCommands } from "./commands";
 import { useEditorStore, LeftPanelTab } from "./stores/editorStore";
 import { useCanvasToolStore } from "./stores/canvasToolStore";
@@ -409,6 +412,14 @@ export default function App() {
           clearStages } = useStages(projectId, say);
   const [advancedShot, setAdvancedShot] = useState<ShotInfo | null>(null);
   const [fineCutOpen, setFineCutOpen] = useState(false);
+  /**
+   * 3.11 R1：检查器要"揭示"的节（`"versions"` = 版本区）。
+   *
+   * 时间轴片段上的版本角标点一下就置位；检查器滚过去后回调清成 null，
+   * 这样**重复点同一个角标**还能再滚一次 —— 不清的话值没变化，
+   * effect 依赖没变，第二次点就毫无反应。
+   */
+  const [inspReveal, setInspReveal] = useState<string | null>(null);
 
   // 生产 job 全部收尾时重拉造型阶段：服装识别 job 是**只写 asset_stages** 的，
   // refreshDetail 不含这张表，不重拉的话识别完资产页仍是旧的（看着像没生效）。
@@ -478,6 +489,37 @@ export default function App() {
 
   // ---- 素材层（P1-3 素材池落库）----
   const { libClips, deleteClip, renameClip, addClips, clearClips } = useLibClips(projectId, say);
+
+  // ---- 系统拖入（3.11 P0-b）----
+  // 宿主拖放开着（用户点名必需），所以页内 DnD 全废、只有这条通道能拿到
+  // 资源管理器里的文件。走**与面板上传同一个** useMediaPipeline：
+  // 图片传到一半会被归属面板接手，视频/音频直接落素材池。
+  // 归属面板是全局单例（同上），MediaPanel / LibraryPanel 里各有一个实例，
+  // 但它们同一时刻只会有一个开着，重叠时后者覆盖前者，不会有两个弹窗。
+  const osPipeline = useMediaPipeline({
+    projectId: projectId ?? "", onToast: say, onAddClips: addClips,
+    onRemoveClips: (ids) => { for (const id of ids) deleteClip(id); },
+    assets: detail?.assets ?? [],
+    onAssetsChanged: () => { refreshStages(); refreshDetail(); },
+  });
+  useEffect(() => {
+    return subscribeOsDrop(async (e) => {
+      // `over` 在拖动过程中高频触发，且我们不需要它（光标样式由宿主给）。
+      // 不挡掉的话每次都会 setState 重渲染整棵编辑器树。
+      if (e.kind !== "drop" || !e.paths.length) return;
+      const files: File[] = [];
+      const bad: string[] = [];
+      for (const p of e.paths) {
+        // clipKind 认不出的扩展名归 "other" —— 这种不要读（可能是 .exe/.txt），
+        // 也不该悄悄传上去占一份存储。
+        if (kindOfPath(p) === "other") { bad.push(baseNameOf(p)); continue; }
+        try { files.push(await readDropped(p)); }
+        catch (err) { bad.push(`${baseNameOf(p)}（${String(err).slice(0, 40)}）`); }
+      }
+      if (bad.length) say(`⚠️ ${bad.length} 个文件没能读入：${bad[0]}`);
+      if (files.length) await osPipeline.uploadFiles(files);
+    });
+  }, [osPipeline.uploadFiles]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- 面板尺寸拖拽已移入 EditorLayout（Phase 1）；此处只留 dock 最大化状态 ----
   // ---- 版块最大化（⛶ / Esc 还原）----
@@ -1929,9 +1971,37 @@ export default function App() {
 
   /** Phase 1/3 过渡：旧 LibraryPanel 承担剧本/资产/镜头三个 Tab
    *  （它内部按 tab 切内容）。Phase 4 会拆成三个独立面板后删除此块。 */
+  /** 资产卡拖到轨道上的落点上下文（3.11 P1）。
+   *
+   *  在 App 里组装：`pxPerSec`（缩放）与 `offsetMap`（镜头起始秒）都是
+   *  **时间轴侧**的事实，侧栏自己算不出来。
+   *
+   *  `pxPerSec` 是**取快照**而不是订阅 store：订阅的话每次缩放都会重建
+   *  context，而且重建发生在拖动**之前**——真正危险的是"拖动中途换口径"，
+   *  那会让落点在松手那一刻跳掉。拖动期间没人会去滚缩放轮（指针按着呢），
+   *  所以快照在两次拖动之间必然是最新的，且全程稳定。
+   *
+   *  依赖里带 `detail`：`refreshDetail()` 之后镜头集合可能整批换（重新拆解），
+   *  旧的 offsetMap 会把资产注进错误的镜头。
+   */
+  const assetDropCtx = useMemo<AssetDropCtx | undefined>(() => {
+    if (!projectId) return undefined;
+    return {
+      projectId,
+      shots,
+      offsetMap: buildOrderOffsetMap(shots),
+      pxPerSec: useTimelineStore.getState().pxPerSec,
+      onToast: say,
+      onPushUndo: pushUndo,
+      onChanged: () => void refreshDetail(),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, shots, detail]);
+
   const legacyPanel = (
     <LibraryPanel
       projectId={projectId}
+      mediaPipeline={osPipeline}
       clips={libClips}
       onAddClips={addClips}
       onAddToTimeline={addToTimeline}
@@ -1964,6 +2034,7 @@ export default function App() {
       onCostumeScan={doCostumeScan}
       tab={libTab}
       onTabChange={(t) => setLeftTab(LIB_TO_RAIL[t])}
+      assetDropCtx={assetDropCtx}
       hideTabs
     />
   );
@@ -2196,6 +2267,47 @@ export default function App() {
     } catch (e) { say(String(e)); }
   };
 
+  /** 3.11 R3 局部重生成：把一镜划成 A|B|C，只有中间 B 段需要重新生成。
+   *
+   *  `cutA` / `cutB` 都是**镜内秒**（与 `doSplit` 的 `atSec` 同口径）。
+   *
+   *  这里只做"划一刀"，**不顺手触发生成** —— 那是烧钱动作，永远由用户单独点。
+   *  划完之后 B 段在轨道上是一块 pending 的空段，用户看过时间轴确认位置对了，
+   *  再走常规的「生成」入口。
+   *
+   *  撤销走 `undoRecutShot`（不是 `unsplitShot`）：B 段从定义上就没有画面，
+   *  unsplit 的 url 守卫会把它拦下，且合出来的镜头会凭空继承 A 的画面。
+   *  撤销是**不可逆**的 —— 一旦用户点了撤销，A|B|C 的三行已经没了，
+   *  重做只能重新划一次，所以 redo 走 `recutShot` 重放同样的两个切点。 */
+  const doRecut = async (shotId: string, cutA: number, cutB: number) => {
+    try {
+      const r = await api.recutShot(shotId, cutA, cutB);
+      await refreshDetail();
+      say(`已划出待重生成区间：${r.head_duration}s 保留 · `
+        + `${r.mid_duration}s 待生成 · ${r.tail_duration}s 保留`);
+      pushUndo(`划出待重生成区间（${r.mid_duration}s）`,
+        async () => {
+          await api.undoRecutShot(r.head_shot_id, r.mid_shot_id);
+          await refreshDetail();
+        },
+        async () => {
+          await api.recutShot(r.head_shot_id, cutA, cutB);
+          await refreshDetail();
+        });
+    } catch (e) { say(String(e)); }
+  };
+
+  /** 撤销一次划分。独立于撤销栈的入口：用户划错了区间想立刻退回去，
+   *  不必先找到撤销按钮 —— 而且在时间轴上 B 段已经是一行独立的镜头，
+   *  右键它就能退回去是最自然的路径。 */
+  const doUndoRecut = async (headShotId: string, midShotId: string) => {
+    try {
+      const r = await api.undoRecutShot(headShotId, midShotId);
+      await refreshDetail();
+      say(`已合回一段（${r.duration}s）`);
+    } catch (e) { say(String(e)); }
+  };
+
   /** 音频面板：「音频」与「AI 配音」两个 Rail 入口共用同一实例，
    *  不做第二套 UI —— 同一能力两处实现必然漂移。 */
   const audioPanel = (
@@ -2257,6 +2369,7 @@ export default function App() {
             media: (
               <MediaPanel
                 projectId={projectId}
+                mediaPipeline={osPipeline}
                 clips={libClips}
                 shots={shots}
                 inserting={insertingClip}
@@ -2265,6 +2378,9 @@ export default function App() {
                 onPreview={(c) => previewMedia(c.url, c.name)}
                 onDeleteClip={deleteClip}
                 onRenameClip={renameClip}
+                assets={detail?.assets ?? []}
+                onAssetsChanged={() => { refreshStages(); refreshDetail(); }}
+                onRemoveClips={(ids) => { for (const id of ids) deleteClip(id); }}
                 onToast={say} />
             ),
             audio: audioPanel,
@@ -2438,6 +2554,10 @@ export default function App() {
             onClose={() => setAssetRun(null)} />
         ) : (
           <Inspector
+          /* 3.11 R1：版本角标点进来时，检查器先翻到 AI 页签再滚到版本区。
+             滚完清位 —— 否则再点同一个角标值没变化，effect 不触发。 */
+          revealSec={inspReveal}
+          onRevealed={() => setInspReveal(null)}
           shot={inspectorShot}
           /* 5.6：马赛克关键帧要知道播放头在**本镜**的哪一秒。
              播放头不在检查器这一镜上时给 null —— 面板据此禁用菱形按钮，
@@ -2529,6 +2649,8 @@ export default function App() {
           onPatchTransform={(sid, patch) => { void doPatchTransform(sid, patch); }}
           onSplit={doSplit}
           onSplitAtPlayhead={splitAtPlayhead}
+          onRecut={(id, a, b) => { void doRecut(id, a, b); }}
+          onUndoRecut={(head, mid) => { void doUndoRecut(head, mid); }}
           onDropClip={(c) => { void addToTimeline(c as LibClip); }}
           onMoveTrack={(id, idx, st) => { void doMoveTrack(id, idx, st); }}
           onPushUndo={pushUndo}
@@ -2664,6 +2786,10 @@ export default function App() {
               onToast={say}
               onClose={() => setSettingsOpen(false)} />
           )}
+
+          {/* 归属确认面板：由 App 顶层的上传管道持有（它同时服务系统拖入）。
+              面板自己那份只在没被传 pipeline 时才会用到，正常路径下这里是唯一实例。 */}
+          {osPipeline.attributionDialog}
         </>
       }
     />
