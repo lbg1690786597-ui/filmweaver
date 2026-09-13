@@ -1,0 +1,135 @@
+/* UndoHistoryPanel.css — 撤销历史面板（C3）
+   token 一律取自 styles/tokens.css（--c-raised / --c-border / --fs-sm …），
+   不新造名字：主题切换（深/浅两套）与 --fs-scale 字号缩放全靠这些变量兜住。 */
+
+.fw-uh { position: relative; flex-shrink: 0; }
+
+/* 面板开着时按钮保持"按下去"的样子，避免用户以为没点上 */
+.fw-uh-trigger.on { background: var(--c-active); color: var(--c-text-hi); }
+
+/* 点面板外关闭。⚠️ 透明但**必须能吃点击**（background: transparent 而不是
+   pointer-events: none）—— 否则点外面等于点在时间轴上，会顺手改掉选中集，
+   而用户的本意只是把这个面板收起来。 */
+.fw-uh-mask { position: fixed; inset: 0; z-index: 480; background: transparent; }
+
+.fw-uh-pop {
+  position: absolute;
+  /* 顶栏高度 + 一点缝。刻意不引用 EditorLayout 的高度变量：
+     那会多一条"改顶栏高度要记得改这里"的耦合，而对不上时只是缝隙宽窄变化。 */
+  top: 38px;
+  left: 0;
+  z-index: 490;
+  width: 380px;
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-raised);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 8px 32px oklch(0% 0 0 / 0.5);
+  overflow: hidden;
+}
+
+.fw-uh-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--c-border);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--c-text-hi);
+}
+.fw-uh-count { font-size: var(--fs-xs); font-weight: 400; color: var(--c-muted); }
+
+.fw-uh-body { max-height: 46vh; overflow-y: auto; padding: var(--sp-1) 0; }
+
+.fw-uh-empty {
+  padding: var(--sp-4) var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--c-muted);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.fw-uh-sep {
+  padding: var(--sp-1) var(--sp-3) 2px;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+}
+
+.fw-uh-more {
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  text-align: center;
+}
+
+.fw-uh-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 6px var(--sp-3);
+  border: none;
+  background: transparent;
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--t-fast);
+}
+.fw-uh-item:hover { background: color-mix(in oklch, var(--c-accent) 14%, transparent); }
+.fw-uh-item.redo { color: var(--c-text-hi); }
+/* "还不能点"的重做行：压暗但仍可点 —— 点了会弹一句为什么
+   （"要从最近的一条开始重做"），比光标变 not-allowed 却毫无反馈有用。 */
+.fw-uh-item.dim { opacity: 0.45; }
+
+/* 栈顶那条 = 下一次 Ctrl+Z 会撤掉的那条。给它一条**常显**的左标，
+   用户一眼就能看到"再撤一步是撤什么"（记忆里最想确认的就是这一条）。 */
+.fw-uh-item.cur {
+  background: color-mix(in oklch, var(--c-accent) 10%, transparent);
+  box-shadow: inset 2px 0 0 var(--c-accent);
+}
+
+.fw-uh-ico { display: flex; color: var(--c-muted); flex-shrink: 0; }
+.fw-uh-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fw-uh-lock { display: flex; color: var(--c-muted); flex-shrink: 0; }
+.fw-uh-kind {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-sm);
+  padding: 0 4px;
+}
+.fw-uh-ago {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  min-width: 56px;
+  text-align: right;
+}
+.fw-uh-steps {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  min-width: 44px;
+  text-align: right;
+}
+.fw-uh-item:hover .fw-uh-steps { color: var(--c-accent); }
+
+.fw-uh-foot {
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--c-border);
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  line-height: 1.5;
+}
