@@ -19,6 +19,14 @@ import { isUnreachable } from "./appGate";
 import { offlineWriteHint } from "./outbox";
 import { noteRequestOk, noteRequestFailed } from "./backendReach";
 import { noteFailedWrite } from "./outboxStore";
+import { fetchWithTimeout, API_TIMEOUT_MS } from "./fetchTimeout";
+
+/** 文件上传的时限。**刻意比 `API_TIMEOUT_MS` 宽得多**：素材图几 MB、
+ *  剧本文件几百 KB，弱网下十几秒传不完是正常的，用 JSON 接口那 15 秒去掐
+ *  等于把"传得慢"报成"后端挂了"，还会把这一笔塞进离线补发队列
+ *  （队列里存的是 body 字符串，一个被掐断的上传补发出去也是残缺的）。
+ *  取 5 分钟：正常上传都在这个量级内，真正"连得上但不应答"的挂死仍会被兜住。 */
+export const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 export const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
@@ -59,7 +67,11 @@ export async function fetchTracked(url: string, init?: RequestInit): Promise<Res
     // 非跟踪请求（GET、以及豁免名单里的上传）不计入保存状态，
     // 但它们照样是"后端还在不在"的证据，可达性该报还是要报。
     try {
-      const resp = await fetch(url, init);
+      // 2026-09-12：套读超时。**上传豁免名单不受它影响** ——
+      // 这里是同一份 `isTrackedWrite` 为假的分支，里面既有 GET（要超时）
+      // 也有大文件上传（不要超时），两者必须分开给时限。
+      const resp = await fetchWithTimeout(
+        url, init, UNTRACKED_WRITE_PATHS.some((p) => url.includes(p)) ? UPLOAD_TIMEOUT_MS : API_TIMEOUT_MS);
       noteRequestOk();
       return resp;
     } catch (e) {
@@ -71,7 +83,10 @@ export async function fetchTracked(url: string, init?: RequestInit): Promise<Res
   const { beginWrite, endWrite } = useSaveState.getState();
   beginWrite();
   try {
-    const resp = await fetch(url, init);
+    // 超时抛的是 TypeError（见 lib/fetchTimeout.ts 文件头），
+    // 于是下面的 `isUnreachable(e)` 为真 → 既报离线、也进补发队列，
+    // 与真正的断网走同一条路。
+    const resp = await fetchWithTimeout(url, init, API_TIMEOUT_MS);
     if (!resp.ok) {
       // 只读状态码，不消费 body —— body 归调用方读（Response 只能读一次）
       endWrite(new SaveHttpError(resp.status, `${resp.status}`));
