@@ -5,11 +5,17 @@ import {
   useLoadState, describeLoadError, LOAD_LABELS,
 } from "../stores/loadStateStore";
 import type { SubtitleStyleLike } from "../lib/subtitleStyle";
+import { useProjectStore } from "../stores/projectStore";
+
+/** 稳定空数组：`?? []` 每次渲染换引用，会打穿下游 useMemo */
+const EMPTY_SHOTS: ShotInfo[] = [];
 
 interface Props {
   projectId: string;
-  baseAspect: string;              // 项目画幅基准（导出默认继承）
-  shots: ShotInfo[];               // 已有视频的镜头（按 order）
+  // B2（2026-09-11）：`baseAspect` / `shots` 都来自项目 detail，改从 store 自取；
+  // 保留为可选只为脱离 App 单独挂载本组件。
+  baseAspect?: string;             // 项目画幅基准（导出默认继承）
+  shots?: ShotInfo[];              // 已有视频的镜头（按 order）
   onClose: () => void;
   onRegenerate: (shotIds: string[]) => void;   // 回云端重生成（只重视频档）
   onToast: (m: string) => void;
@@ -25,7 +31,11 @@ interface CutState { inSec: number; durSec?: number }
  *  完全不通——同一个项目会有两套互相不认识的字幕，导出走哪条全看用户点了哪个
  *  按钮。现在统一读字幕轨生成的 SRT，编辑入口只有「文本」面板一处。 */
 export default function FineCut(p: Props) {
-  const clips = p.shots.filter((s) => s.video_url);
+  // B2：画幅与镜头列表从 store 订阅。显式传入时以传入为准。
+  const d = useProjectStore((s) => s.detail);
+  const baseAspect = p.baseAspect !== undefined ? p.baseAspect : (d?.base_aspect ?? "");
+  const shots = p.shots ?? d?.shots ?? EMPTY_SHOTS;
+  const clips = shots.filter((s) => s.video_url);
   const [idx, setIdx] = useState(0);                       // 当前播放的镜头序号
   const [cuts, setCuts] = useState<Record<string, CutState>>({});
   const [srt, setSrt] = useState("");
@@ -101,8 +111,8 @@ export default function FineCut(p: Props) {
       inSec: cuts[s.id]?.inSec || undefined,
       durSec: cuts[s.id]?.durSec || undefined,
     }));
-    const [w, h] = p.baseAspect === "16:9" ? [1920, 1080]
-      : p.baseAspect === "1:1" ? [1080, 1080] : [1080, 1920];
+    const [w, h] = baseAspect === "16:9" ? [1920, 1080]
+      : baseAspect === "1:1" ? [1080, 1080] : [1080, 1920];
     try {
       const out = await localRender(p.projectId, renderClips, {
         width: w, height: h, fps: 30,
@@ -124,7 +134,7 @@ export default function FineCut(p: Props) {
       <div className="finecut" onClick={(e) => e.stopPropagation()}>
         <div className="board-head">
           <span className="tl-title">🎞 精编器</span>
-          <span className="muted">{clips.length} 镜 · 画幅 {p.baseAspect}</span>
+          <span className="muted">{clips.length} 镜 · 画幅 {baseAspect}</span>
           <span style={{ flex: 1 }} />
           <button className="btn primary" disabled={!!rendering || !clips.length} onClick={doExport}>
             {rendering || "💻 导出成片"}
