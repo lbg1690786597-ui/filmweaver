@@ -28,8 +28,12 @@ import { api } from "../../api";
 import type { ShotInfo, StageInfo, LocationInfo, AssetInfo, AssetDragData } from "../../api";
 import ContextMenu, { MenuItem } from "../../components/ContextMenu/ContextMenu";
 import { injectAssetIntoShot, replaceRunImage } from "./injectAsset";
+import type { CommandDraft } from "../../lib/command";
 import { inSpan } from "../timeline/virtual";
 import type { SpanRange } from "../timeline/virtual";
+// 3.12（F1）：资产段的三个手势（拖左边缘 / 拖右边缘 / 拖整段）与时间轴共用同一层
+// —— 统一走 Pointer Events，拖动期间直接写 DOM 几何，见 gesture.ts 头注释。
+import { beginGesture, stylePreview } from "../timeline/gesture";
 import "./AssetTrack.css";
 
 export type AssetTrackKind = "character" | "location" | "reference";
@@ -91,9 +95,8 @@ interface Props {
   onChanged: () => void;
   /** 3.7：redo 现在是**必传**的。缺了它 useUndo 会塞一个只弹
    *  「暂不支持重做」的桩，重做按钮亮着却点了没反应。 */
-  onPushUndo: (
-    label: string, undo: () => Promise<void>, redo: () => Promise<void>,
-  ) => void;
+  /** C2：改收 `CommandDraft`（见 injectAsset.ts 的同名参数注释） */
+  onPushUndo: (draft: CommandDraft) => void;
   onToast: (m: string) => void;
   onSelectRun: (run: AssetRun & { rowName: string; kind: AssetTrackKind }) => void;
   onRegenerate: (shotIds: string[]) => void;
@@ -198,47 +201,73 @@ export default function AssetTrack(p: Props) {
     try {
       await api.refOverrides(p.projectId, row.name,
         { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-      p.onPushUndo(`「${row.name}」生效范围 #${oldFrom}-#${oldTo} → #${nf}-#${nt}`,
-        async () => {
+      p.onPushUndo({
+        label: `「${row.name}」生效范围 #${oldFrom}-#${oldTo} → #${nf}-#${nt}`,
+        kind: "asset",
+        // 生效范围动的是**一批**镜头（新范围内加进去的 + 旧范围里被移出的），
+        // 两类都塞进 affected —— 这正是不用 order 区间、用 uid 列表的理由：
+        // 区间在两个方向上不是同一批镜头。
+        affected: { shots: [...addIds, ...removeIds] },
+        unrun: async () => {
           await api.refOverrides(p.projectId, row.name,
             { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
           p.onChanged();
         },
-        async () => {
+        run: async () => {
           await api.refOverrides(p.projectId, row.name,
             { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
           p.onChanged();
-        });
+        },
+      });
       p.onToast(`「${row.name}」生效范围改为 #${nf}-#${nt}`);
       p.onChanged();
     } catch (e) { p.onToast(String(e)); }
   };
 
-  const beginEdgeDrag = (e: React.MouseEvent, row: AssetRow, run: AssetRun, edgeKind: "from" | "to") => {
+  const beginEdgeDrag = (e: React.PointerEvent, row: AssetRow, run: AssetRun, edgeKind: "from" | "to") => {
     e.preventDefault(); e.stopPropagation();
     if (run.locked) { p.onToast(`「${row.name}」该造型已确认，先解锁再调整`); return; }
+    // 时间原点是这条 lane：段的 left/width 都是 `order → 秒 × pxPerSec` 算出来的，
+    // 用 lane 的左边缘当 0 才对得上（拿段自己当原点会整体错一段）。
+    const self = e.currentTarget as HTMLElement;
+    const lane = self.closest<HTMLElement>(".fw-at-lane") ?? self.parentElement;
+    const el = self.closest<HTMLElement>(".fw-at-run");
+    if (!lane || !el) return;
+    const box = lane.getBoundingClientRect();
+    const left0 = parseFloat(el.style.left) || 0;      // 段的静态左边缘（px）
+    const width0 = parseFloat(el.style.width) || 0;    // 段的静态宽度（px）
+    // 手柄在段上的位置：拖左边缘时指针挨着段的左边，拖右边缘挨着右边。
+    // 用「指针 → 这一侧边缘」的距离算，段就会**贴着指针**走，而不是按格跳。
+    const grabOffset = edgeKind === "from"
+      ? e.clientX - (box.left + left0)
+      : e.clientX - (box.left + left0 + width0);
+    const pv = stylePreview(el);
     let latest = edgeKind === "from" ? run.from : run.to;
-    setEdge({ runId: run.id, edge: edgeKind, order: latest });
-    document.body.style.cursor = "ew-resize";
-    const onMove = (ev: MouseEvent) => {
-      const lane = (e.target as HTMLElement).closest(".fw-at-lane");
-      if (!lane) return;
-      const r = lane.getBoundingClientRect();
-      const sec = Math.max(0, (ev.clientX - r.left) / p.pxPerSec);
-      const o = secToOrder(sec);
-      if (o == null || o === latest) return;
-      latest = o;
-      setEdge({ runId: run.id, edge: edgeKind, order: o });
-    };
-    const onUp = () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setEdge(null);
-      void applyEdge(row, run, edgeKind, latest);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginGesture(e.nativeEvent, {
+      cursor: "ew-resize",
+      onFrame: (g) => {
+        const edgePx = g.clientX - grabOffset - box.left;
+        const sec = Math.max(0, edgePx / p.pxPerSec);
+        const o = secToOrder(sec);
+        // ① 跟手：每次都直接写几何，不等任何 state。
+        if (edgeKind === "from") {
+          const w = Math.max(6, left0 + width0 - edgePx);
+          pv.widthPx(w, w > 6 ? edgePx - left0 : 0);
+        } else {
+          pv.widthPx(Math.max(6, edgePx - left0));
+        }
+        // ② 离散的那部分（落点提示 + 松手提交用哪个 order）才碰 React。
+        if (o == null || o === latest) return;
+        latest = o;
+        setEdge({ runId: run.id, edge: edgeKind, order: o });
+      },
+      onCommit: async () => {
+        const cur = edgeKind === "from" ? run.from : run.to;
+        if (latest === cur) return;              // 没落到别的镜头边界，什么都不发
+        await applyEdge(row, run, edgeKind, latest);
+      },
+      onSettle: () => { pv.reset(); setEdge(null); },
+    });
   };
 
   // ---- 拖资产卡片进轨道 → 在落点镜头注入 ----
@@ -289,15 +318,19 @@ export default function AssetTrack(p: Props) {
     const isLoc = p.kind === "location";
     try {
       await api.refOverrides(p.projectId, row.name, { removeShotIds: ids, isLocation: isLoc });
-      p.onPushUndo(`删除「${row.name}」#${run.from}-#${run.to} 注入段`,
-        async () => {
+      p.onPushUndo({
+        label: `删除「${row.name}」#${run.from}-#${run.to} 注入段`,
+        kind: "asset",
+        affected: { shots: ids },
+        unrun: async () => {
           await api.refOverrides(p.projectId, row.name, { addShotIds: ids, isLocation: isLoc });
           p.onChanged();
         },
-        async () => {
+        run: async () => {
           await api.refOverrides(p.projectId, row.name, { removeShotIds: ids, isLocation: isLoc });
           p.onChanged();
-        });
+        },
+      });
       p.onToast(`已删除「${row.name}」#${run.from}-#${run.to} 注入段（Ctrl+Z 可撤销）`);
       p.onChanged();
     } catch (e) { p.onToast(String(e)); }
@@ -345,66 +378,83 @@ export default function AssetTrack(p: Props) {
   };
 
   // ---- 整段平移（按住段身拖动）----
-  const beginMoveRun = (e: React.MouseEvent, row: AssetRow, run: AssetRun) => {
+  //
+  // 3.12（F1）：改走 `beginGesture`。旧版有三个毛病，而且这个手势是三个里最差的
+  // —— 它**一个像素的预览都没有**：`onMove` 里只算出 `delta` 然后改光标，
+  // 段全程钉在原地，松手才"啪"地跳过去。用户原话就是"拖动时看不到拖动位置，
+  // 松手时素材块会突然移动到松手的位置"。
+  //
+  // 现在：段直接跟着指针 `transform` 走（`stylePreview`），落点仍吸附到真实
+  // 镜头边界 —— 提交用的 `delta` 一直是**吸附后**的值，不会把段拖到半格上。
+  const beginMoveRun = (e: React.PointerEvent, row: AssetRow, run: AssetRun) => {
     if (run.locked) return;
     // 只在段身（非边缘手柄）按下时触发
     if ((e.target as HTMLElement).classList.contains("fw-at-edge")) return;
     const lane = (e.currentTarget as HTMLElement).parentElement;
+    const el = e.currentTarget as HTMLElement;
     if (!lane) return;
-    const startX = e.clientX;
+    const box = lane.getBoundingClientRect();
+    // 指针按住的位置相对**段左边缘**的偏移：拖动时保持它不变，段才"粘"在手上
+    const grabOffset = e.clientX - box.left - (parseFloat(el.style.left) || 0);
     const span = run.to - run.from;
+    const startSec = p.offsetMap.get(run.from) ?? 0;
+    // 提交用：跨了几个镜头。只认**吸附后**的变化，所以拖半格不会提交。
     let delta = 0;
     let moved = false;
-    const onMove = (ev: MouseEvent) => {
-      const dxSec = (ev.clientX - startX) / p.pxPerSec;
-      // 位移换算成"跨了几个镜头"：用平均镜头时长估，落点仍吸附到真实 order
-      const startSec = (p.offsetMap.get(run.from) ?? 0) + dxSec;
-      const target = secToOrder(Math.max(0, startSec));
-      if (target == null) return;
-      const d = target - run.from;
-      if (d === delta) return;
-      delta = d;
-      moved = true;
-      document.body.style.cursor = "grabbing";
-    };
-    const onUp = async () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      if (!moved || delta === 0) return;
-      const nf = Math.max(1, run.from + delta);
-      const nt = nf + span;
-      const addIds: string[] = [], removeIds: string[] = [];
-      for (let o = run.from; o <= run.to; o++) {
-        const sh = orderToShot.get(o);
-        if (sh && (o < nf || o > nt)) removeIds.push(sh.id);
-      }
-      for (let o = nf; o <= nt; o++) {
-        const sh = orderToShot.get(o);
-        if (sh && !sh.is_special && (o < run.from || o > run.to)) addIds.push(sh.id);
-      }
-      if (!addIds.length && !removeIds.length) return;
-      const isLoc = p.kind === "location";
-      try {
-        await api.refOverrides(p.projectId, row.name,
-          { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-        p.onPushUndo(`平移「${row.name}」#${run.from}-#${run.to} → #${nf}-#${nt}`,
-          async () => {
-            await api.refOverrides(p.projectId, row.name,
-              { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
-            p.onChanged();
-          },
-          async () => {
-            await api.refOverrides(p.projectId, row.name,
-              { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-            p.onChanged();
+    const pv = stylePreview(el);
+    beginGesture(e.nativeEvent, {
+      onFrame: (g) => {
+        const px = g.clientX - box.left - grabOffset;      // 段左边缘**想**在的 px
+        const sec = Math.max(0, px / p.pxPerSec);
+        const target = secToOrder(sec);
+        if (target == null) return;
+        const d = target - run.from;
+        // ① 跟手：位移直接写 transform，不等 state、不量化到"格"。
+        pv.shiftPx(((p.offsetMap.get(run.from + d) ?? startSec) - startSec) * p.pxPerSec);
+        // ② 离散部分：只有真的跨了一格才记，提交与 toast 都用它。
+        if (d !== delta) { delta = d; moved = true; }
+      },
+      onCommit: async () => {
+        if (!moved || delta === 0) return;
+        const nf = Math.max(1, run.from + delta);
+        const nt = nf + span;
+        const addIds: string[] = [], removeIds: string[] = [];
+        for (let o = run.from; o <= run.to; o++) {
+          const sh = orderToShot.get(o);
+          if (sh && (o < nf || o > nt)) removeIds.push(sh.id);
+        }
+        for (let o = nf; o <= nt; o++) {
+          const sh = orderToShot.get(o);
+          if (sh && !sh.is_special && (o < run.from || o > run.to)) addIds.push(sh.id);
+        }
+        if (!addIds.length && !removeIds.length) return;
+        const isLoc = p.kind === "location";
+        try {
+          await api.refOverrides(p.projectId, row.name,
+            { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
+          p.onPushUndo({
+            label: `平移「${row.name}」#${run.from}-#${run.to} → #${nf}-#${nt}`,
+            kind: "asset",
+            affected: { shots: [...addIds, ...removeIds] },
+            unrun: async () => {
+              await api.refOverrides(p.projectId, row.name,
+                { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
+              p.onChanged();
+            },
+            run: async () => {
+              await api.refOverrides(p.projectId, row.name,
+                { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
+              p.onChanged();
+            },
           });
-        p.onToast(`「${row.name}」已平移到 #${nf}-#${nt}`);
-        p.onChanged();
-      } catch (err) { p.onToast(String(err)); }
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+          p.onToast(`「${row.name}」已平移到 #${nf}-#${nt}`);
+          p.onChanged();
+        } catch (err) { p.onToast(String(err)); }
+      },
+      // ⚠️ 预览要挂到 `onChanged()` 把新数据渲进 DOM 之后才撤（这正是
+      // `onSettle` 的语义）。顺序反了的话，段会先弹回旧位置再跳到新位置。
+      onSettle: () => { pv.reset(); },
+    });
   };
 
   const menuItems = (row: AssetRow, run: AssetRun): MenuItem[] => {
@@ -509,7 +559,7 @@ export default function AssetTrack(p: Props) {
                   data-run-stage-name={run.stageName ?? ""}
                   data-run-image={run.imageUrl ?? ""}
                   onClick={() => p.onSelectRun({ ...run, from, to, rowName: row.name, kind: p.kind })}
-                  onMouseDown={(e) => { if (e.button === 0) beginMoveRun(e, row, run); }}
+                  onPointerDown={(e) => { if (e.button === 0) beginMoveRun(e, row, run); }}
                   onDragOver={(e) => {
                     if (e.dataTransfer.types.includes("application/x-fw-asset")) {
                       e.preventDefault(); e.stopPropagation();
@@ -531,10 +581,10 @@ export default function AssetTrack(p: Props) {
                   {/* 左右边缘手柄：改生效范围 */}
                   <span className="fw-at-edge left"
                     title="拖动改变生效起点（吸附到镜头边界）"
-                    onMouseDown={(e) => beginEdgeDrag(e, row, run, "from")} />
+                    onPointerDown={(e) => beginEdgeDrag(e, row, run, "from")} />
                   <span className="fw-at-edge right"
                     title="拖动改变生效终点（吸附到镜头边界）"
-                    onMouseDown={(e) => beginEdgeDrag(e, row, run, "to")} />
+                    onPointerDown={(e) => beginEdgeDrag(e, row, run, "to")} />
                 </div>
               );
             })}
