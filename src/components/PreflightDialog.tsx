@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, CostumeReport, Readiness } from "../api";
 import { videoModelLabel, imageModelLabel, genModeLabel, productionModeLabel } from "../lib/modelLabels";
 import { ASPECTS, resListOf, resOfTier, tierLabel } from "../lib/resolutions";
+import { useProjectStore } from "../stores/projectStore";
 
 /** 出片前二次确认弹窗（「▷ 一键成片」「▶ 全部生成视频」「🎬 批量首帧」共用）。
  *
@@ -22,7 +23,9 @@ interface Props {
   projectId: string;
   /** film=一键成片全链路（拆解→资产→首帧→片段→拼接）；videos=只出片；frames=只出首帧 */
   mode: "film" | "videos" | "frames";
-  /** 项目是否已有剧本（film 模式下没剧本无法开跑） */
+  /** 项目是否已有剧本（film 模式下没剧本无法开跑）
+   *  B2（2026-09-11）：以下三个 detail 字段改从 store 自取，
+   *  显式传入（含 `false` / `null`）时以传入为准，便于脱离 App 单独挂载。 */
   hasScript?: boolean;
   /** 剧型（drama/narration）。解说剧要在这里显示并可直接设解说音色—— */
   productionMode?: string | null;
@@ -84,6 +87,12 @@ const STAGES: { key: string; label: string; pct: number; hint?: string }[] = [
  * 很远，用户按它安排时间只会被误导。进度条与阶段标签是真实反馈，不需要假承诺。 */
 
 export default function PreflightDialog(p: Props) {
+  // B2：剧型 / 解说音色 / 有无剧本 —— 三项都在项目 detail 上，直接订阅。
+  const d = useProjectStore((s) => s.detail ?? null);
+  const hasScript = p.hasScript !== undefined ? p.hasScript : d?.has_script;
+  const productionMode = p.productionMode !== undefined ? p.productionMode : d?.production_mode;
+  const narrationVoiceUrl =
+    p.narrationVoiceUrl !== undefined ? p.narrationVoiceUrl : d?.narration_voice_url;
   const [rd, setRd] = useState<Readiness | null>(null);
   const [err, setErr] = useState("");
   const [genAssets, setGenAssets] = useState(true);
@@ -157,7 +166,7 @@ export default function PreflightDialog(p: Props) {
     ? missing.length === 0
     // 一键成片：没镜头也能开跑（后端会先拆解），所以只有"有镜头且全出片了"才算无事可做
     : p.mode === "film"
-      ? (rd.shots.total > 0 && rd.shots.need_video === 0) || p.hasScript === false
+      ? (rd.shots.total > 0 && rd.shots.need_video === 0) || hasScript === false
       : rd.shots.need_video === 0);
 
   // 人物一致性缺口：角色一张定妆图都没有 → 该镜首帧退化成纯文生图
@@ -259,18 +268,18 @@ export default function PreflightDialog(p: Props) {
               <tr>
                 <td>剧型</td>
                 <td>
-                  {productionModeLabel(p.productionMode)}
+                  {productionModeLabel(productionMode)}
                   <span className="muted">
-                    　{p.productionMode === "narration"
+                    　{productionMode === "narration"
                       ? "剧本全文作旁白，画面原声静音"
                       : "人物按剧本台词配音"}
                   </span>
-                  {p.productionMode === "narration" && (
+                  {productionMode === "narration" && (
                     <div style={{ marginTop: 4, display: "flex",
                                   alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span className={p.narrationVoiceUrl ? "" : "err"}
+                      <span className={narrationVoiceUrl ? "" : "err"}
                         style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}>
-                        {p.narrationVoiceUrl
+                        {narrationVoiceUrl
                           ? "✓ 解说音色已设置"
                           : "⚠️ 未设解说音色 — 配音阶段会中止"}
                       </span>
@@ -278,12 +287,12 @@ export default function PreflightDialog(p: Props) {
                         style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}
                         onClick={() => voiceRef.current?.click()}>
                         {upVoice ? "上传中…"
-                          : p.narrationVoiceUrl ? "更换音色" : "上传音色"}
+                          : narrationVoiceUrl ? "更换音色" : "上传音色"}
                       </button>
-                      {p.narrationVoiceUrl && (
+                      {narrationVoiceUrl && (
                         <button className="link-btn" style={{ fontSize: "calc(11px * var(--fs-scale, 1))" }}
                           onClick={() => setVoicePreview(
-                            api.mediaUrl(p.narrationVoiceUrl!))}>
+                            api.mediaUrl(narrationVoiceUrl!))}>
                           试听
                         </button>
                       )}
@@ -625,7 +634,7 @@ export default function PreflightDialog(p: Props) {
                       aspect: ovAspect,
                     });
                   }}>
-                  {p.hasScript === false ? "请先导入剧本"
+                  {hasScript === false ? "请先导入剧本"
                     : nothingToDo ? "全部镜头已出片" : "▷ 开始生产"}
                 </button>
               ) : p.mode === "frames" ? (
