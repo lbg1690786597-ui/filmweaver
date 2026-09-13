@@ -26,6 +26,7 @@ import {
 } from "../../lib/filename";
 import { planClipJobs, planPickedClipJobs } from "./exportRun";
 import { IS_TAURI } from "../../lib/isTauri";
+import { useProjectStore } from "../../stores/projectStore";
 import "./ExportDialog.css";
 
 /** 是否运行在 Tauri 容器内（网页预览下为 false）。
@@ -75,9 +76,11 @@ const BITRATES = [
 ];
 
 interface Props {
-  shots: ShotInfo[];
-  baseAspect: string;
-  projectTitle: string;
+  /** B2（2026-09-11）：`shots` / `baseAspect` / `projectTitle` / `episodeTitles`
+   *  四项都来自项目 detail，本组件改从 store 自取；保留为可选只为脱离 App 单测。 */
+  shots?: ShotInfo[];
+  baseAspect?: string;
+  projectTitle?: string;
   /** 集号 → 集标题（来自 ProjectDetail.episodes）。缺失只影响文件名后缀，不影响导出 */
   episodeTitles?: Record<number, string>;
   /** 已选好的导出目录（null = 还没选过）。由 App 持有并记忆到 localStorage */
@@ -149,7 +152,18 @@ function fmtEta(sec: number): string {
   return `约 ${Math.floor(m / 60)} 小时 ${m % 60} 分`;
 }
 
+/** 稳定空数组：`?? []` 每次渲染换引用，会打穿下面的 useMemo */
+const EMPTY_SHOTS: ShotInfo[] = [];
+
 export default function ExportDialog(p: Props) {
+  // B2（2026-09-11）：镜头 / 画幅 / 项目名 / 集标题都来自项目 detail。
+  // 显式传入时以传入为准，便于脱离 App 单独挂载。
+  const d = useProjectStore((s) => s.detail);
+  const shots = p.shots ?? d?.shots ?? EMPTY_SHOTS;
+  const baseAspect = p.baseAspect !== undefined ? p.baseAspect : (d?.base_aspect ?? "");
+  const projectTitle = p.projectTitle !== undefined ? p.projectTitle : (d?.title ?? "");
+  const episodeTitles = p.episodeTitles ?? (d ? Object.fromEntries(
+    d.episodes.map((e) => [e.order, e.title])) : undefined);
   const [range, setRange] = useState<Range>("generated");
   const [resIdx, setResIdx] = useState(0);
   const [fps, setFps] = useState(30);
@@ -157,15 +171,15 @@ export default function ExportDialog(p: Props) {
   const [bitrate, setBitrate] = useState("crf20");
   const [withAudio, setWithAudio] = useState(true);
   const [name, setName] = useState(
-    () => `${p.projectTitle || "film"}_${new Date().toISOString().slice(0, 10)}`);
+    () => `${projectTitle || "film"}_${new Date().toISOString().slice(0, 10)}`);
 
-  const resList = resListOf(p.baseAspect);
+  const resList = resListOf(baseAspect);
   const res = resList[Math.min(resIdx, resList.length - 1)];
 
   /** 按集统计。集号取自 Shot.episode（拆解时写入），缺省视作第 1 集。 */
   const epStats = useMemo<EpStat[]>(() => {
     const m = new Map<number, EpStat>();
-    for (const s of p.shots) {
+    for (const s of shots) {
       if (s.disabled) continue;
       const e = s.episode ?? 1;
       const r = m.get(e) ?? { order: e, ready: 0, total: 0, sec: 0 };
@@ -174,7 +188,7 @@ export default function ExportDialog(p: Props) {
       m.set(e, r);
     }
     return [...m.values()].sort((a, b) => a.order - b.order);
-  }, [p.shots]);
+  }, [shots]);
 
   /** 勾选的集号。null = 用户还没动过 → 默认全选"有已出片镜头"的集
    *  （没画面的集导出来是个空文件）。空数组是合法状态（用户主动清空）。 */
@@ -194,8 +208,8 @@ export default function ExportDialog(p: Props) {
    *  与 App 里真正排 job 的地方共用 planClipJobs——各写一份筛选条件，
    *  对话框显示的"要产出几个文件"和实际落盘的数量迟早对不上。 */
   const clipCands = useMemo(
-    () => planClipJobs([...p.shots].sort((a, b) => a.order - b.order)),
-    [p.shots]);
+    () => planClipJobs([...shots].sort((a, b) => a.order - b.order)),
+    [shots]);
 
   /** 勾选的片段 id。null = 用户还没动过 → 默认全选（与按集导出一致）。
    *  空数组是合法状态（用户主动清空），此时**不产出任何文件**，
@@ -234,7 +248,7 @@ export default function ExportDialog(p: Props) {
   };
 
   const clips = useMemo(() => {
-    const sorted = [...p.shots].sort((a, b) => a.order - b.order);
+    const sorted = [...shots].sort((a, b) => a.order - b.order);
     if (range === "clip") {
       // planPickedClipJobs 而不是 planClipJobs：后者把"空 id 列表"当作"全部"，
       // 用户主动清空勾选反而会导出 601 个文件。
@@ -247,7 +261,7 @@ export default function ExportDialog(p: Props) {
     }
     if (range === "generated") return sorted.filter((s) => s.video_url && !s.disabled);
     return sorted.filter((s) => !s.disabled);
-  }, [p.shots, range, pickedClipIds, pickedEps]);
+  }, [shots, range, pickedClipIds, pickedEps]);
 
   const totalSec = clips.reduce((a, s) => a + (s.duration_sec ?? 5), 0);
   const missing = clips.filter((s) => !s.video_url).length;
@@ -262,7 +276,7 @@ export default function ExportDialog(p: Props) {
   /** 在对话框里当场选位置。单文件模式会把用户改的文件名一并回填。 */
   const pickPath = async () => {
     const got = await p.onPickPath(multiFile ? "dir" : "file",
-      safeFileName(name.trim() || p.projectTitle || "film", 60) || "film");
+      safeFileName(name.trim() || projectTitle || "film", 60) || "film");
     if (got?.name) setName(got.name);
   };
 
@@ -271,14 +285,14 @@ export default function ExportDialog(p: Props) {
   const previewPath = useMemo(() => {
     if (!p.exportDir) return "";
     const sep = p.exportDir.includes("\\") ? "\\" : "/";
-    const base = safeFileName(name.trim() || p.projectTitle || "film", 60) || "film";
+    const base = safeFileName(name.trim() || projectTitle || "film", 60) || "film";
     const file = byEpisode
-      ? episodeFileName(base, pickedEps[0] ?? 1, p.episodeTitles?.[pickedEps[0] ?? 1])
+      ? episodeFileName(base, pickedEps[0] ?? 1, episodeTitles?.[pickedEps[0] ?? 1])
       : byClip
         ? clipFileName(base, clips[0]?.order ?? 1, clips[0]?.episode ?? 1)
         : `${base}.mp4`;
     return `${p.exportDir}${p.exportDir.endsWith(sep) ? "" : sep}${file}`;
-  }, [p.exportDir, p.episodeTitles, p.projectTitle, name, byEpisode, byClip,
+  }, [p.exportDir, episodeTitles, projectTitle, name, byEpisode, byClip,
       pickedEps, clips]);
 
   const doExport = () => {
@@ -353,10 +367,10 @@ export default function ExportDialog(p: Props) {
             <div className="fw-ex-ranges">
               <RangeBtn on={range === "generated"} onClick={() => setRange("generated")}
                 label="已生成镜头"
-                n={p.shots.filter((s) => s.video_url && !s.disabled).length} />
+                n={shots.filter((s) => s.video_url && !s.disabled).length} />
               <RangeBtn on={range === "all"} onClick={() => setRange("all")}
                 label="全部启用镜头"
-                n={p.shots.filter((s) => !s.disabled).length} />
+                n={shots.filter((s) => !s.disabled).length} />
               {/* 按集 / 按片段：与前两档不同，它们产出**多个**文件 */}
               <RangeBtn on={byEpisode} onClick={() => setRange("episode")}
                 label="按集导出" n={epStats.length}
@@ -385,7 +399,7 @@ export default function ExportDialog(p: Props) {
                       disabled={e.ready === 0}
                       title={e.ready === 0
                         ? `第 ${e.order} 集还没有已生成的镜头`
-                        : `${p.episodeTitles?.[e.order] ?? ""} ${e.ready}/${e.total} 段 · ${fmtSec(e.sec)}`.trim()}
+                        : `${episodeTitles?.[e.order] ?? ""} ${e.ready}/${e.total} 段 · ${fmtSec(e.sec)}`.trim()}
                       onClick={() => toggleEp(e.order)}>
                       <span className="fw-ex-ep-n">第 {e.order} 集</span>
                       <span className="fw-ex-ep-meta">
