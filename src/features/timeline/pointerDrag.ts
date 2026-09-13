@@ -122,8 +122,16 @@ export interface DragResult {
 }
 
 export interface DragHooks {
-  /** 松手（且真的拖动过）。提交在这里，只此一次。 */
-  onCommit: (s: DragSession, r: DragResult) => void;
+  /** 松手（且真的拖动过）。提交在这里，只此一次。
+   *
+   *  ⚠️ **异步提交必须把 Promise 返回出来**（3.12 / F4）。
+   *  拖动期间被拖的块是靠内联 `transform` 摆到光标下的，而它最终落在哪，
+   *  要等这次提交回来（PATCH + `refreshDetail`）才知道。旧版 `onUp` 在
+   *  提交**之前**就 `cleanupVisual()`，于是松手瞬间内联样式一清，块立刻
+   *  回到 React 给的旧位置，等数据回来又跳到新位置 —— 这就是用户报的
+   *  "松手时素材块突然移动到松手的位置，有时还会来回闪烁"。
+   *  返回 Promise 后，内联预览会一直挂到它落定。 */
+  onCommit: (s: DragSession, r: DragResult) => void | Promise<void>;
   /** Esc 取消 / 位移不足没构成拖动：什么都不提交，调用方只需清理自己的预览 */
   onCancel: (s: DragSession) => void;
   /** 每帧一次（已用 rAF 合并）。只用来更新轻量的落点提示。 */
@@ -318,10 +326,20 @@ export function startDrag(s: DragSession, hooks: DragHooks): void {
     // 松手前把最后一帧算完：rAF 还有一拍没跑的话，落点会停在**上一帧**的位置，
     // 用户看到的就是"我明明放到这里了，它却插到了前一格"。
     const r = compute(e);
+    const started0 = started;
     teardown();
-    cleanupVisual();
-    if (!started) { hooks.onCancel(s); return; }
-    hooks.onCommit(s, r);
+    if (!started0) { cleanupVisual(); hooks.onCancel(s); return; }
+    // ⚠️ 顺序：先提交，**预览等它落定再撤**。
+    // 旧版是 `cleanupVisual(); onCommit(...)` —— 撤预览在提交之前，块会先按
+    // React 的旧位置画一帧（内联 transform 一清，React 的 inline style 接手），
+    // 等 PATCH + refreshDetail 回来再跳到新位置 = "松手来回闪"。
+    // 同步提交（返回 undefined）走微任务，语义与旧版一致（同一帧内撤掉）。
+    const p = hooks.onCommit(s, r);
+    if (p && typeof (p as Promise<void>).then === "function") {
+      (p as Promise<void>).then(cleanupVisual, cleanupVisual);
+    } else {
+      cleanupVisual();
+    }
   };
 
   const onCancelEv = () => {
