@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Say } from "./useToast";
 import { useTimelineStore } from "../stores/timelineStore";
+import type { CommandDraft } from "../lib/command";
 
 /** G4 状态分层 · 编辑层：撤销栈（Ctrl/⌘+Z 回退，Ctrl+Y / Ctrl+Shift+Z 重做）。
  *
@@ -16,18 +17,32 @@ import { useTimelineStore } from "../stores/timelineStore";
  *
  * 现在统一：入栈/出栈全部走 store，本 hook 只保留键盘绑定与 toast 提示。
  * 这样按钮的 disabled 状态、快捷键、时间轴工具条自然是同一份真相。
+ *
+ * ## C1 → C2：适配层已经**撤掉**
+ *
+ * C1 时栈里装的东西从 `UndoEntry` 换成 `EditCommand`（`lib/command.ts`），
+ * 但 18 个调用点还按老签名写 `pushUndo(label, undo, redo?)`，于是本 hook 临时
+ * 兼做翻译机（`draftFromLegacy`）。C2 把 18 处全改成对象字面量之后，翻译机没有
+ * 输入了 —— 翻译机 `draftFromLegacy` 与入参别名 `UndoEntry` 一并删除，
+ * 本 hook 退回成纯粹的转发层（`notReversibleRun` 留着，理由见 `lib/command.ts`）。
+ *
+ * 顺带消失的两个隐患（都不是"重构顺手清掉"，而是**迁移本身就是修 bug**）：
+ *
+ * | | 迁移前 | 迁移后 |
+ * |---|---|---|
+ * | `redo` 忘了传 | 静默退化：撤得回、重做点了只出一行字 | 写 `reversible: false` 要显式打出来，漏写是缺字段 → **tsc 报错** |
+ * | 形状判别 | store 里运行期 `"undo" in e`，从别处直接调 store 能绕过去 | 类型上只收 `CommandDraft`，**编译期**就拒收 |
+ *
+ * ⚠️ `say` 必须真实传进来，且 `doRedo` 里那个 `!top.reversible` 分支**不能删**：
+ * 不可重做的命令其 `run` 是 `notReversibleRun` 生成的桩（见 `lib/command.ts`）——
+ * 理由是"按钮亮着却点了毫无反应，比按钮灰着更让人困惑"（教训见原实现的注释）。
+ * 现在 18 处全都写了 `run`，`irreversibleCount()` 应为 0；但只要有**一条**历史
+ * 命令是不可重做的（比如以后新加的入口忘了写 `run`），这个分支就是它的兜底。
  */
 export function useUndo(say: Say) {
-  const pushUndo = useCallback(
-    (label: string, undo: () => Promise<void>, redo?: () => Promise<void>) => {
-      useTimelineStore.getState().pushUndo({
-        label,
-        undo,
-        // 调用方没给 redo 时给一个明确提示，而不是静默什么都不做 ——
-        // 按钮是亮的却点了没反应，比按钮灰着更让人困惑。
-        redo: redo ?? (() => { say(`「${label}」暂不支持重做`); }),
-      });
-    }, [say]);
+  const pushUndo = useCallback((draft: CommandDraft) => {
+    useTimelineStore.getState().pushUndo(draft);
+  }, []);
 
   const doUndo = useCallback(async () => {
     const st = useTimelineStore.getState();
@@ -43,6 +58,14 @@ export function useUndo(say: Say) {
     const st = useTimelineStore.getState();
     const top = st.redoStack[st.redoStack.length - 1];
     if (!top) { say("没有可重做的操作"); return; }
+    // ⚠️ `reversible: false` 的命令，redo 执行的是 `notReversibleRun` 那个桩 ——
+    // 它自己会 toast，所以这里**必须 return**，不能再补一句，否则同一条提示弹
+    // 两遍。而这个提前 return 本身也是必要的：桩是"正常 resolve"的，不拦的话
+    // 下面那句 `已重做：X` 会照样说出来，用户以为重做成了。
+    if (!top.reversible) {
+      try { await st.redo(); } catch (e) { say(`重做失败：${String(e)}`); }
+      return;
+    }
     try {
       await st.redo();
       say(`↪ 已重做：${top.label}`);
