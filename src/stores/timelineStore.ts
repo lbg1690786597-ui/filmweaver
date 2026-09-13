@@ -32,18 +32,38 @@ import { create } from "zustand";
 import type { Timeline, Track, Clip, AssetSegment, Selection } from "../types/timeline";
 import { ZOOM_DEFAULT, ZOOM_MIN, ZOOM_MAX } from "../types/timeline";
 import { readPref, writePref } from "../lib/prefs";
+import type { CommandDraft, EditCommand } from "../lib/command";
+import { createCommandStore } from "../lib/command";
 
 /** 会进撤销栈的轨道开关。**不含 collapsed**，理由见文件头。 */
 export type TrackFlag = "locked" | "hidden" | "muted" | "solo";
 
-/** 一条可撤销操作：label 给用户看，undo/redo 是真正的动作 */
-export interface UndoEntry {
-  label: string;
-  undo: () => Promise<void> | void;
-  redo: () => Promise<void> | void;
-}
+/** 撤销深度上限。C1 起真正的裁切在 `commandStore` 里做，这里只负责把它
+ *  传下去 —— 两个数必须是同一个，故只留一处定义。
+ *
+ *  C4：50 → 100。一次成片会给一个项目塞进几十步（每个镜头一条 + 批量操作
+ *  一条），50 步意味着"从头配一遍"的那一轮一旦超了就再也退不回去。100 步的
+ *  内存代价可以忽略：一条 `EditCommand` 是闭包 + 几十字节的元数据，凡是"重"
+ *  的东西（新旧值、后端快照）都装在闭包里按需重建，栈本身不存大对象。
+ *  ⚠️ 面板只展示最近 `HISTORY_VISIBLE`（30）条，与这个数**故意不同**：
+ *  栈深是"能退多远"（能力），面板高度是"看得清几条"（界面），混成一个数
+ *  会逼着在"展示太多挤爆"和"少退 70 步"之间二选一。 */
+const MAX_UNDO = 100;
 
-const MAX_UNDO = 50;
+/**
+ * 撤销栈的**真正持有者**（C1）。放在模块级而不是 create() 里面，理由同
+ * `lib/outboxStore.ts` / `lib/backendReach.ts`：命令模型在 node 下要能被
+ * 验证脚本单独跑，而 zustand 的 store 一旦被 `create()` 包住就只能在
+ * React 环境里用了。
+ *
+ * 本 store 的 `undoStack` / `redoStack` 是它的**快照**（`slice()` 复制），
+ * 每次入栈/出栈后同步 —— 这样 `Timeline.tsx` 的订阅与 verify 脚本读
+ * `useTimelineStore.getState().undoStack` 的老写法都一行不用改。
+ *
+ * ⚠️ 两个栈只许**通过 `commandStore` 的方法**改。直接 `set({undoStack: ...})`
+ * 会让快照与真身分岔：界面显示"有 3 步可撤"，实际栈里是 0 步。
+ */
+const commandStore = createCommandStore(MAX_UNDO);
 
 interface TimelineState {
   timeline: Timeline;
@@ -112,12 +132,67 @@ interface TimelineState {
   patchClipLocal: (clipId: string, patch: Partial<Clip>) => void;
 
   // ---- 撤销栈 ----
-  undoStack: UndoEntry[];
-  redoStack: UndoEntry[];
-  pushUndo: (e: UndoEntry) => void;
+  //
+  // C1：数据模型换成 `EditCommand`（`lib/command.ts`），**字段名一个没改** ——
+  // `undoStack` / `redoStack` / `pushUndo` / `undo` / `redo` / `clearUndo` 原样
+  // 保留，所以 `Timeline.tsx` 的两处 `disabled={!store.undoStack.length}` 与
+  // 四个 verify 脚本都不用动。换的是**栈里装的什么**：以前是不透明的
+  // `{label, undo, redo}` 闭包，现在是带 id / kind / at / affected / reversible
+  // 的显式命令。
+  //
+  // 为什么栈仍放在本 store、不另起一个 `commandStore`：本 store 的订阅者
+  // 本来就每帧重渲染（`playheadSec` 在 `Timeline.tsx` 的 useShallow 选择器里），
+  // 搬出去省不下任何渲染，却会把上面那 6 个字段和下游全部打断。C4 若真需要
+  // 独立 store，命令模型本身（`createCommandStore`）已经可以整体搬走。
+  undoStack: EditCommand[];
+  redoStack: EditCommand[];
+  /** 入栈。**C2 起只收 `CommandDraft`**：
+   *  显式声明 run/unrun/kind/affected/reversible 的对象字面量。
+   *
+   *  ⚠️ C1 曾经容忍旧形状 `{label, undo, redo?}`，靠运行期 `"undo" in e`
+   *  判别。C2 把那条路堵上了：现在**类型上就只收这一种形状**，写错
+   *  **编译期**报错 —— 而运行期判别只要有人从别处直接调 store 就能绕过去。
+   *
+   *  为什么不干脆让 store 反向依赖 toast 来做"没配重做时提示一下"：
+   *  那会多一条 store→UI 的倒挂边。这个决定属于 UI 层，由调用方实现。 */
+  pushUndo: (e: CommandDraft) => EditCommand;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
+  /**
+   * 连撤 N 步（C3：撤销历史面板"点任意一步回到那里"的落地）。
+   *
+   * ⚠️ **中途失败就停在那里，并把已经撤掉的算数返回** —— 不 try/catch 吞掉、
+   * 也不回滚已经成功的那些。理由：`unrun` 失败的原因基本都是网络/后端，
+   * 而"已经撤掉的 3 步"在用户的界面上**是真的撤掉了**（每次 unrun 都改过
+   * 内存与后台）。把它回滚回去需要把刚失败的 redo 也做一遍，那更可能再失败。
+   * 停在中间虽然状态是"撤了 3 步"，但**与界面上看到的一致**，用户再点一下
+   * 继续撤就是了 —— 报错的语义是"撤到这儿停了"，不是"什么都没发生"。
+   *
+   * @returns 真正撤掉的步数（0 = 一步也没撤成）
+   */
+  jumpBack: (steps: number) => Promise<number>;
   clearUndo: () => void;
+  /** 栈里 `reversible: false` 的条数。**只该降不该升** —— C2 的进度尺，
+   *  也是"还有多少处 undo 没配 redo"这个历史缺口的唯一可见数字。 */
+  irreversibleCount: () => number;
+
+  // ---- E4：一轮 Agent = 一条可撤销记录 ----
+  //
+  // 这一对是**给 Agent 循环用的**（`lib/agent/dispatch.ts`），人手动操作
+  // 从不调用 —— 人的每一下都该是独立的一步，见 `ledger.ts` 的文件头。
+  //
+  // ⚠️ 调用方必须 `try { ... } finally { endTurn(turn) }`。漏了 `endTurn`
+  // 的后果不是"AI 那轮不合并"，而是**用户接下来的手动操作被并进 AI 那轮**：
+  // 他按一次 Ctrl+Z，连自己刚改的几笔一起没了。所以 `endTurn` 走 finally。
+  /**
+   * 开一轮。返回 `turnId`，之后到 `endTurn` 之间的所有 `pushUndo`
+   * **只要是 agent 来源**就会被合并成栈上的一条。
+   */
+  beginTurn: () => string;
+  /** 收尾一轮。传 `turnId` 防串轮（上一轮迟到的 endTurn 关不掉新的）。 */
+  endTurn: (turnId: string) => void;
+  /** 当前轮次 id；不在轮次里返回 null。面板据此显示"AI 正在修改…"并禁掉撤销。 */
+  currentTurn: () => string | null;
 
   /** 切/关项目时的清场：把**跟项目绑死**的状态复位。
    *
@@ -178,7 +253,18 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
     return { snapping: v, snapGuideSec: null };
   }),
   snapGuideSec: null,
-  setSnapGuide: (s) => set({ snapGuideSec: s }),
+  /** 吸附参考线（秒）。`null` = 不显示。
+   *
+   *  ⚠️ **必须做等值短路**（2026-09-12 修「不跟手/闪烁」）。这一句是拖拽路径上
+   *  唯一一个**每个 mousemove 都会调用**的 store 写：拖动中指针每动 1px 就调一次，
+   *  而绝大多数帧算出来的吸附点与上一帧**完全相同**（同一根线、或者一直是 null）。
+   *  zustand 的 `set` 不看新旧值是否相等，无条件换 state 对象 → 所有订阅者重渲染。
+   *  在 1424 镜的项目上，那就是每帧把整个轨道树重渲染一遍，
+   *  表现为"拖不动、闪"。
+   *
+   *  判据写在这里而不是各调用点：调用点有三处（拖块/拖叠加层/拖主轨），
+   *  逐个加守卫必然漏；而且将来任何新的吸附调用点会自动受益。 */
+  setSnapGuide: (s) => set((st) => (st.snapGuideSec === s ? {} : { snapGuideSec: s })),
 
   pxPerSec: ZOOM_DEFAULT,
   setPxPerSec: (v) => set({ pxPerSec: Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v)) }),
@@ -192,7 +278,12 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
   }),
 
   playheadSec: 0,
-  setPlayheadSec: (v) => set({ playheadSec: Math.max(0, v) }),
+  /** 播放头位置。等值短路同 `setSnapGuide`：拖动播放头时 `scrubber` 每帧调它，
+   *  而 rAF 合并后仍可能出现"同一帧内值没变"的重复调用。 */
+  setPlayheadSec: (v) => set((s) => {
+    const next = Math.max(0, v);
+    return s.playheadSec === next ? {} : { playheadSec: next };
+  }),
   nudgePlayhead: (d) => set((s) => ({
     playheadSec: Math.max(0, Math.min(s.timeline.totalDurationSec, s.playheadSec + d)),
   })),
@@ -279,39 +370,99 @@ export const useTimelineStore = create<TimelineState>((set, get) => ({
 
   undoStack: [],
   redoStack: [],
-  pushUndo: (e) => set((s) => ({
-    undoStack: [...s.undoStack, e].slice(-MAX_UNDO),
-    redoStack: [],   // 新操作使 redo 分支失效（标准 NLE 行为）
-  })),
+  pushUndo: (e) => {
+    // C2：**只收 `CommandDraft`**。旧形状 `{label, undo, redo}` 的翻译已经
+    // 收到 `hooks/useUndo.ts` 一处 —— 那里是"UI 怎么表达一次编辑"的边界，
+    // 而 store 不该认得 `undo`/`redo` 这对旧名字。
+    //
+    // ⚠️ 这比 C1 的 `"undo" in e` 运行期判别更硬：写错形状**编译期**就报错。
+    // 代价是 `scripts/verify-f16-reset.ts` 那两处直接调 store 的手写条目要
+    // 自己写成完整 draft（`{label, run, unrun}`）—— 已经改了，见那边注释。
+    const cmd = commandStore.push(e);
+    // 把快照写进 state，供 `Timeline.tsx` 的两个 disabled 与四个 verify 脚本读
+    set({ undoStack: commandStore.undoEntries().slice(), redoStack: [] });
+    return cmd;
+  },
   undo: async () => {
-    const { undoStack } = get();
-    const entry = undoStack[undoStack.length - 1];
-    if (!entry) return;
-    set({ undoStack: undoStack.slice(0, -1) });
-    await entry.undo();
-    set((s) => ({ redoStack: [...s.redoStack, entry] }));
+    // 命令 store 内部已完成"先执行、成功了才出栈"；抛异常时它原样留着，
+    // 这里也不 set，于是 state 与栈保持一致（不会出现"界面灰了但其实没撤"）
+    await commandStore.undo();
+    set({
+      undoStack: commandStore.undoEntries().slice(),
+      redoStack: commandStore.redoEntries().slice(),
+    });
   },
   redo: async () => {
-    const { redoStack } = get();
-    const entry = redoStack[redoStack.length - 1];
-    if (!entry) return;
-    set({ redoStack: redoStack.slice(0, -1) });
-    await entry.redo();
-    set((s) => ({ undoStack: [...s.undoStack, entry] }));
+    await commandStore.redo();
+    set({
+      undoStack: commandStore.undoEntries().slice(),
+      redoStack: commandStore.redoEntries().slice(),
+    });
   },
-  clearUndo: () => set({ undoStack: [], redoStack: [] }),
+  jumpBack: async (steps) => {
+    // 消息里说的"撤了 N 步"必须与栈的真实变化一致 —— 所以**在循环里问
+    // commandStore 要结果**，而不是按 `steps` 计数。`undo()` 在空栈时返回
+    // undefined（一步没撤），这时立刻停：继续空转会让返回值虚高，
+    // 而调用方拿这个数去决定说什么话。
+    let done = 0;
+    for (let i = 0; i < steps; i++) {
+      let moved: unknown;
+      try {
+        moved = await commandStore.undo();
+      } catch (e) {
+        // 失败即停，但**先把快照同步出去**再抛：栈的真实状态可能已经因为
+        // 之前成功的几步变了，不同步的话面板显示的还是旧的（"点了没反应"）。
+        set({
+          undoStack: commandStore.undoEntries().slice(),
+          redoStack: commandStore.redoEntries().slice(),
+        });
+        // 把"撤到第几步断的"附在错误上，UI 才能说出准确的话；
+        // 直接吞掉会变成一句无信息的"撤销失败"。
+        throw Object.assign(e instanceof Error ? e : new Error(String(e)), {
+          undoneSteps: done,
+        });
+      }
+      if (!moved) break;
+      done += 1;
+    }
+    set({
+      undoStack: commandStore.undoEntries().slice(),
+      redoStack: commandStore.redoEntries().slice(),
+    });
+    return done;
+  },
+  clearUndo: () => {
+    commandStore.clear();
+    set({ undoStack: [], redoStack: [] });
+  },
+  irreversibleCount: () => commandStore.irreversibleCount(),
 
-  resetForProjectSwitch: () => set({
-    timeline: EMPTY_TIMELINE,       // 不等重建 effect，立即失效
-    playheadSec: 0,
-    cursorSec: null,
-    selection: { clipIds: [], assetSegmentIds: [] },
-    selectionAnchor: null,        // 锚点是旧项目的 clip id，留着必然指向空
-    clipboard: [],                 // 跨项目粘贴 clip 没有意义（shotId 属于旧项目）
-    snapGuideSec: null,
-    undoStack: [],
-    redoStack: [],
-  }),
+  // `beginTurn` / `endTurn` 不改 state：轮次是**写侧**的状态，界面要显示
+  // "AI 正在修改…"时自己去问 `currentTurn()`（或者订阅 Agent 循环自己广播的
+  // 状态）。把 turnId 塞进 store 会多一次全量重渲染，而它一变就是整轮的开始/结束，
+  // 中间几十条 `pushUndo` 反而**不该**触发重渲染。
+  beginTurn: () => commandStore.beginTurn(),
+  endTurn: (turnId) => { commandStore.endTurn(turnId); },
+  currentTurn: () => commandStore.currentTurn(),
+
+  resetForProjectSwitch: () => {
+    // ⚠️ 必须先清真身再 set 快照。C1 之前这里只 `set({undoStack: []})` 就够了，
+    // 因为栈就住在 state 里；现在真身在 commandStore，只清 state 等于
+    // "界面显示没有可撤销的操作，但 Ctrl+Z 还能撤上一个项目的改动"——
+    // 那是会真的改到错误项目的数据的。
+    commandStore.clear();
+    set({
+      timeline: EMPTY_TIMELINE,       // 不等重建 effect，立即失效
+      playheadSec: 0,
+      cursorSec: null,
+      selection: { clipIds: [], assetSegmentIds: [] },
+      selectionAnchor: null,        // 锚点是旧项目的 clip id，留着必然指向空
+      clipboard: [],                 // 跨项目粘贴 clip 没有意义（shotId 属于旧项目）
+      snapGuideSec: null,
+      undoStack: [],
+      redoStack: [],
+    });
+  },
 
   findClip: (id) => get().allClips().find((c) => c.id === id),
   findTrack: (id) => get().timeline.tracks.find((t) => t.id === id),
@@ -329,6 +480,12 @@ function mapTrack(tl: Timeline, id: string, fn: (t: Track) => Track): Timeline {
  *
  * undo/redo 都写**定值**而不是再翻一次：翻转是相对操作，一旦中途有别的路径
  * 改过这个标志（比如换项目后 id 复用），"再翻一次"回到的就不是原状态了。
+ *
+ * C1 起这里就直接产出 `CommandDraft`（当时是**第一个**，因为它在 store
+ * 内部，改起来不牵动 App；C2 之后全项目都长这样了）。它把 `kind: "track"`
+ * 写实了，`affected` 留空：轨道 id 不在 `CommandScope` 的 shots/assets
+ * 两类里（那两个都是**镜头/素材**的 uid 空间），轨道开关本来就是"改轨道
+ * 自己"这个标志位，没有第三个对象需要定位。
  */
 function toggleFlagWithUndo(
   get: () => TimelineState, trackId: string, key: TrackFlag,
@@ -342,7 +499,8 @@ function toggleFlagWithUndo(
   st.setTrackFlag(trackId, key, next);
   st.pushUndo({
     label: `${next ? onWord : offWord}轨道「${track.label}」`,
-    undo: () => { get().setTrackFlag(trackId, key, prev); },
-    redo: () => { get().setTrackFlag(trackId, key, next); },
+    kind: "track",
+    run: () => { get().setTrackFlag(trackId, key, next); },
+    unrun: () => { get().setTrackFlag(trackId, key, prev); },
   });
 }
