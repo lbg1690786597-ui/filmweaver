@@ -2,13 +2,20 @@
 import pkg from "../package.json";
 import type { MosaicParams } from "./render/model";
 import { fetchTracked } from "./lib/trackedFetch";
+import { fetchWithTimeout, API_TIMEOUT_MS } from "./lib/fetchTimeout";
 import { noteRequestOk, noteRequestFailed } from "./lib/backendReach";
 import { isUnreachable } from "./lib/appGate";
 // 2.3：写请求的错误要带上状态码，调用方才能把 409（并发冲突）与别的失败区分开
 import { SaveHttpError } from "./stores/saveStateStore";
 
 // T-R0-10: BASE 仅走环境变量，默认值在 .env.development / .env.production
-export const BASE = import.meta.env.VITE_FW_API_BASE || "http://127.0.0.1:8002";
+// ⚠️ `import.meta.env?.` 的 `?.` 是**承重的**：Vite 会把整句替换成字面量，
+//    所以浏览器侧行为完全不变；而在 node（tsx）下 `import.meta.env` 是
+//    `undefined`，少了它这里就是 `TypeError: Cannot read properties of
+//    undefined` —— 于是 `verify-agent.ts` 想跑**真的** handler
+//    （而不是把它们整段 mock 掉）根本 import 不进来，只能退化成
+//    "静态扫源码看起来对不对"，那正是 trackedFetch.ts 文件头批判的做法。
+export const BASE = import.meta.env?.VITE_FW_API_BASE || "http://127.0.0.1:8002";
 export const APP_VERSION = pkg.version;
 
 // 可选 API Token（后端 FW_API_TOKEN 启用时需一致；本地存储便于用户在设置中配置）
@@ -41,13 +48,16 @@ export async function sendQueuedWrite(
   w: { method: string; url: string; body: string | null },
 ): Promise<number | null> {
   try {
-    const resp = await fetch(w.url, {
+    // 2026-09-12：补发也要有超时。没有的话，"连得上但不应答"时这一笔会永远挂着，
+    // 而补发是串行遍历队列的 —— 队头挂住 = 后面全部卡死，用户看到的是
+    // "恢复连接后什么都没发生"。
+    const resp = await fetchWithTimeout(w.url, {
       method: w.method,
       headers: w.body === null
         ? authHeaders()
         : { "Content-Type": "application/json", ...authHeaders() },
       body: w.body,
-    });
+    }, API_TIMEOUT_MS);
     noteRequestOk();
     return resp.status;
   } catch (e) {
@@ -466,8 +476,11 @@ export interface ProjectDetail {
   /** 解说音色（解说剧整片共用的参考音频） */
   narration_voice_url?: string | null;
   episodes: EpisodeInfo[];
-  raw_script: string | null;
-  optimized_script: string | null;
+  /** 3.12（F8）：详情**不再带剧本全文**（原来是 `raw_script` / `optimized_script`）。
+   *  全文只在剧本页用得上，走 `/v2/projects/{id}/episodes/content` 按集取；
+   *  详情里每次编辑都拖着一整部剧本（大项目实测 223 KiB 只是这一项）毫无意义。
+   *  这个布尔是给「脚本」入口判空态用的。 */
+  has_script: boolean;
   shots: ShotInfo[];
   assets: AssetInfo[];
 }
@@ -1094,9 +1107,16 @@ export const api = {
    *
    *  3.1：切版本 = 换素材，后端会顺手清掉取片窗口（否则旧的入点/出点落在
    *  新素材上就是一段错的内容，导出黑帧）。`clip_window_cleared` 为真时
-   *  调用方应当提示用户"入点已重置"，别让这件事静默发生。 */
+   *  调用方应当提示用户"入点已重置"，别让这件事静默发生。
+   *
+   *  `adopted_version` / `thumb_url` 是 B0 加的：回包本来就带这俩（见
+   *  backend `adopt_shot_version` 的 return），只是以前前端切完就丢掉、改去
+   *  拉整份详情。就地回填要拼出一整行，必须把**实际生效**的缩略图也接住——
+   *  后端抽帧失败时会保留旧图（宁可对不上也不擦空白），所以不能拿请求里的
+   *  值回填。 */
   adoptShot: (shotId: string, versionNo: number) =>
-    post<{ ok: boolean; video_url: string; clip_window_cleared?: boolean }>(
+    post<{ ok: boolean; video_url: string; thumb_url?: string | null;
+           adopted_version?: number; clip_window_cleared?: boolean }>(
       `/v2/shots/${shotId}/adopt`, { version_no: versionNo }),
 
   /** TB-01 在镜内第 atSec 秒把镜头分割为前后两段（时间轴 Ctrl+B） */
@@ -1531,7 +1551,8 @@ export const api = {
       }),
     }).then(async (r) => {
       if (!r.ok) throw new Error(`${r.status}: ${(await r.text()).slice(0, 200)}`);
-      return r.json() as Promise<{ ok: boolean; changed: string[]; stale: boolean }>;
+      return r.json() as Promise<{ ok: boolean; changed: string[]; stale: boolean;
+                                   stale_reason?: ShotInfo["stale_reason"] }>;
     }),
 
   /** 保存手改的提示词。后端会同时写 profile_override.prompt——
@@ -1637,6 +1658,47 @@ export const api = {
     post<{ optimized: string }>("/v2/script/optimize", {
       raw, model_id: modelId ?? null, project_id: projectId ?? null,
     }),
+
+  /* ── E6：编辑器 Agent ──────────────────────────────────────────────────
+   *
+   * 🔴 **密钥不在这个文件里，也不在客户端任何地方**（PLAN §4.2 批次 E 的
+   * 安全红线：安装包可被解包，内置 key 等于公开）。这里只带用户身份 ——
+   * `authHeaders()` 自动补 `X-FW-Token` / `Authorization`，
+   * 真正的模型 key 只存在于后端进程的 settings 里。
+   *
+   * ⚠️ 传上去的能力表**不是**让后端"知道有哪些工具"（后端不维护副本），
+   * 而是让它拼进提示词给模型看。传回来的 `commands` 也只是**意图**，
+   * 客户端在自己进程内走 `dispatch.ts` 执行 —— 见 `lib/agent/protocol.ts` 文件头。
+   */
+  agentTurn: (body: {
+    text: string;
+    timelineText: string;
+    capabilities: { id: string; desc: string; params: unknown; costly: boolean }[];
+    projectId?: string | null;
+    history?: { role: "user" | "assistant"; text: string }[];
+    modelId?: string | null;
+  }) =>
+    post<{
+      reply: string;
+      done: boolean;
+      commands: { id: string; args: Record<string, unknown> }[];
+      dropped: string[];
+      model_id: string;
+    }>("/v2/agent/turn", {
+      text: body.text,
+      timeline_text: body.timelineText,
+      capabilities: body.capabilities,
+      project_id: body.projectId ?? null,
+      history: body.history ?? [],
+      model_id: body.modelId ?? null,
+    }),
+
+  /** Agent 提示词契约版本。`verify-agent.ts` 拿它与客户端常量比对，
+   *  防止两端提示词格式漂移（漂移的失败长相是"模型偶尔乱回"，极难定位）。 */
+  agentProtocol: () =>
+    get<{ contract_version: number; max_commands: number; max_input_chars: number }>(
+      "/v2/agent/protocol",
+    ),
 
   breakdownScript: (script: string, modelId?: string) =>
     post<BreakdownOut>("/v2/script/breakdown", { script, model_id: modelId ?? null }),
@@ -2111,13 +2173,25 @@ export const api = {
     let stopped = false;
     void (async () => {
       let backoff = 3000;
+      /** 握手阶段（还没拿到响应头）的超时。**只掐握手、不掐流本身** ——
+       * 事件流可以长时间没有任何事件（用户没在生成，后端也无可推送），
+       * 给整个流套超时会把它每分钟掐断重连一次，`onUp/onDown` 跟着抖，
+       * 而下游四处轮询是按 `sseUp` 决定要不要降频的，抖一次就是一轮请求风暴。
+       *
+       *  这又是"连得上但不应答"最常见的形态：TCP 建连成功、nginx 在等上游，
+       *  fetch 永远不 resolve。没有这一步，事件流会静默挂死，
+       *  而它挂死**不会**让任何东西报离线（它是唯一不走 `fetchTracked` 的请求），
+       *  于是用户看到"实时状态不动了"却没有任何提示。 */
       while (!stopped) {
         try {
-          const resp = await fetch(`${BASE}/v2/projects/${projectId}/events`, {
+          const resp = await fetchWithTimeout(`${BASE}/v2/projects/${projectId}/events`, {
             headers: authHeaders(), signal: ctrl.signal,
-          });
+          }, API_TIMEOUT_MS);
           if (!resp.ok || !resp.body) throw new Error(`${resp.status}`);
           backoff = 3000;
+          // 响应头到了 —— `fetchWithTimeout` 的计时器在 resolve 那一刻已 dispose，
+          // 后面的 `reader.read()` 循环不受任何超时约束（见该文件头"不要在流式响应上用"）。
+          noteRequestOk();
           opts?.onUp?.();
           const reader = resp.body.getReader();
           const dec = new TextDecoder();
@@ -2141,7 +2215,13 @@ export const api = {
               }
             }
           }
-        } catch { /* 断线/旧后端 404 → 退避重连 */ }
+        } catch (e) {
+          // 断线/旧后端 404 → 退避重连。**但要告诉可达性层**：
+          // 这是全软件唯一不走 `fetchTracked` 的请求，原先那一句空的 catch
+          // 让"只有 SSE 挂了的后端"完全不会被察觉（2026-09-12）。
+          // 主动关闭（切项目/卸载）不算可达性证据，故先排掉。
+          if (!stopped) noteRequestFailed(e);
+        }
         opts?.onDown?.();
         if (stopped) break;
         await new Promise((r) => setTimeout(r, backoff));
