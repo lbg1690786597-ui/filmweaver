@@ -17,10 +17,14 @@ import { api } from "../../api";
 import type { AssetInfo, ShotInfo } from "../../api";
 import { LibClip, fmtTime } from "../../types";
 import { useMediaPipeline, type MediaPipeline } from "../../hooks/useMediaPipeline";
+import { useProjectStore } from "../../stores/projectStore";
 import "./MediaPanel.css";
 
 type Filter = "all" | "video" | "audio" | "image" | "used";
 type Density = "grid" | "list";
+
+/** 稳定的空数组：`?? []` 每次渲染都造新引用，会让下游 useMemo 全部失效 */
+const EMPTY_ASSETS: AssetInfo[] = [];
 
 const FILTERS: { id: Filter; label: string; Icon?: typeof Film }[] = [
   { id: "all", label: "全部" },
@@ -43,7 +47,10 @@ interface Props {
   onRenameClip: (id: string, name: string) => void;
   onToast: (m: string) => void;
   /** 归属确认要用：已有资产做候选池。**不强求**——不传时只是不能归属到资产，
-   *  素材池本身照常工作（图片仍可上传、可拖轨）。 */
+   *  素材池本身照常工作（图片仍可上传、可拖轨）。
+   *  B2（2026-09-11）：本字段改从 `useProjectStore.detail.assets` 自取，
+   *  这里保留只是为了**独立挂载**本组件的场景（测试/单页）仍能塞一份假的进来；
+   *  App 那条路径已不再传。 */
   assets?: AssetInfo[];
   /** 归属落库后父级重拉资产（让资产页立刻出现新归属的图） */
   onAssetsChanged?: () => void;
@@ -62,6 +69,11 @@ export default function MediaPanel(p: Props) {
   const [q, setQ] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  // B2：资产池直接从 store 订阅，不再由 App 经 LeftPanel 一路转运下来。
+  // 用 store 的**稳定空数组**兜底（不是每次渲染新建 `[]`）——否则 `assets`
+  // 每渲染换一次引用，会把下游 useAttribution 的 useMemo 全部打穿。
+  const assets = useProjectStore((s) => s.detail?.assets) ?? EMPTY_ASSETS;
+
   // 上传 + 归属确认收敛在 useMediaPipeline 里（与资产页、系统拖放共用同一份），
   // 面板这里只负责"按钮点了把文件递过去"。
   const own = useMediaPipeline({
@@ -69,7 +81,7 @@ export default function MediaPanel(p: Props) {
     onToast: p.onToast,
     onAddClips: p.onAddClips,
     onRemoveClips: p.onRemoveClips,
-    assets: p.assets,
+    assets: p.assets ?? assets,
     onAssetsChanged: p.onAssetsChanged,
   });
   const { uploadFiles, uploading, attributionDialog } = p.mediaPipeline ?? own;
