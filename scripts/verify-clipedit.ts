@@ -280,7 +280,7 @@ ok("拖整段按实体分流",
    /clip\.entity !== "shot"[\s\S]{0,60}?beginMoveNonShot/.test(tl));
 ok("左边缘的可拖范围来自 trimInDeltaBounds（含负余量），不是写死的 0",
    tl.includes("trimInDeltaBounds(clip)")
-     && /Math\.max\(db\.min, Math\.min\(db\.max, raw\)\)/.test(tl),
+     && /Math\.max\(db\.min, Math\.min\(db\.max, [^)]+\)\)/.test(tl),
    "写死 Math.max(0, …) 的话，剪掉的开头在 UI 上永远拖不回来");
 ok("非镜头段不共用镜头的右键菜单",
    /clip\.entity !== "shot"\) return otherMenuItems\(clip\)/.test(tl),
