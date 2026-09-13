@@ -48,7 +48,7 @@ const read = (p: string) => readFileSync(join(SRC, p), "utf8");
 
 const PREFETCH = read("lib/prefetch.ts");
 const MEDIACACHE = read("lib/mediaCache.ts");
-const USEPROJECT = read("hooks/useProject.ts");
+const USEPROJECT = read("stores/projectStore.ts");
 const USEAUDIO = read("hooks/useAudioTrack.ts");
 const APP = read("App.tsx");
 
@@ -479,9 +479,9 @@ ok(/from "\.\/isTauri"/.test(MEDIACACHE),
 // 调用点：钉的是**调用**，不是 import 那一行（只 grep 函数名会被 import 顶掉，
 // 这在 4.5 的变异测试里逮到过一次）。
 ok(/prefetcher\.warmNew\(d\.id, "shots", d\.shots\.map\(\(s\) => s\.video_url\)\)/.test(USEPROJECT),
-  "useProject 在 setDetail 之后报一次 shots 通道");
-ok(USEPROJECT.indexOf("setDetail(d)") < USEPROJECT.indexOf("prefetcher.warmNew"),
-  "  且排在 setDetail 之后（先让画面更新，预取是背景噪音）");
+  "projectStore 在 set 之后报一次 shots 通道");
+ok(USEPROJECT.indexOf("set({ detail: d, snapshotAt: null })") < USEPROJECT.indexOf("prefetcher.warmNew"),
+  "  且排在写 detail 之后（先让画面更新，预取是背景噪音）");
 ok(/prefetcher\.warmNew\(id, "audio", r\.clips\.map\(\(c\) => c\.url\)\)/.test(USEAUDIO),
   "useAudioTrack 在拿到 clips 之后报一次 audio 通道");
 ok(/prefetcher\.pause\(\);/.test(APP) && /prefetcher\.resume\(\);/.test(APP),
