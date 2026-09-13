@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, JobOut, JobPhase } from "../api";
 import { SSE_FALLBACK_MS, isSseUp, setSseUp, shouldSkipTick } from "../lib/sseHealth";
 import type { Say } from "./useToast";
+import { readArtifact } from "../lib/artifact";
 
 /** G4 状态分层 · 任务层：生产 job 轮询 + P2-3 服务端接回 + P2-5 SSE 订阅。
  *
@@ -29,21 +30,25 @@ export function useProdJobs(opts: {
   const warnFrameIssues = useCallback((jobId: string, result: string | null | undefined) => {
     if (!result || framesWarned.current.has(jobId)) return;
     framesWarned.current.add(jobId);
-    try {
-      const r = JSON.parse(result) as { bare_shots?: number[]; blocked_shots?: number[] };
-      const bare = r.bare_shots ?? [];
-      const blocked = r.blocked_shots ?? [];
-      if (bare.length) {
-        say(`⚠️ ${bare.length} 个镜头无定妆图可注入（#${bare.slice(0, 8).join(" #")}`
-          + `${bare.length > 8 ? " …" : ""}），这些镜头里的人物长相可能和别处不一样，`
-          + "建议补上定妆图后重新生成");
-      }
-      if (blocked.length) {
-        say(`🚫 ${blocked.length} 个镜头的提示词被内容审核拒绝（#${blocked.slice(0, 8).join(" #")}`
-          + `${blocked.length > 8 ? " …" : ""}）。重试无效——请展开这些镜头，`
-          + "用「换模型重试」换个厂商的生图模型，或弱化提示词中的敏感描写");
-      }
-    } catch { /* 老 job 无此字段，忽略 */ }
+    // D2：走 schema 解析而不是就地 JSON.parse —— 这两个字段的**名字**本身
+    // 就是 schema 的一部分，散在调用点里各写一遍，改 schema 时必然漏一处。
+    const r = readArtifact(result, "first_frames").value as
+      { bare_shots?: number[]; blocked_shots?: number[] } | null;
+    if (!r) return;
+    // 原来的 try/catch 只服务于那句 JSON.parse；解析搬进 readArtifact 后
+    // 剩下的是纯数组读值，不会抛 —— 留着反而会让"这里为什么会抛"成为疑问。
+    const bare = r.bare_shots ?? [];
+    const blocked = r.blocked_shots ?? [];
+    if (bare.length) {
+      say(`⚠️ ${bare.length} 个镜头无定妆图可注入（#${bare.slice(0, 8).join(" #")}`
+        + `${bare.length > 8 ? " …" : ""}），这些镜头里的人物长相可能和别处不一样，`
+        + "建议补上定妆图后重新生成");
+    }
+    if (blocked.length) {
+      say(`🚫 ${blocked.length} 个镜头的提示词被内容审核拒绝（#${blocked.slice(0, 8).join(" #")}`
+        + `${blocked.length > 8 ? " …" : ""}）。重试无效——请展开这些镜头，`
+        + "用「换模型重试」换个厂商的生图模型，或弱化提示词中的敏感描写");
+    }
   }, [say]);
 
   /** job 收尾（轮询与 SSE 共用）：停轮询、清 localStorage、toast、出列、刷 detail */
