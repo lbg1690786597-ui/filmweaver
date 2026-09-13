@@ -3,6 +3,7 @@ import { api, AssetInfo, DeletedStageInfo, EpisodeInfo, JobOut, JobPhase, ShotIn
 import type { AssetDragData } from "../api";
 import { LibClip, fmtTime } from "../types";
 import { useMediaPipeline, type MediaPipeline } from "../hooks/useMediaPipeline";
+import { useProjectStore } from "../stores/projectStore";
 import ShotsPanel from "./ShotsPanel";
 import AssetDialog, { AssetDialogTarget } from "./AssetDialog";
 import SceneCanonDialog from "../features/scenes/SceneCanonDialog";
@@ -28,8 +29,9 @@ interface Props {
   onPreview: (clip: LibClip) => void;
   /** P1-3 素材池落库：从素材池删除（连文件） */
   onDeleteClip: (clipId: string) => void;
-  /** 全部资产条目（含未生成图的），页内直接生成与展示 */
-  assetsMeta: AssetInfo[];
+  /** 全部资产条目（含未生成图的），页内直接生成与展示。
+   *  B2：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
+  assetsMeta?: AssetInfo[];
   /** 资产页角色分层（修 E3）：角色卡展开显示其全部造型阶段，可勾选合并 */
   stages: StageInfo[];
   /** 被删除的造型阶段（墓碑）：只用于「🗑 已删除的造型」组的恢复入口 */
@@ -39,7 +41,8 @@ interface Props {
   onToast: (m: string) => void;
   // 镜头页签
   shots: ShotInfo[];
-  episodes: EpisodeInfo[];
+  /** B2：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
+  episodes?: EpisodeInfo[];
   selectedShotId: string | null;
   /** 定位线所在镜头 order（镜头卡/资产卡高亮联动） */
   cursorOrder?: number | null;
@@ -87,8 +90,17 @@ interface Props {
 
 export type Tab = "script" | "assets" | "shots";
 
+/** 稳定空数组（见组件内 B2 注释） */
+const EMPTY_ASSETS: AssetInfo[] = [];
+const EMPTY_EPISODES: EpisodeInfo[] = [];
+
 /** 左侧面板：剧本(按集直接编辑) / 资产(含上传) / 镜头(拆解+提示词+生成)。 */
 export default function LibraryPanel(p: Props) {
+  // B2：资产条目与分集列表都挂在项目 detail 上，直接订阅 store。
+  // 空数组用模块级常量兜底，避免每次渲染换引用打穿下游 useMemo/useEffect。
+  const d = useProjectStore((s) => s.detail);
+  const assetsMeta = p.assetsMeta ?? d?.assets ?? EMPTY_ASSETS;
+  const episodes = p.episodes ?? d?.episodes ?? EMPTY_EPISODES;
   const [innerTab, setInnerTab] = useState<Tab>("script");
   const tab = p.tab ?? innerTab;
   const setTab = (t: Tab) => { p.onTabChange ? p.onTabChange(t) : setInnerTab(t); };
@@ -103,7 +115,7 @@ export default function LibraryPanel(p: Props) {
     projectId: p.projectId,
     onToast: p.onToast,
     onAddClips: p.onAddClips,
-    assets: p.assetsMeta,
+    assets: assetsMeta,
     // 资产页的落库会新增/覆盖资产行，两处都要重拉：refresh 是资产列表，
     // refreshStages 是角色分层（新挂上去的图要在分层里立刻可见）。
     onAssetsChanged: () => { p.onRefresh(); p.onRefreshStages(); },
@@ -122,7 +134,7 @@ export default function LibraryPanel(p: Props) {
       setEpContents(r.episodes);
     } catch { /* 无剧本时静默 */ }
   };
-  useEffect(() => { loadEpContents(); }, [p.projectId, p.episodes.length]);
+  useEffect(() => { loadEpContents(); }, [p.projectId, episodes.length]);
 
   const doParse = async (text: string) => {
     setBusy(true); setErr("");
@@ -423,7 +435,10 @@ export default function LibraryPanel(p: Props) {
         const target = assetDropTargetAt(r.hit);
         const ctx = p.assetDropCtx;
         if (!ctx) return;
-        void commitAssetDrop(target, data, r.clientX, ctx).then((ok) => {
+        // 3.12（F4）：把 Promise 交回 `startDrag` —— 它会在落定之前一直挂着
+        // 跟随指针的那个标签。否则松手瞬间标签就没了、注入却还在路上，
+        // 用户看到的是"拖了但什么都没发生"，然后轨道上才冒出一段新的。
+        return commitAssetDrop(target, data, r.clientX, ctx).then((ok) => {
           if (!ok) p.onToast(`把小图拖到轨道或资产段的「${data.name}」上才能放进去`);
         });
       },
@@ -515,9 +530,9 @@ export default function LibraryPanel(p: Props) {
         <div className="lib-body">
           <div className="row">
             <button className="btn primary" style={{ flex: 1 }}
-              disabled={assetJob !== null || !p.assetsMeta.some((a) => a.kind === "character")}
+              disabled={assetJob !== null || !assetsMeta.some((a) => a.kind === "character")}
               onClick={openGenPicker}
-              title={p.assetsMeta.some((a) => a.kind === "character") ? "挑选要生成的资产图：默认全选主角，配角和场景可自己勾" : "先在「🎬 镜头」页完成拆解"}>
+              title={assetsMeta.some((a) => a.kind === "character") ? "挑选要生成的资产图：默认全选主角，配角和场景可自己勾" : "先在「🎬 镜头」页完成拆解"}>
               {assetJob ? `生成中 ${assetJob.progress}%` : "✨ AI 生成资产图"}
             </button>
             <button className="btn" disabled={uploading} onClick={() => fileRef.current?.click()}>
@@ -535,8 +550,8 @@ export default function LibraryPanel(p: Props) {
           {(() => {
             // 墓碑资产（用户删掉的）不进正常分组：后端**故意**照旧下发它们，
             // 由前端隐藏 + 提供恢复入口，删错了才找得回来。
-            const live = p.assetsMeta.filter((a) => !a.deleted_at);
-            const gone = p.assetsMeta.filter((a) => a.deleted_at);
+            const live = assetsMeta.filter((a) => !a.deleted_at);
+            const gone = assetsMeta.filter((a) => a.deleted_at);
             // 被删的造型阶段（后端单独下发，不混进 stages —— 那份的契约是
             // 「轨道显示 = 实际注入」）。只在被删角色仍在用时才列：整个角色都
             // 删掉了的话，恢复单个造型没有意义，该走上面的资产恢复。
@@ -910,10 +925,10 @@ export default function LibraryPanel(p: Props) {
           arr.push(s); byName.set(s.character_name, arr);
         }
         const mains2 = [...byName.entries()].filter(([, v]) => v.length >= 2);
-        const supNames = p.assetsMeta
+        const supNames = assetsMeta
           .filter((a) => a.kind === "character" && (byName.get(a.name)?.length ?? 0) < 2)
           .map((a) => a.name);
-        const locNames = p.assetsMeta.filter((a) => a.kind === "location").map((a) => a.name);
+        const locNames = assetsMeta.filter((a) => a.kind === "location").map((a) => a.name);
         const toggle = (key: string) => setGenPick((prev) => {
           const next = new Set(prev);
           if (next.has(key)) next.delete(key); else next.add(key);
@@ -953,7 +968,7 @@ export default function LibraryPanel(p: Props) {
                     <input type="checkbox" checked={genPick.has(`char:${n}`)}
                       onChange={() => toggle(`char:${n}`)} />
                     {n}
-                    {p.assetsMeta.find((a) => a.kind === "character" && a.name === n)?.image_url
+                    {assetsMeta.find((a) => a.kind === "character" && a.name === n)?.image_url
                       && <em className="muted"> 已有图，将覆盖</em>}
                   </label>
                 ))}
@@ -970,7 +985,7 @@ export default function LibraryPanel(p: Props) {
                     <input type="checkbox" checked={genPick.has(`loc:${n}`)}
                       onChange={() => toggle(`loc:${n}`)} />
                     {n}
-                    {p.assetsMeta.find((a) => a.kind === "location" && a.name === n)?.image_url
+                    {assetsMeta.find((a) => a.kind === "location" && a.name === n)?.image_url
                       && <em className="muted"> 已有图，将覆盖</em>}
                   </label>
                 ))}
@@ -995,7 +1010,7 @@ export default function LibraryPanel(p: Props) {
             .filter((s) => s.character_name === assetDlg.name && s.image_url
               && s.id !== assetDlg.stage?.id && s.image_url !== assetDlg.imageUrl)
             .sort((a, b) => a.ep_from - b.ep_from)[0]?.image_url
-            ?? p.assetsMeta.find((a) => a.kind === "character" && a.name === assetDlg.name
+            ?? assetsMeta.find((a) => a.kind === "character" && a.name === assetDlg.name
               && a.image_url && a.image_url !== assetDlg.imageUrl)?.image_url
             ?? null);
         return (
@@ -1040,7 +1055,7 @@ export default function LibraryPanel(p: Props) {
       )}
 
       {tab === "shots" && (
-        <ShotsPanel projectId={p.projectId} shots={p.shots} episodes={p.episodes}
+        <ShotsPanel projectId={p.projectId} shots={p.shots} episodes={episodes}
           selectedShotId={p.selectedShotId} cursorOrder={p.cursorOrder} onSelect={p.onSelectShot}
           onGenerate={p.onGenerate} onSwitchVersion={p.onSwitchVersion}
           onAdvanced={p.onAdvanced} generating={p.generating} jobPhase={p.jobPhase}
