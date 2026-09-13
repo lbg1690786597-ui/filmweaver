@@ -18,13 +18,20 @@ import {
 import { api } from "../../api";
 import type { EpisodeInfo, ShotInfo } from "../../api";
 import AutoTextarea from "../../components/AutoTextarea";
+import { useProjectStore } from "../../stores/projectStore";
 import "./ScriptPanel.css";
 
 interface EpContent { order: number; title: string; content: string }
 
+/** 稳定空数组：见组件内 B2 注释 */
+const EMPTY_EPISODES: EpisodeInfo[] = [];
+
 interface Props {
   projectId: string;
-  episodes: EpisodeInfo[];
+  /** B2：改从 `useProjectStore.detail.episodes` 自取；保留只为脱离 App 单测本组件。
+   *  注意 `load()` 的依赖是 `episodes.length` —— 这里读的是同一份 detail，
+   *  由 store 订阅驱动重渲染，行为与原来由 App 传下来时一致。 */
+  episodes?: EpisodeInfo[];
   shots: ShotInfo[];
   breakdownProgress: number | null;
   onBreakdown: (episodes?: number[]) => void;
@@ -43,6 +50,10 @@ export default function ScriptPanel(p: Props) {
   const [paste, setPaste] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // B2：分集列表来自 store（App 不再转运）。用稳定空数组兜底，
+  // 否则 `?? []` 每渲染换引用会让下面这条 effect 反复触发 `load()`。
+  const episodes = useProjectStore((s) => s.detail?.episodes) ?? EMPTY_EPISODES;
+
   const load = async () => {
     try {
       const r = await api.episodesContent(p.projectId);
@@ -51,7 +62,9 @@ export default function ScriptPanel(p: Props) {
       if (r.episodes.length === 1) setOpen(new Set([r.episodes[0].order]));
     } catch { /* 无剧本时静默 */ }
   };
-  useEffect(() => { void load(); }, [p.projectId, p.episodes.length]);
+  useEffect(() => { void load(); },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [p.projectId, (p.episodes ?? episodes).length]);
 
   const doParse = async (text: string) => {
     setBusy(true); setErr("");
