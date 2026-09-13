@@ -186,19 +186,35 @@ const app = read("src/App.tsx");
 const store = read("src/stores/timelineStore.ts");
 const asset = read("src/features/assets/AssetTrack.tsx");
 const injectAsset = read("src/features/assets/injectAsset.ts");
+const drop = read("src/features/assets/useAssetDrop.ts");
 const th = read("src/features/timeline/TrackHeader.tsx");
 const norm = read("src/render/normalize.ts");
 
 // 光数 pushUndo 的总数不够：新增一处、删掉一处，总数不变照样绿。
 // 所以逐个入口按**它自己的标签**钉死。
+//
+// C2：`pushUndo` 收的是 `CommandDraft`（`{ label, kind, run, unrun }`），
+// 不再是 `pushUndo(label, undo, redo)` 的元组调用 —— 所以这里的模式统一
+// 从 `pushUndo(\`标签` 改成 `pushUndo({…label: \`标签`。**锚在标签上**这一点
+// 没变：标签是每个入口的用户可见名字，正是最不该被顺手改掉又没人发现的东西。
 for (const [what, pat] of [
-  ["素材库插入镜头轨", /pushUndo\(`插入外部素材/],
-  ["Ctrl+V 粘贴", /pushUndo\(`粘贴 \$\{buf\.length\} 个片段`/],
-  ["删除外部素材", /pushUndo\(`移除外部素材/],
-  ["主轨 ↔ 叠加层", /pushUndo\(trackIndex > 0 \? `镜头 #\$\{old\.order\} 移到叠加层`/],
-  ["画面/调色/特效调整", /pushUndo\(label,\n\s+async \(\) => \{ await writeTransform/],
+  ["素材库插入镜头轨", /插入外部素材/],
+  ["Ctrl+V 粘贴", /粘贴 \$\{buf\.length\} 个片段/],
+  ["删除外部素材", /移除外部素材/],
+  ["主轨 ↔ 叠加层", /trackIndex > 0 \? `镜头 #\$\{old\.order\} 移到叠加层`/],
+  ["画面/调色/特效调整", /pushUndo\(\{[\s\S]{0,200}?label,\n\s+kind: "transform"/],
 ] as const) {
   ok(`「${what}」有撤销记录`, pat.test(app));
+}
+
+// 上面把元组形式放宽成对象形式后，必须补一条**证伪**：确保这些标签真的落在
+// 一次 `pushUndo({…})` 里，而不是随便写在别处（比如注释里）也能过。
+for (const [what, label] of [
+  ["素材库插入镜头轨", "插入外部素材"],
+  ["删除外部素材", "移除外部素材"],
+] as const) {
+  ok(`「${what}」的标签就在 pushUndo({…}) 里`,
+    new RegExp("pushUndo\\(\\{[\\s\\S]{0,400}?label: `" + label).test(app));
 }
 
 ok("删外部素材的确认框不再写「此操作不可撤销」",
@@ -231,9 +247,20 @@ ok("值没变就不入栈（松手时防抖可能已经写过同样的值）",
 ok("撤销闭包走 writeTransform，不走 stagedTransform.patch",
   !/undo[\s\S]{0,80}stagedTransform\.patch/.test(app));
 
+// ⚠️ 这条断言在 C1 跟着改名了：闭包字段从 `undo:`/`redo:` 变成
+// `unrun:`/`run:`（命令模型，见 lib/command.ts）。**但守的不变量一个字没变**：
+// 两个方向都必须走 setTrackFlag 写**定值**，绝不能调 toggleTrackX 再翻一次。
+// 所以这里改的是名字，不是强度 —— 顺手把"不许出现 toggle"这半条也补上，
+// 原来只断言了"有 setTrackFlag"，没断言"没有 toggle"，漏了一半。
+//
+// ⚠️ 取函数体时用 `pushUndo\(\{` 作起点，**别从 `function toggleFlagWithUndo`
+// 起** —— 那样 600 字符窗口会先圈住定义自己的名字，负向断言恒假。
+const flagBody = /toggleFlagWithUndo\([\s\S]*?pushUndo\(\{([\s\S]{0,600}?)\}\);/.exec(store)?.[1] ?? "";
 ok("轨道开关的撤销闭包走 setTrackFlag（写定值），不再调 toggleTrackX",
-  /undo: \(\) => \{ get\(\)\.setTrackFlag\(trackId, key, prev\); \}/.test(store)
-  && /redo: \(\) => \{ get\(\)\.setTrackFlag\(trackId, key, next\); \}/.test(store));
+  /unrun: \(\) => \{ get\(\)\.setTrackFlag\(trackId, key, prev\); \}/.test(flagBody)
+  && /run: \(\) => \{ get\(\)\.setTrackFlag\(trackId, key, next\); \}/.test(flagBody)
+  && !/toggleTrack/.test(flagBody),
+  "翻转是相对操作：中途有别的路径改过这个标志，再翻一次回到的就不是原状态了");
 ok("折叠没有被顺手塞进 toggleFlagWithUndo",
   !/toggleTrackCollapsed: \(id\) => toggleFlagWithUndo/.test(store));
 
@@ -242,13 +269,15 @@ ok("折叠没有被顺手塞进 toggleFlagWithUndo",
  * ================================================================== */
 console.log("\n④ 重做：五个资产轨入口补齐 redo");
 
-// 类型上把 redo 变成必传，tsc 就会替我们盯住每一个调用点 ——
-// 比在这里数闭包个数可靠得多（数闭包会被格式化改动搞坏）。
-ok("AssetTrack 的 onPushUndo 把 redo 声明成**必传**",
-  /onPushUndo: \(\s*\n?\s*label: string, undo: \(\) => Promise<void>, redo: \(\) => Promise<void>,/
-    .test(asset),
-  "声明成可选的话，useUndo 会塞一个只弹「暂不支持重做」的桩，"
-  + "重做按钮亮着却点了没反应");
+// C2：`redo` 从"可选参数"变成了命令对象里**必写的 `run`** —— 类型层面的
+// 强制反而更硬了。以前 `redo?:` 声明成可选时，tsc 会放行一个不传 redo 的
+// 调用点；现在 `run` 在 `CommandDraft` 里是非可选的，**漏写就是缺字段**，
+// 一样是编译期报错，而且不止 AssetTrack 这一条链。
+ok("AssetTrack 的 onPushUndo 收 CommandDraft（run 是必填字段）",
+  /onPushUndo: \(draft: CommandDraft\) => void;/.test(asset),
+  "退回不定长参数 = 又允许「撤销能写、重做靠自觉」，那正是 C1 之前的病根");
+ok("整条资产注入链（AssetTrack → useAssetDrop → injectAsset）签名一致",
+  [asset, drop, injectAsset].every((f) => /onPushUndo: \(draft: CommandDraft\) => void;/.test(f)));
 ok("五个资产轨入口一个不少",
   ((asset + injectAsset).match(/(?:p|a)\.onPushUndo\(/g) ?? []).length === 5,
   "第 5 个（拖资产卡进轨道）已挪进 injectAsset.ts，与镜头轨那条 lane 共用同一份实现，"
