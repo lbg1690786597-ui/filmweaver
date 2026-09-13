@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { api, ShotInfo, VideoProviderInfo } from "../api";
 import AutoTextarea from "./AutoTextarea";
 import { productionModeLabel } from "../lib/modelLabels";
+import { useProjectStore } from "../stores/projectStore";
 
 interface Props {
   shot: ShotInfo;
-  productionMode: string | null;   // 项目级模式（继承来源展示）
+  /** B2：改从 store 自取；保留字段设为可选只为脱离 App 单测本组件。 */
+  productionMode?: string | null;
   onClose: () => void;
   onSaved: () => void;
   onToast: (m: string) => void;
@@ -13,6 +15,9 @@ interface Props {
 
 /** T-R1-04 镜头高级面板：三层策略覆盖 + 五生成模式选择器（modes 置灰带原因）。 */
 export default function ShotAdvanced(p: Props) {
+  // B2：项目级模式只用于第 74 行那句「继承：项目·X 模式」的文案。
+  const modeFromStore = useProjectStore((s) => s.detail?.production_mode ?? null);
+  const productionMode = p.productionMode !== undefined ? p.productionMode : modeFromStore;
   const [providers, setProviders] = useState<VideoProviderInfo[]>([]);
   const [modeNames, setModeNames] = useState<Record<string, string>>({});
   const ov = (p.shot.profile_override ?? {}) as Record<string, any>;
@@ -71,7 +76,7 @@ export default function ShotAdvanced(p: Props) {
       <div className="wizard" style={{ width: 520 }} onClick={(e) => e.stopPropagation()}>
         <h2>镜头 #{p.shot.order} · 高级设置</h2>
         <div className="muted">
-          继承：项目·{productionModeLabel(p.productionMode)} 模式{Object.keys(ov).length ? "（本镜已有覆盖）" : ""}
+          继承：项目·{productionModeLabel(productionMode)} 模式{Object.keys(ov).length ? "（本镜已有覆盖）" : ""}
         </div>
 
         <label>模型（留空=继承项目模式）
