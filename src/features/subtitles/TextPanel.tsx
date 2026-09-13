@@ -34,6 +34,7 @@ import { styleToCss } from "../../lib/subtitleStyle";
 import { generateFromNarration, generateFromScript } from "./generate";
 import { BUNDLED_FONTS, listSystemFonts, type FontOption } from "./fonts";
 import { IS_TAURI } from "../export/ExportDialog";
+import { useProjectStore } from "../../stores/projectStore";
 import "./TextPanel.css";
 
 /** 字幕样式预设。**只是起点**——点一下把参数灌进下面的编辑器，之后随便改。
@@ -93,17 +94,27 @@ interface Props {
    * 免费的字幕生成通路，用户看到的字幕是验证时用脚本按字数估算写进库的，
    * 于是既会和音频错位，也会把舞台提示当成台词。
    */
+  /** B2：改从 store 自取（`production_mode === "drama"`）；保留只为脱离 App 单测。 */
   fromVideo?: boolean;
   /** 全部镜头。真人剧的字幕要按镜头去探声轨、按镜序锚定，
    *  时长/片窗口（`clip_in_sec` / `clip_dur_sec`）也都在镜头上。
    *  外层已有这份数据，面板不再自己拉一遍（同 `clips` 的单一数据源原则）。 */
-  shots: ShotInfo[];
+  /** B2：改从 store 自取；保留只为脱离 App 单测本组件。 */
+  shots?: ShotInfo[];
   /** 增删改后通知外层刷新（时间轴字幕轨与本面板共用同一份数据） */
   onChanged: () => void;
   onToast: (m: string) => void;
 }
 
+/** 稳定空数组：`?? []` 每次渲染换引用，会打穿下游 useMemo/useEffect */
+const EMPTY_SHOTS: ShotInfo[] = [];
+
 export default function TextPanel(p: Props) {
+  // B2（2026-09-11）：镜头列表与「真人剧」判定都来自项目 detail，本组件直接订阅。
+  // 显式传入（含 `false`）时以传入为准，便于脱离 App 单独挂载。
+  const d = useProjectStore((s) => s.detail);
+  const shots = p.shots ?? d?.shots ?? EMPTY_SHOTS;
+  const fromVideo = p.fromVideo !== undefined ? p.fromVideo : d?.production_mode === "drama";
   const [tab, setTab] = useState<"text" | "style">("text");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -193,7 +204,7 @@ export default function TextPanel(p: Props) {
   const genFromScript = async () => {
     setGenLabel("读取台词…");
     try {
-      const r = await generateFromScript(p.projectId, p.shots, {
+      const r = await generateFromScript(p.projectId, shots, {
         probe: IS_TAURI,
         onProgress: (done, total, label) => setGenLabel(`${label}（${done}/${total}）`),
       });
@@ -358,7 +369,7 @@ export default function TextPanel(p: Props) {
             {/* 真人剧不渲染「从旁白生成」：`audio_clips` 恒为空，那个按钮
                 点了必然报「没有旁白」——放一个注定失败的入口只会让人以为
                 字幕功能坏了。反过来解说剧也不渲染「从台词生成」。 */}
-            {p.fromVideo
+            {fromVideo
               ? <>{scriptBlock}{manualBlock}{asrBlock}</>
               : <>{narrationBlock}{manualBlock}{asrBlock}</>}
 
