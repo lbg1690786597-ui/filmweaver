@@ -12,6 +12,7 @@ import {
   ScrollText, Clapperboard, Video, Image, Mic, ListTodo,
 } from "lucide-react";
 import { useEditorStore, LeftPanelTab } from "../../stores/editorStore";
+import { useProjectStore } from "../../stores/projectStore";
 import "./Rail.css";
 
 interface RailItem {
@@ -41,9 +42,13 @@ const AI_ITEMS: RailItem[] = [
 export default function Rail(p: { productionMode?: string | null } = {}) {
   const tab = useEditorStore((s) => s.leftPanelTab);
   const setTab = useEditorStore((s) => s.setLeftPanelTab);
+  // B2：生产模式从 store 自取。显式传入（含 `null`）时以传入为准，
+  // 便于本组件脱离 App 单独挂载；App 已不再传。
+  const mode = useProjectStore((s) => s.detail?.production_mode ?? null);
+  const productionMode = p.productionMode !== undefined ? p.productionMode : mode;
   // 真人剧的 ai-voice 面板里是**角色音色**（给角色指定说话声），不是 TTS 配音。
   // 侧栏还写"配音"的话，点进去看到的东西对不上（见 AudioPanel 头注释）。
-  const isNarration = p.productionMode === "narration";
+  const isNarration = productionMode === "narration";
 
   const renderItem = ({ tab: t, label, Icon }: RailItem) => (
     <button key={t}
