@@ -428,7 +428,11 @@ for (const rel of PANELS) {
   //   一路跨过 409 的块尾，够到了后面那条 `say(String(e)); throw e;`。
   // 所以只能**切段**查：409 分支自己那一段里必须有 rethrow。
   // 409 恰恰是最要紧的那条（2.3 乐观锁全靠它把冲突捅到 stagedWrite）。
-  const c409 = wbody.slice(wbody.indexOf("shotRev.forget(shotId);"),
+  // B4：forget 现在经 store 转发（`forgetTransformRev`），不再是直接摸单例。
+  // 这里按**行为**锚定，不按模块名 —— 名字会变，"409 这一支必须先忘掉版本号
+  // 再 rethrow"这件事不会变。（`verify-shot-rev.ts` ⑥ 另有一条钉住
+  // 那个转发名确实接到了 `shotRev.forget` 上。）
+  const c409 = wbody.slice(wbody.indexOf("forgetTransformRev(shotId);"),
                            wbody.indexOf("say(String(e))"));
   ok("writeTransform 的 409 分支 rethrow（不然并发冲突会被当成保存成功）",
      c409.length > 0 && /throw e;/.test(c409),
