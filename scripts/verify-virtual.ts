@@ -217,10 +217,24 @@ ok("lane 仍保持满宽 totalWidth（3.3 的跟随滚动读 scrollWidth）",
 // 原第四种 `previewOrder` 是顺序拖动的"假位置"，已随顺序拖动改指针 transform 而整个删除
 // —— 位置不再进 React state，也就没有需要保活的片段。名字留在 `keepIds` 里会是在
 // 保活一个没人读的 state，故这条钉也随之收窄。**新增拖动状态时必须回来加名字。**
-ok("正在拖/修剪的片段进 keepIds（三种拖动状态，Set 与依赖两处都要列全）",
-  (tlx.match(/\[move\?\.clipId, previewDur\?\.id, overlayDrag\?\.clipId\]/g)
-    ?? []).length === 2,
+//
+// 3.12：`overlayDrag` 也走了同一条路（叠加层拖动位置改由 `gesture.ts` 直接写
+// DOM transform），故这里从三种收窄回两种。同理——**新增拖动状态时必须回来加名字**。
+const keepNames = ["move?.clipId", "previewDur?.id"];
+// 「已废弃」是**墓碑注释**，不是活代码 —— 断言前先把注释剥掉，否则
+// 一条"别再把它加回来"的说明会反过来把这条钉判失败。
+const tlxCode = tlx
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^\s*\/\/.*$/gm, "");
+ok("正在拖/修剪的片段进 keepIds（每种拖动状态的 Set 与依赖两处都要列全）",
+  // 只认 `keepIds` 里那一对方括号（Set 内容 + useMemo 依赖），不是全文件数名字 ——
+  // 同样的表达式在渲染处还会出现两次（`isDragging` / `previewD`），数全文件会误判。
+  (tlxCode.match(/\[(move\?\.clipId[^\]]*)\]/g) ?? [])
+    .filter((s) => keepNames.every((n) => s.includes(n))).length === 2,
   "漏列在 Set 里 → 拖那种片段时它整段消失；漏列在依赖里 → 拖动首帧仍按陈值把它剔掉");
+ok("keepIds 里没有已废弃的拖动 state（保活一个没人读的 state 是纯误导）",
+  !tlxCode.includes("overlayDrag"),
+  "overlayDrag 3.12 起已删除：位置全部由 gesture.ts 写 DOM，不再进 React state");
 ok("视口按桶量化后才进 state（不量化 = 每帧 setState，白省）",
   /bucketViewport\(el\?\.scrollLeft \?\? 0, el\?\.clientWidth \?\? 0\)/.test(tlx)
   && /sameViewport\(cur, next\) \? cur : next/.test(tlx));
