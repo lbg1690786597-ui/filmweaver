@@ -346,11 +346,17 @@ ok("纵向命中靠 lane 上的 data-track-id（折叠轨/资产轨天然不参�
   "改成按 tracks 下标猜的话，折叠轨与资产轨会把纵向对应关系整体错位");
 ok("「算不算拖动」横纵都算（否则纯纵向拖是静默返回）",
   /Math\.abs\(q\.x - x0\) > 3 \|\| Math\.abs\(q\.y - y0\) > 3/.test(tl));
-ok("lane 矩形只在按下时量一次，之后用滚动增量校正",
-  /const s0 = \{ left: sc\?\.scrollLeft \?\? 0, top: sc\?\.scrollTop \?\? 0 \};/.test(tl)
-  && /ev\.clientX \+ \(\(sc\?\.scrollLeft \?\? 0\) - s0\.left\)/.test(tl),
-  "每帧对十几条 lane 调 getBoundingClientRect 会强制同步布局；"
-  + "而拖动中容器确实可能滚，不校正就会错位");
+// 3.12：判据从"某个具体表达式"改成"这两件事还在不在" —— 相邻帧的写法会随
+// 手势层重写而变（这里刚刚从 `mousemove` 手抄改成 `gesture.ts`），但
+// 「量一次」和「按滚动增量校正」这两条一旦丢，症状一模一样且很难再查。
+ok("lane 矩形只在按下时量一次（在起手函数里就地取，不在 onFrame 里取）",
+  /querySelectorAll<HTMLElement>\("\.fw-tl-lane\[data-track-id\]"\)[\s\S]{0,260}?getBoundingClientRect\(\)/.test(tl)
+  && !/onFrame:[\s\S]{0,500}?getBoundingClientRect\(\)/.test(tl),
+  "每帧对十几条 lane 调 getBoundingClientRect 会强制同步布局");
+ok("拖动中按滚动增量校正回「按下那一刻」的坐标系",
+  /clientX \+ \(\(sc\?\.scrollLeft \?\? 0\) - s0\.left\)/.test(tl)
+  && /clientY \+ \(\(sc\?\.scrollTop \?\? 0\) - s0\.top\)/.test(tl),
+  "拖动中容器确实可能滚，不校正就会错位");
 ok("框选浮层按轨 id 集合逐条画（不再是单个 trackId 相等）",
   /marquee\.trackIds\.includes\(track\.id\)/.test(tl));
 ok("浮层宽度有 2px 兜底：纯纵向拖会选中却画不出来",
