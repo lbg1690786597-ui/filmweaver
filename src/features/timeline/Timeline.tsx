@@ -21,6 +21,9 @@ import { ZOOM_MIN, ZOOM_MAX } from "../../types/timeline";
 import type { ShotInfo, AudioClipInfo, StageInfo, LocationInfo, AssetInfo, SubtitleClipInfo, TransitionInfo, AssetDragData } from "../../api";
 import { buildTimeline, buildOrderOffsetMap, secToPosition } from "../../adapters/shotToClip";
 import { useTimelineStore } from "../../stores/timelineStore";
+import { useProjectStore } from "../../stores/projectStore";
+import { useShallow } from "zustand/react/shallow";
+import type { CommandDraft } from "../../lib/command";
 import TimelineRuler from "./TimelineRuler";
 import TrackHeader from "./TrackHeader";
 import ClipView from "./ClipView";
@@ -44,6 +47,10 @@ import { followScroll, FOLLOW_SUSPEND_MS } from "./playhead";
 import { createScrubber } from "./scrub";
 import type { ScrubPhase, Scrubber } from "./scrub";
 import { startDrag } from "./pointerDrag";
+// 3.12：所有"按下 → 拖动 → 落点写入"的手势统一走这一层。它替掉的是原先把
+// `mousedown` + `window.mousemove` + 每次 move 一次 setState 手抄十遍的写法，
+// 见 gesture.ts 头注释。
+import { beginGesture, clipEl, stylePreview } from "./gesture";
 import { buildSlots } from "./dragGeom";
 import { planRecut, dragCutA, dragCutB } from "./recutPlan";
 import { isTextInput } from "../../commands";
@@ -84,10 +91,15 @@ interface Props {
   onDeleteTransition: (m: SeamMarker) => void;
   stages?: StageInfo[];
   locations?: LocationInfo[];
+  /** B2（2026-09-11）：改从 store 自取；保留为可选只为脱离 App 单独挂载。
+   *  ⚠️ 与之配套的是下面 `assetsFromStore` —— 本组件里 `assets` 这个名字
+   *  已被局部变量占用（拆分 / 合并逐项），不能直接覆盖。 */
   assets?: AssetInfo[];
 
   /** 单镜时长上限（秒），来自 detail.shot_duration_max（seedance-2.5 = 30）。
-   *  缺省按 15，即老模型口径。 */
+   *  缺省按 15，即老模型口径。
+   *  B2（2026-09-11）：改从 store 自取 —— 传了就用传入的，没传则用 store 值，
+   *  store 也没有才落到调用处的 MAX_CLIP_SEC_FALLBACK。 */
   maxClipSec?: number;
 
   selectedShotId: string | null;
@@ -159,13 +171,19 @@ interface Props {
    *  用户按提示拖过去什么都不会发生。 */
   onDropClip?: (clip: { id: string; name: string; url: string;
                         kind: string; duration: number }) => void;
-  /** Render V2：主轨 ↔ 叠加层互移（trackIndex=0 回主轨） */
-  onMoveTrack: (shotId: string, trackIndex: number, startSec?: number) => void;
-  /** redo 可选：App 的 pushUndo 缺 redo 时会塞一个"暂不支持重做"的桩。
-   *  资产注入（AssetTrack / 镜头轨拖入）会传 redo，所以类型里必须有这一位，
-   *  否则拖到镜头轨的注入会退化成"能撤销、不能重做"。 */
-  onPushUndo: (label: string, undo: () => Promise<void>,
-               redo?: () => Promise<void>) => void;
+  /** Render V2：主轨 ↔ 叠加层互移（trackIndex=0 回主轨）
+   *
+   *  ⚠️ 3.12（F4）：它**返回 Promise**（App 侧 `doMoveTrack` 本来就 async，
+   *  尾部 `await refreshDetail()`）。拖动落点必须先 `await` 它、再撤掉
+   *  DOM 预览，否则块会按服务端旧位置重画一帧再跳到新位置 ——
+   *  用户看到的就是"松手来回闪"。类型若是 `void`，`await` 会立刻返回，
+   *  修复就只是看着像修好了。 */
+  onMoveTrack: (shotId: string, trackIndex: number, startSec?: number)
+    => Promise<void> | void;
+  /** C2：改收 `CommandDraft`。旧签名 `(label, undo, redo?)` 里那个「redo 可选」
+   *  的坑（不传就静默退化成"能撤销、不能重做"）正是命令模型要消掉的东西 ——
+   *  现在 `reversible: false` 是一个显式布尔值，写不写得出重做一眼可见。 */
+  onPushUndo: (draft: CommandDraft) => void;
   onToast: (m: string) => void;
   /** Phase 5：资产轨改动后重拉 stages + detail */
   onAssetsChanged: () => void;
@@ -182,7 +200,51 @@ interface CtxState { x: number; y: number; clip: Clip }
 interface MoveState { clipId: string; shotId: string; startOrder: number; overOrder: number }
 
 export default function Timeline(p: Props) {
-  const store = useTimelineStore();
+  // B2（2026-09-11）：资产候选池与单镜时长上限都来自项目 detail。
+  // ⚠️ 这两个字段在本组件里是**低频只读**的（资产轨的候选池 / 拖拽钳制），
+  // 与高频的 timelineStore 完全无关 —— 单独窄订阅，不要并进上面那个
+  // useShallow（那会把「每帧拖动」和「detail 变化」绑成同一条重渲路径）。
+  const detailAssets = useProjectStore((s) => s.detail?.assets);
+  const assetsFromStore = p.assets ?? detailAssets;
+  const maxClipSecStore = useProjectStore((s) => s.detail?.shot_duration_max);
+  const maxClipSec = p.maxClipSec !== undefined ? p.maxClipSec : maxClipSecStore;
+  // ⚠️ **必须窄订阅**（2026-09-12 修「不跟手/闪烁」）。
+  //
+  // 原来是 `const store = useTimelineStore()` —— 无选择器，等于订阅整个 store，
+  // 任何一个字段变化都会重渲整个 `<Timeline>`：1424 个 ClipView、轨道头、
+  // 刻度尺全部重算。而拖动路径上每次指针移动都会写 store（`setSnapGuide`
+  // 每帧一次，见 timelineStore 里那条注释），于是"拖动 = 每帧全树重渲"，
+  // 表现为块跟不上光标、来回闪。
+  //
+  // `useShallow` 逐个浅比较这十几个字段：只有**真正用到的**值变了才重渲。
+  // 带上 action 是刻意的 —— 它们是 `create` 时的闭包常量，引用恒定，
+  // 参与浅比较不会造成额外重渲，反而省掉了"从 getState() 现取"的写法。
+  const store = useTimelineStore(useShallow((s) => ({
+    timeline: s.timeline,
+    playheadSec: s.playheadSec,
+    pxPerSec: s.pxPerSec,
+    snapping: s.snapping,
+    snapGuideSec: s.snapGuideSec,
+    selection: s.selection,
+    undoStack: s.undoStack,
+    redoStack: s.redoStack,
+    setPlayheadSec: s.setPlayheadSec,
+    setPxPerSec: s.setPxPerSec,
+    zoomBy: s.zoomBy,
+    fitTo: s.fitTo,
+    toggleSnapping: s.toggleSnapping,
+    toggleTrackLock: s.toggleTrackLock,
+    toggleTrackHidden: s.toggleTrackHidden,
+    toggleTrackMuted: s.toggleTrackMuted,
+    toggleTrackSolo: s.toggleTrackSolo,
+    toggleTrackCollapsed: s.toggleTrackCollapsed,
+    clearSelection: s.clearSelection,
+    isClipSelected: s.isClipSelected,
+    selectClip: s.selectClip,
+    copySelection: s.copySelection,
+    undo: s.undo,
+    redo: s.redo,
+  })));
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [ctx, setCtx] = useState<CtxState | null>(null);
   const [move, setMove] = useState<MoveState | null>(null);
@@ -194,9 +256,14 @@ export default function Timeline(p: Props) {
    *  而不是单个 trackId —— 浮层要在每条被覆盖的 lane 里各画一条，拼成一个带子。 */
   const [marquee, setMarquee] = useState<
     { fromSec: number; toSec: number; trackIds: string[] } | null>(null);
-  /** 叠加层拖动预览（按绝对秒，与主轨的 order 拖动是两套语义） */
-  const [overlayDrag, setOverlayDrag] = useState<
-    { clipId: string; startSec: number } | null>(null);
+  /** 叠加层拖动预览（按绝对秒，与主轨的 order 拖动是两套语义）
+   *
+   *  3.12（F4）：**已废弃、不要再接回来**。叠加层拖动的位置现在完全由
+   *  `gesture.ts` 的 `stylePreview` 直接写 DOM `transform`，React 不再参与
+   *  —— 旧版把"落点那一格"的起点算成 state 传给 ClipView，于是"DOM 跟手"
+   *  和"React 按格重画"为同一个像素打架，正是用户看到的来回闪。
+   *  这里保留一行注释而不是删掉说明，是为了让下次想加"拖拽预览 state"的人
+   *  先看到它为什么被拿掉。 */
   /** 素材拖到轨道上方时的高亮反馈（没有它用户不知道能不能放） */
   const [dropHot, setDropHot] = useState(false);
   /** 3.6 正在编辑的转场（点接缝上的菱形打开）。用屏幕坐标定位，理由同右键菜单：
@@ -223,9 +290,9 @@ export default function Timeline(p: Props) {
       subtitleClips: p.subtitleClips ?? [],
       stages: p.stages ?? [],
       locations: p.locations ?? [],
-      assets: p.assets ?? [],
+      assets: assetsFromStore ?? [],
     }));
-  }, [p.shots, p.audioClips, p.subtitleClips, p.stages, p.locations, p.assets]);
+  }, [p.shots, p.audioClips, p.subtitleClips, p.stages, p.locations, assetsFromStore]);
 
   // ---- 外部选中镜头（分镜列表/播放器）→ 同步选中态 + 滚动到可见 ----
   // 三联动的最后一环：点镜头卡时时间轴要**滚过去**，否则 300 镜的项目里
@@ -387,9 +454,9 @@ export default function Timeline(p: Props) {
    *  3.11 起顺序拖动也靠它：被拖的块在拖动期间是**自己 transform 跟手**的，
    *  一旦被视口裁剪掉，指针还按着、块却没了 —— 用户会以为拖丢了。 */
   const keepIds = useMemo(() => new Set(
-    [move?.clipId, previewDur?.id, overlayDrag?.clipId]
+    [move?.clipId, previewDur?.id]
       .filter((x): x is string => !!x)),
-    [move?.clipId, previewDur?.id, overlayDrag?.clipId]);
+    [move?.clipId, previewDur?.id]);
 
   /* ==== 3.6 转场接缝 ====================================================
    *
@@ -428,104 +495,108 @@ export default function Timeline(p: Props) {
   // DOM 计算中间。规则本身在 `clipEdit.ts`（纯函数、node 下可验证），
   // 这里只负责"鼠标位置 → 秒"以及预览。
 
-  /** 拖右边缘：改播放时长。 */
-  const beginTrimNonShot = useCallback((e: React.MouseEvent, clip: Clip) => {
+  /** 拖右边缘：改播放时长。
+   *
+   *  ⚠️ 3.12：**入参从 `React.MouseEvent` 换成了 `React.PointerEvent`**。
+   *  handler 本身没变（都只读 clientX/clientY），但起点必须是 pointerdown ——
+   *  WebView2 的宿主拖放会打断 `mousedown` 那条通道（见 gesture.ts 头注释）。
+   *  `ClipView` 的两个 trim 手柄已同步改成 `onPointerDown`。 */
+  const beginTrimNonShot = useCallback((e: React.PointerEvent, clip: Clip) => {
     if (!canDrag(clip)) return;
     e.preventDefault(); e.stopPropagation();
     const b = durationBounds(clip);
     const startSec = clip.durationSec;
-    const startX = e.clientX;
     let latest = quantizeSec(startSec);
+    // 拖动期预览直接写 DOM：宽度只跟这一个元素有关，经 React 走等于每帧
+    // 重渲整棵轨道树（1424 镜的项目上就是"拖不动"）。
+    const pv = stylePreview(clipEl(clip.id));
     setPreviewDur({ id: clip.id, sec: latest });
-    document.body.style.cursor = "ew-resize";
-    const onMove = (ev: MouseEvent) => {
-      const want = startSec + (ev.clientX - startX) / pxPerSec;
-      const next = quantizeSec(clampDuration(want, b));
-      if (next === latest) return;
-      latest = next;
-      setPreviewDur({ id: clip.id, sec: next });
-    };
-    const onUp = async () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setPreviewDur(null);
-      const patch = trimOutPatch(clip, latest);
-      if (patch) await p.onEditClip(patch);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginGesture(e.nativeEvent, {
+      cursor: "ew-resize",
+      onFrame: (g) => {
+        const want = startSec + g.dx / pxPerSec;
+        const next = quantizeSec(clampDuration(want, b));
+        if (next === latest) return;
+        latest = next;
+        pv.widthPx(next * pxPerSec);
+      },
+      onCommit: async () => {
+        const patch = trimOutPatch(clip, latest);
+        if (patch) await p.onEditClip(patch);
+      },
+      // 预览与写回同生共死：写回没落定之前不撤预览，否则元素会先弹回
+      // 服务端旧宽度、再跳到新宽度（"松手来回闪"）。见 gesture.ts onSettle。
+      onSettle: () => { pv.reset(); setPreviewDur(null); },
+    });
   }, [pxPerSec, p]);
 
   /** 拖左边缘：晚点开始放（左边缘右移 + 变短）；往左拖则把剪掉的开头还回来。 */
-  const beginTrimInNonShot = useCallback((e: React.MouseEvent, clip: Clip) => {
+  const beginTrimInNonShot = useCallback((e: React.PointerEvent, clip: Clip) => {
     if (!canDrag(clip)) return;
     e.preventDefault(); e.stopPropagation();
     // 上下限一次算清（**含负数余量** —— 左边缘不是单向阀，理由见
     // clipEdit.ts 的 trimInDeltaBounds），预览与写回共用同一组数，
     // 否则拖得动的范围和存得下的范围会差一截，表现为"松手弹回去"。
     const db = trimInDeltaBounds(clip);
-    const startX = e.clientX;
-    const startSec = clip.startSec;
     let latestDelta = 0;
+    const pv = stylePreview(clipEl(clip.id));
     setPreviewDur({ id: clip.id, sec: clip.durationSec });
-    document.body.style.cursor = "ew-resize";
-    const onMove = (ev: MouseEvent) => {
-      const raw = (ev.clientX - startX) / pxPerSec;
-      const d = quantizeSec(Math.max(db.min, Math.min(db.max, raw)));
-      if (d === latestDelta) return;
-      latestDelta = d;
-      // 预览要同时表达"变短"和"右移"，否则松手前后画面会跳一下
-      setPreviewDur({ id: clip.id, sec: clip.durationSec - d });
-      setOverlayDrag({ clipId: clip.id, startSec: startSec + d });
-    };
-    const onUp = async () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setPreviewDur(null); setOverlayDrag(null);
-      const patch = trimInPatch(clip, latestDelta);
-      if (patch) await p.onEditClip(patch);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    beginGesture(e.nativeEvent, {
+      cursor: "ew-resize",
+      onFrame: (g) => {
+        const d = quantizeSec(Math.max(db.min, Math.min(db.max, g.dx / pxPerSec)));
+        if (d === latestDelta) return;
+        latestDelta = d;
+        // 预览要同时表达"变短"和"右移"：左缘右移 d 秒 = 整体右移 d×px、
+        // 宽度减 d×px。只做其中一样，松手前后画面都会跳。
+        pv.widthPx((clip.durationSec - d) * pxPerSec, d * pxPerSec);
+      },
+      onCommit: async () => {
+        const patch = trimInPatch(clip, latestDelta);
+        if (patch) await p.onEditClip(patch);
+      },
+      onSettle: () => { pv.reset(); setPreviewDur(null); },
+    });
   }, [pxPerSec, p]);
 
   /** 拖整段：改锚点（第几镜 + 镜内偏移）。换算交给 App，见 onMoveClip。 */
-  const beginMoveNonShot = useCallback((e: React.MouseEvent, clip: Clip) => {
+  const beginMoveNonShot = useCallback((e: React.PointerEvent, clip: Clip) => {
     if (!canDrag(clip)) return;
-    const startX = e.clientX;
     const startSec = clip.startSec;
     let latestSec = startSec;
-    document.body.style.cursor = "grabbing";
     const st0 = useTimelineStore.getState();
     const snapPts = st0.snapping
       ? collectSnapPoints(st0.timeline, st0.playheadSec, st0.cursorSec, clip.id)
       : [];
-    const onMove = (ev: MouseEvent) => {
-      const raw = Math.max(0, startSec + (ev.clientX - startX) / pxPerSec);
-      const r = snapPts.length
-        ? snapRange(raw, clip.durationSec, snapPts, pxPerSec)
-        : { sec: raw, hit: null };
-      useTimelineStore.getState().setSnapGuide(r.hit ? r.hit.sec : null);
-      if (Math.abs(r.sec - latestSec) < 0.02) return;
-      latestSec = r.sec;
-      setOverlayDrag({ clipId: clip.id, startSec: r.sec });
-    };
-    const onUp = () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setOverlayDrag(null);
-      useTimelineStore.getState().setSnapGuide(null);
-      if (Math.abs(latestSec - startSec) < 0.05) return;
-      p.onMoveClip(clip, latestSec);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    const pv = stylePreview(clipEl(clip.id));
+    beginGesture(e.nativeEvent, {
+      onFrame: (g) => {
+        const raw = Math.max(0, startSec + g.dx / pxPerSec);
+        const r = snapPts.length
+          ? snapRange(raw, clip.durationSec, snapPts, pxPerSec)
+          : { sec: raw, hit: null };
+        // 吸附参考线：`setSnapGuide` 自己做了等值短路（timelineStore），
+        // 所以这里不必再判一次"变化没有"——但位置预览必须直接写 DOM，
+        // 它才是那个每帧都在动的东西。
+        useTimelineStore.getState().setSnapGuide(r.hit ? r.hit.sec : null);
+        if (Math.abs(r.sec - latestSec) < 0.02) return;
+        latestSec = r.sec;
+        pv.shiftPx((r.sec - startSec) * pxPerSec);
+      },
+      onCommit: async () => {
+        if (Math.abs(latestSec - startSec) < 0.05) return;
+        // `onMoveClip` 是 async（PATCH + refreshDetail），**必须 await**：
+        // 不等的话 onSettle 会立刻撤掉预览，元素弹回旧位置再跳新位置。
+        await p.onMoveClip(clip, latestSec);
+      },
+      onSettle: () => {
+        pv.reset();
+        useTimelineStore.getState().setSnapGuide(null);
+      },
+    });
   }, [pxPerSec, p]);
 
-  const beginTrim = useCallback((e: React.MouseEvent, clip: Clip) => {
+  const beginTrim = useCallback((e: React.PointerEvent, clip: Clip) => {
     // 7.2：折叠标记（停用镜头）不参与修剪 —— 它的 durationSec 已经是 0，
     // 让它进来只会拿 0 当起点算出一堆负数。ClipView 也不给它渲染手柄，
     // 这里是第二道闸（键盘/程序触发的路径不经过 DOM）。
@@ -539,39 +610,36 @@ export default function Timeline(p: Props) {
     const shotId = clip.shotId;
     const win = winOf(clip);
     const startSec = clip.durationSec;
-    const startX = e.clientX;
     const minSec = minTrimSec(win, MIN_CLIP_SEC);
     let latest = quantizeSec(startSec);
+    const pv = stylePreview(clipEl(clip.id));
     setPreviewDur({ id: clip.id, sec: latest });
-    document.body.style.cursor = "ew-resize";
-    const onMove = (ev: MouseEvent) => {
-      const delta = (ev.clientX - startX) / pxPerSec;
-      const maxSec = p.maxClipSec ?? MAX_CLIP_SEC_FALLBACK;
-      const next = trimOut(startSec, delta, minSec, maxSec);
-      if (next === latest) return;
-      latest = next;
-      setPreviewDur({ id: clip.id, sec: next });
-    };
-    const onUp = async () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setPreviewDur(null);
-      // 与量化后的起始值比：拖了几像素但没跨过 0.1s 的格子时不该发请求
-      const old = quantizeSec(startSec);
-      if (latest === old) return;
-      // ⚠️ 这里**不要**再 onPushUndo：onPatch 就是 App 的 patchTimeline，
-      // 它内部已按 durationSec/toOrder/disabled 三类各自入栈，且带正确的 redo。
-      // 两边都推的话，一次拖动进两条栈，Ctrl+Z 要按两下才回到原状，
-      // 而且这边推的那条没有 redo（会弹"暂不支持重做"）。
-      //
-      // 3.1：改出点也要同步窗口长度——被分割过的镜头，导出读的是
-      // clip_dur_sec，只改 duration_sec 会出现"轨上变短了、成片没变"。
-      await p.onPatch(shotId, outPatch(win, latest));
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [pxPerSec, p]);
+    beginGesture(e.nativeEvent, {
+      cursor: "ew-resize",
+      onFrame: (g) => {
+        const delta = g.dx / pxPerSec;
+        const maxSec = maxClipSec ?? MAX_CLIP_SEC_FALLBACK;
+        const next = trimOut(startSec, delta, minSec, maxSec);
+        if (next === latest) return;
+        latest = next;
+        pv.widthPx(next * pxPerSec);
+      },
+      onCommit: async () => {
+        // 与量化后的起始值比：拖了几像素但没跨过 0.1s 的格子时不该发请求
+        const old = quantizeSec(startSec);
+        if (latest === old) return;
+        // ⚠️ 这里**不要**再 onPushUndo：onPatch 就是 App 的 patchTimeline，
+        // 它内部已按 durationSec/toOrder/disabled 三类各自入栈，且带正确的 redo。
+        // 两边都推的话，一次拖动进两条栈，Ctrl+Z 要按两下才回到原状，
+        // 而且这边推的那条没有 redo（会弹"暂不支持重做"）。
+        //
+        // 3.1：改出点也要同步窗口长度——被分割过的镜头，导出读的是
+        // clip_dur_sec，只改 duration_sec 会出现"轨上变短了、成片没变"。
+        await p.onPatch(shotId, outPatch(win, latest));
+      },
+      onSettle: () => { pv.reset(); setPreviewDur(null); },
+    });
+  }, [pxPerSec, p, beginTrimNonShot]);
 
   /** 3.1：拖**左边缘**修剪入点（出点钉死，掐掉素材开头的一段）。
    *
@@ -580,7 +648,7 @@ export default function Timeline(p: Props) {
    *     后面的镜头整体前移。用户看到的是宽度变化，不是位置变化。
    *  ② 只对**已有素材**的镜头开放（canTrimIn）：未出片的镜头没有"素材开头"，
    *     给它设入点只会让 duration_sec 不再是生成目标。 */
-  const beginTrimIn = useCallback((e: React.MouseEvent, clip: Clip) => {
+  const beginTrimIn = useCallback((e: React.PointerEvent, clip: Clip) => {
     // 7.2：折叠标记（停用镜头）不参与修剪 —— 它的 durationSec 已经是 0，
     // 让它进来只会拿 0 当起点算出一堆负数。ClipView 也不给它渲染手柄，
     // 这里是第二道闸（键盘/程序触发的路径不经过 DOM）。
@@ -595,30 +663,29 @@ export default function Timeline(p: Props) {
     const shotId = clip.shotId;
     const startIn = inPointOf(win);
     const outSec = outPointOf(win);   // 全程不变，这正是"修剪入点"的定义
-    const startX = e.clientX;
     const minSec = minTrimSec(win, MIN_CLIP_SEC);
-    const maxSec = p.maxClipSec ?? MAX_CLIP_SEC_FALLBACK;
+    const maxSec = maxClipSec ?? MAX_CLIP_SEC_FALLBACK;
     let latest = { inSec: quantizeSec(startIn), durSec: clip.durationSec };
+    const pv = stylePreview(clipEl(clip.id));
     setPreviewDur({ id: clip.id, sec: latest.durSec, inSec: latest.inSec });
-    document.body.style.cursor = "ew-resize";
-    const onMove = (ev: MouseEvent) => {
-      const delta = (ev.clientX - startX) / pxPerSec;
-      const next = trimIn(startIn, outSec, delta, minSec, maxSec);
-      if (next.inSec === latest.inSec) return;
-      latest = next;
-      setPreviewDur({ id: clip.id, sec: next.durSec, inSec: next.inSec });
-    };
-    const onUp = async () => {
-      document.body.style.cursor = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setPreviewDur(null);
-      if (latest.inSec === quantizeSec(startIn)) return;
-      await p.onPatch(shotId, inPatch(latest.inSec, latest.durSec));
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [pxPerSec, p]);
+    beginGesture(e.nativeEvent, {
+      cursor: "ew-resize",
+      onFrame: (g) => {
+        const delta = g.dx / pxPerSec;
+        const next = trimIn(startIn, outSec, delta, minSec, maxSec);
+        if (next.inSec === latest.inSec) return;
+        latest = next;
+        // 镜头是无缝顺排的：掐掉开头 = **原地变窄**，左边缘不动、后面的
+        // 镜头整体前移。所以这里只改宽度，不做位移——与音频/字幕正相反。
+        pv.widthPx(next.durSec * pxPerSec);
+      },
+      onCommit: async () => {
+        if (latest.inSec === quantizeSec(startIn)) return;
+        await p.onPatch(shotId, inPatch(latest.inSec, latest.durSec));
+      },
+      onSettle: () => { pv.reset(); setPreviewDur(null); },
+    });
+  }, [pxPerSec, p, beginTrimInNonShot]);
 
   // ---- move drag（改镜头顺序，3.11 P1：指针状态机）----
   //
@@ -669,11 +736,16 @@ export default function Timeline(p: Props) {
         if (r.toOrder == null || r.toOrder === startOrder) return;
         setMove((m) => (m && m.overOrder === r.toOrder ? m : (m ? { ...m, overOrder: r.toOrder! } : m)));
       },
-      onCommit: (s, r) => {
+      onCommit: async (s, r) => {
         const to = r.toOrder ?? s.fromOrder ?? startOrder;
+        if (to === startOrder) { setMove(null); return; }
+        // ⚠️ 3.12（F4）：这里**必须 await**，而且 `setMove(null)` 要放在它之后。
+        // `startDrag` 会把内联 `transform` 一直挂到本次提交落定（见 pointerDrag
+        // 的 `onUp`）。若这里提前 `setMove(null)`，落点高亮连同 `move` 状态先没了、
+        // 块却还停在光标下 —— 松手后要等 PATCH + refreshDetail 回来才归位，
+        // 中间那段时间用户看到的是"块悬在半空"。顺序反过来就没有这一段。
+        await p.onPatch(shotId, { toOrder: to });
         setMove(null);
-        if (to === startOrder) return;
-        void p.onPatch(shotId, { toOrder: to });
       },
       onCancel: () => setMove(null),
     });
@@ -686,7 +758,7 @@ export default function Timeline(p: Props) {
   // 指针事件是 MouseEvent 的**子类**（多了 pointerId 等），所以下面这些只读
   // clientX / altKey 的分支一行都不用改；而 ClipView 现在是在 `pointerdown`
   // 里调进来的（宿主吞掉 HTML5 DnD 之后，指针事件是页内唯一可用的拖拽通道）。
-  const beginMove = useCallback((e: React.MouseEvent | React.PointerEvent, clip: Clip) => {
+  const beginMove = useCallback((e: React.PointerEvent, clip: Clip) => {
     // 6.9：音频/字幕是**按绝对时间自由拖**（改锚点），不是换 order。
     // 与叠加层同构，但落点要换算成「第几镜 + 镜内偏移」，见 onMoveClip。
     if (clip.entity !== "shot") { beginMoveNonShot(e, clip); return; }
@@ -698,47 +770,48 @@ export default function Timeline(p: Props) {
     const shotOfClip = p.shots.find((s) => s.id === clip.shotId);
     if ((shotOfClip?.track_index ?? 0) > 0) {
       const shotId0 = clip.shotId;
-      const startX0 = e.clientX;
       const startSec0 = clip.startSec;
       let latestSec = startSec0;
-      document.body.style.cursor = "grabbing";
       // 吸附点在拖动开始时算一次即可：拖的过程中时间轴本身不变，
       // 每次 mousemove 重算是白烧 CPU（170 镜项目每帧遍历上千个 clip）。
       const st0 = useTimelineStore.getState();
       const snapPts = st0.snapping
         ? collectSnapPoints(st0.timeline, st0.playheadSec, st0.cursorSec, clip.id)
         : [];
-      const onMove0 = (ev: MouseEvent) => {
-        const raw = Math.max(0, startSec0 + (ev.clientX - startX0) / pxPerSec);
-        const r = snapPts.length
-          ? snapRange(raw, clip.durationSec, snapPts, pxPerSec)
-          : { sec: raw, hit: null };
-        const next = r.sec;
-        useTimelineStore.getState().setSnapGuide(r.hit ? r.hit.sec : null);
-        if (Math.abs(next - latestSec) < 0.02) return;
-        latestSec = next;
-        setOverlayDrag({ clipId: clip.id, startSec: next });
-      };
-      const onUp0 = async () => {
-        document.body.style.cursor = "";
-        window.removeEventListener("mousemove", onMove0);
-        window.removeEventListener("mouseup", onUp0);
-        setOverlayDrag(null);
-        useTimelineStore.getState().setSnapGuide(null);
-        if (Math.abs(latestSec - startSec0) < 0.05) return;
-        p.onMoveTrack(shotId0, shotOfClip?.track_index ?? 1, latestSec);
-      };
-      window.addEventListener("mousemove", onMove0);
-      window.addEventListener("mouseup", onUp0);
+      const pv = stylePreview(clipEl(clip.id));
+      beginGesture(e.nativeEvent, {
+        onFrame: (g) => {
+          const raw = Math.max(0, startSec0 + g.dx / pxPerSec);
+          const r = snapPts.length
+            ? snapRange(raw, clip.durationSec, snapPts, pxPerSec)
+            : { sec: raw, hit: null };
+          useTimelineStore.getState().setSnapGuide(r.hit ? r.hit.sec : null);
+          if (Math.abs(r.sec - latestSec) < 0.02) return;
+          latestSec = r.sec;
+          pv.shiftPx((r.sec - startSec0) * pxPerSec);
+        },
+        onCommit: async () => {
+          if (Math.abs(latestSec - startSec0) < 0.05) return;
+          // ⚠️ 3.12（F4）：`onMoveTrack` 必须 **await**。
+          // 旧版这里没有 await，且 `setOverlayDrag(null)` 写在调用**之前** ——
+          // 于是松手瞬间预览就没了，块按服务端旧位置重画，等 PATCH +
+          // refreshDetail 回来再跳到新位置。用户看到的就是"松手来回闪"。
+          // 现在预览挂到写回落定，两帧之间没有"旧位置"这一段。
+          await p.onMoveTrack(shotId0, shotOfClip?.track_index ?? 1, latestSec);
+        },
+        onSettle: () => {
+          pv.reset();
+          useTimelineStore.getState().setSnapGuide(null);
+        },
+      });
       return;
     }
 
     if (!clip.shotOrder) return;
     const startOrder = clip.shotOrder;
-    // `beginMove` 的入参放宽成了 union（叠加层那条分支是从 `mousedown` 进来的，
-    // 见它的注释），这里是唯一走到主轨分支的调用点，而它必然是 pointerdown ——
-    // 断言在这里把类型收窄回去，不改运行时行为。
-    startClipDrag(e.nativeEvent as PointerEvent, clip, startOrder);
+    // 3.12：入口只剩 `pointerdown` 一处（ClipView 的 `onPointerDownBody`），
+    // 这里不再需要 `as PointerEvent` 收窄。
+    startClipDrag(e.nativeEvent, clip, startOrder);
   }, [pxPerSec, p, startClipDrag]);
 
   // ---- 框选（3.8：跨轨）----
@@ -754,8 +827,14 @@ export default function Timeline(p: Props) {
   // 指针坐标换算回"按下那一刻的坐标系"——比重新量便宜，且是精确的。
   // `onTap`（3.9）：按下后**没有移动**就松手时调用，参数是按下处的绝对秒。
   // 用来把 "Alt+点击 = 在这里切一刀" 和 "Alt+拖 = 框选" 塞进同一个手势里 ——
-  // 两者都由 Alt+mousedown 开始，靠"有没有真的拖"区分，不必再占一个修饰键。
-  const beginMarquee = useCallback((e: React.MouseEvent,
+  // 两者都由 Alt+按下开始，靠"有没有真的拖"区分，不必再占一个修饰键。
+  //
+  // ⚠️ 3.12：入参从 `React.MouseEvent` 换成 `React.PointerEvent`（见 gesture.ts）。
+  // `moved` 的判定交给 `beginGesture`（阈值 3px），这里不再自己算 ——
+  // 但纵向位移必须**一起**算进去（`|dy| > 3`）：只往下拖不横move 时时间区间
+  // 是零宽、一个也选不中，若不算作拖动就会静默返回，用户分不清是没选中还是坏了。
+  // 所以阈值传 0、两次判定都在 `onCommit` 里按 dx/dy 做。
+  const beginMarquee = useCallback((e: React.PointerEvent,
                                     onTap?: (atSec: number) => void) => {
     const lanes = [...document.querySelectorAll<HTMLElement>(".fw-tl-lane[data-track-id]")]
       .map((el) => ({ id: el.dataset.trackId!, r: el.getBoundingClientRect() }));
@@ -773,49 +852,55 @@ export default function Timeline(p: Props) {
     let latest = { fromSec: startSec, toSec: startSec, trackIds: [] as string[] };
 
     /** 把当前指针位置换算进"按下那一刻"的坐标系（抵消拖动期间的滚动） */
-    const frozen = (ev: MouseEvent) => ({
-      x: ev.clientX + ((sc?.scrollLeft ?? 0) - s0.left),
-      y: ev.clientY + ((sc?.scrollTop ?? 0) - s0.top),
+    const frozen = (c: { clientX: number; clientY: number }) => ({
+      x: c.clientX + ((sc?.scrollLeft ?? 0) - s0.left),
+      y: c.clientY + ((sc?.scrollTop ?? 0) - s0.top),
     });
 
-    const onMove = (ev: MouseEvent) => {
-      const q = frozen(ev);
+    /** 只写 state（框选是**横竖两个方向**的，纵向没有"直接改一个 DOM 样式"
+     *  这种廉价画法）。但它是离散的：`latest` 没变就直接不写 —— 指针横向
+     *  划过同一列像素时，每帧 setState 是白烧。 */
+    const paint = (c: { clientX: number; clientY: number }) => {
+      const q = frozen(c);
       const sec = Math.max(0, (q.x - self.left) / pxPerSec);
-      // 纵向也算进"有没有真的拖"：只往下拖不横move 时时间区间是零宽、
-      // 一个也选不中，若不算作拖动就会静默返回，用户分不清是没选中还是坏了
       if (Math.abs(q.x - x0) > 3 || Math.abs(q.y - y0) > 3) moved = true;
       const ylo = Math.min(y0, q.y);
       const yhi = Math.max(y0, q.y);
-      latest = {
+      const next = {
         fromSec: Math.min(startSec, sec),
         toSec: Math.max(startSec, sec),
         trackIds: lanes.filter((l) => l.r.top <= yhi && l.r.bottom >= ylo).map((l) => l.id),
       };
-      setMarquee(latest);
+      const same = next.fromSec === latest.fromSec && next.toSec === latest.toSec
+        && next.trackIds.length === latest.trackIds.length
+        && next.trackIds.every((id, i) => id === latest.trackIds[i]);
+      if (same) return;
+      latest = next;
+      setMarquee(next);
     };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      setMarquee(null);
-      if (!moved) { onTap?.(startSec); return; }
-      // 3.5：命中判据统一在 selection.ts（与 Ctrl+A / [ ] / Shift 范围同一条）。
-      // 锁定/隐藏轨、以及没有 shotId 的音频/字幕段不再进选中集 ——
-      // 它们进来也只是亮着而已，Delete/复制/剪切一个都动不了。
-      const hit = rectIds(useTimelineStore.getState().timeline.tracks,
-                          latest.fromSec, latest.toSec, latest.trackIds);
-      if (hit.length) {
-        useTimelineStore.getState().selectClips(hit);
-        p.onToast(`已选中 ${hit.length} 个片段`);
-      } else {
-        // 旧实现在这里静默返回：用户在音频轨上拖了半天框，松手什么也没有，
-        // 分不清是"没选中"还是"框选坏了"。
-        p.onToast("框选范围内没有可操作的片段");
-      }
-    };
-    // 起手那一刻先画出零宽的框并把起始轨算进去，否则纯横拖的第一帧之前没有反馈
-    onMove(e.nativeEvent);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+
+    paint(e.nativeEvent);
+    beginGesture(e.nativeEvent, {
+      cursor: "crosshair",
+      onFrame: paint,
+      onCommit: () => {
+        if (!moved) { onTap?.(startSec); return; }
+        // 3.5：命中判据统一在 selection.ts（与 Ctrl+A / [ ] / Shift 范围同一条）。
+        // 锁定/隐藏轨、以及没有 shotId 的音频/字幕段不再进选中集 ——
+        // 它们进来也只是亮着而已，Delete/复制/剪切一个都动不了。
+        const hit = rectIds(useTimelineStore.getState().timeline.tracks,
+                            latest.fromSec, latest.toSec, latest.trackIds);
+        if (hit.length) {
+          useTimelineStore.getState().selectClips(hit);
+          p.onToast(`已选中 ${hit.length} 个片段`);
+        } else {
+          // 旧实现在这里静默返回：用户在音频轨上拖了半天框，松手什么也没有，
+          // 分不清是"没选中"还是"框选坏了"。
+          p.onToast("框选范围内没有可操作的片段");
+        }
+      },
+      onSettle: () => setMarquee(null),
+    });
   }, [pxPerSec, p]);
 
   /** 删除当前选中的全部片段 —— 与 Delete 键**同一个实现**（见 `onRemoveSelected`）。 */
@@ -1204,7 +1289,7 @@ export default function Timeline(p: Props) {
                 .map((s) => s.character_name)).size
             : assetKind === "location"
               ? (p.locations ?? []).filter((l) => l.present_orders?.length).length
-              : (p.assets ?? []).filter((a) => a.kind === "custom").length;
+              : (assetsFromStore ?? []).filter((a) => a.kind === "custom").length;
           // 22px：字号 10→11 后 20px 会把文字挤到贴边
           const ASSET_ROW_H = 22;
           const trackH = assetKind
@@ -1231,7 +1316,7 @@ export default function Timeline(p: Props) {
                     shots={p.shots}
                     stages={p.stages ?? []}
                     locations={p.locations ?? []}
-                    assets={p.assets ?? []}
+                    assets={assetsFromStore ?? []}
                     projectId={p.projectId}
                     pxPerSec={pxPerSec}
                     offsetMap={offsetMap}
@@ -1312,7 +1397,7 @@ export default function Timeline(p: Props) {
                       /* 数据损坏就当没拖过，不该因此报错打断用户 */
                     }
                   }}
-                  onMouseDown={(e) => {
+                  onPointerDown={(e) => {
                     // 空白处按下 = 框选起手（点在 Clip 上则交给 Clip 处理）
                     if (e.button !== 0) return;
                     if ((e.target as HTMLElement).closest(".fw-clip")) return;
@@ -1351,9 +1436,11 @@ export default function Timeline(p: Props) {
                     // 松手时又跳一次 —— 用户报的"看不到拖动位置 / 松手突然移动 /
                     // 来回闪"三个症状都源于此。现在位置全部交给 transform，
                     // React 只管落点高亮（上面那行）。
-                    const previewStart = overlayDrag?.clipId === clip.id
-                      ? overlayDrag.startSec
-                      : undefined;
+                    //
+                    // 3.12（F4）：叠加层同理，那个 `overlayDrag` state 已删除
+                    // （见它原来的声明处）。这里只剩修剪用的 `previewDur` ——
+                    // 修剪改的是**宽度**，而 `stylePreview.widthPx` 与它写的是
+                    // 同一个数，不冲突。
                     const previewD = previewDur?.id === clip.id ? previewDur.sec : undefined;
                     return (
                       <ClipView key={clip.id} clip={clip} pxPerSec={pxPerSec}
@@ -1363,13 +1450,12 @@ export default function Timeline(p: Props) {
                                || track.kind === "music") ? "audio" : "video"}
                         height={trackH}
                         selected={store.isClipSelected(clip.id)}
-                        maxDurSec={p.maxClipSec ?? MAX_CLIP_SEC_FALLBACK}
-                        previewStartSec={previewStart}
+                        maxDurSec={maxClipSec ?? MAX_CLIP_SEC_FALLBACK}
                         previewDurationSec={previewD}
                         dragging={isDragging}
                         dropTarget={!!isDropTarget}
                         trackLocked={track.locked}
-                        onAltMouseDown={(e) => beginMarquee(e, (atSec) => {
+                        onAltPointerDown={(e) => beginMarquee(e, (atSec) => {
                           // Alt+点击（没有拖动）= 点哪切哪。
                           // 用点击位置换算成镜内偏移，不是用播放头 ——
                           // 用户点的位置就是他想切的位置。
@@ -1469,27 +1555,28 @@ export default function Timeline(p: Props) {
           title="播放头">
           <div className="fw-tl-playhead-grip"
             title="拖动播放头"
-            onMouseDown={(e) => {
+            onPointerDown={(e) => {
               if (e.button !== 0) return;
               e.preventDefault();
               e.stopPropagation();
               // 用位移增量而不是绝对坐标：播放头挂在可横向滚动的容器里，
               // 拖动时若容器跟着滚，绝对坐标算出来的秒数会跳。
-              const x0 = e.clientX;
               const s0 = useTimelineStore.getState().playheadSec;
               // 3.4：与刻度尺共用同一个 scrubber —— 拖把手和拖刻度尺是同一件事，
               // 各走各的节流会出现"拖把手不省、拖刻度尺省"这种说不清的差异
               scrubber.current?.start(s0);
-              const onMove = (ev: MouseEvent) => {
-                scrubber.current?.move(Math.max(0, s0 + (ev.clientX - x0) / pxPerSec));
-              };
-              const onUp = () => {
-                window.removeEventListener("mousemove", onMove);
-                window.removeEventListener("mouseup", onUp);
-                scrubber.current?.end();
-              };
-              window.addEventListener("mousemove", onMove);
-              window.addEventListener("mouseup", onUp);
+              // 3.12：改走 `beginGesture`（rAF 合并 + pointer 通道 + Esc 取消）。
+              // `scrubber` 自己已做过 rAF 节流，这里再做一次是幂等的 ——
+              // 换过来的理由是另外两条：宿主拖放打断 mousedown 通道，
+              // 以及松手那一刻要保证最后一帧算完（否则播放头停在上一帧）。
+              beginGesture(e.nativeEvent, {
+                cursor: "ew-resize",
+                onFrame: (g) => {
+                  scrubber.current?.move(Math.max(0, s0 + g.dx / pxPerSec));
+                },
+                onCommit: () => { scrubber.current?.end(); },
+                onSettle: () => { scrubber.current?.end(); },
+              });
             }} />
         </div>
 
