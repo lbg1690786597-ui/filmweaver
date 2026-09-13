@@ -410,8 +410,15 @@ const read = (rel: string) => readFileSync(join(here, "..", rel), "utf8");
 
   const A = read("src/api.ts");
   ok(/export async function sendQueuedWrite/.test(A), "补发发送器在 api.ts（authHeaders 只在那里）");
-  ok(/sendQueuedWrite[\s\S]{0,900}?await fetch\(/.test(A)
-     && !/sendQueuedWrite[\s\S]{0,900}?fetchTracked\(/.test(A),
+  // ⚠️ 2026-09-11：这条原来钉的是裸 `await fetch(`。13951a6 给补发加了超时，
+  // 换成了 `fetchWithTimeout`（"连得上但不应答"时队头会永远挂着，后面全部卡死），
+  // 于是断言失效、脚本红着 —— 而它挂在 `verify:render` 里，不是 `verify:ui`，
+  // 所以没人看见。这里改成"钉住**性质**而不是某个函数名"：
+  // 补发可以自己调 fetch / fetchWithTimeout，但**绝不能**走 fetchTracked。
+  const iSend = A.indexOf("export async function sendQueuedWrite");
+  const iEndSend = A.indexOf("\n}", iSend);
+  const sendBody = A.slice(iSend, iEndSend > 0 ? iEndSend : iSend + 1500);
+  ok(/await (fetch|fetchWithTimeout)\(/.test(sendBody) && !/fetchTracked\(/.test(sendBody),
     "★ 补发**不走** fetchTracked：它的 catch 会把失败的这笔重新塞回我们正在遍历的队列");
   ok(/sendQueuedWrite[\s\S]{0,900}?authHeaders\(\)/.test(A),
     "★ 补发时**现取** Authorization（队列刻意不存 token：磁盘明文 JSON 不该有它）");
@@ -427,15 +434,36 @@ const read = (rel: string) => readFileSync(join(here, "..", rel), "utf8");
     + "调不通的 appDataDir —— 两头都坏，而且都不报错"); 
 
   const App = read("src/App.tsx");
-  ok(/runReplay\(sendQueuedWrite\)/.test(App), "断→通跑补发");
+  // B4：补发本身挪进了 `projectStore.replayOutbox`（补发改了服务端，就必须
+  // 把结果落回内存里的 detail，而那只有 store 做得到）。App 这层留下的是
+  // "什么时候补" + "怎么对用户说"。断言随之分到两处 —— 但**两处都得查**：
+  // 只查 store 会漏掉"没人调它"，只查 App 会漏掉"调了个名字对但不干活的壳"。
+  ok(/replayOutbox\(sendQueuedWrite\)/.test(App), "断→通跑补发");
   ok(/describeReplay\(r\)/.test(App), "并把结果原原本本说出来");
+  const P2 = read("src/stores/projectStore.ts");
+  ok(/await runReplay\(send\)/.test(P2),
+    "replayOutbox 真的把队列发出去了（不是个只转发的空壳）");
+  ok(/applied > 0 \|\| r\.conflicted > 0/.test(P2) && /await get\(\)\.refreshDetail\(\)/.test(P2),
+    "★ 补发**改过服务端**之后重取 detail：不刷的话用户联网后看到的还是离线那一刻的"
+    + "旧时长/旧画面，会以为补发没生效、再改一遍（PATCH 是绝对值语义，不至于出错，"
+    + "但白干一遍）");
+  // ⚠️ 先剥注释再查。projectStore 顶上那段「**刻意不做**：store 不订阅
+  // `outboxStore`（不 `subscribeOutbox` 去自动补发）」的说明里就有这个名字 ——
+  // 全文 grep 会把自己的注释判成违规。凡「全文 grep 某个不许出现的字符串」
+  // 的断言都欠这一刀（verify-command / verify-undo 里也各有一处同样的处理）。
+  const P2Code = P2.split("\n")
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join("\n");
+  ok(!/subscribeOutbox/.test(P2Code),
+    "★ store **不**订阅 outbox：那会在任何一次入队后立刻尝试发送，"
+    + "把「还没连上」这件事绕过去。补发时机只归会话层（useAuth 的 onReconnect）");
   ok(/useSyncExternalStore\(subscribeOutbox, getOutboxCount\)/.test(App),
     "★ 待补发笔数靠订阅而不是轮询（入队发生在 trackedFetch 里，不在任何组件中）");
   ok(/describeSnapshotAge\(snapshotAt/.test(App),
     "★ 用着本机快照时必须说出来 —— 编辑器看起来完全正常，这是唯一的提醒");
 
-  const P = read("src/hooks/useProject.ts");
-  const iSeqGuard = P.indexOf("if (my !== seq.current) return;");
+  const P = read("src/stores/projectStore.ts");
+  const iSeqGuard = P.indexOf("if (my !== seq) return;");
   const iWrite = P.indexOf("tauriSnapshotIO.write(");
   ok(iSeqGuard >= 0 && iWrite >= 0 && iSeqGuard < iWrite,
     "★ 落盘在序号校验**之后**：过期响应覆盖盘上更新的快照 = 下次断网启动读回一个"
