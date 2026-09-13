@@ -31,6 +31,7 @@ import {
 import "./SettingsDialog.css";
 import { productionModeLabel } from "../../lib/modelLabels";
 import { checkRuntime, runtimeWarning, MIN_CHROMIUM } from "../../lib/runtime";
+import { useProjectStore } from "../../stores/projectStore";
 
 type Tab = "editor" | "ai" | "cache";
 
@@ -41,13 +42,17 @@ interface Props {
   /** 维护操作（补缩略图）作用于当前项目；未打开项目时该组不显示 */
   projectId?: string | null;
   onToggleTheme: () => void;
-  productionMode: string | null;
+  /** B2：改从 store 自取；保留字段设为可选只为脱离 App 单测本组件。 */
+  productionMode?: string | null;
   onClose: () => void;
   onToast: (m: string) => void;
 }
 
 export default function SettingsDialog(p: Props) {
   const [tab, setTab] = useState<Tab>("editor");
+  // B2：生成模式只在「AI」页签只读展示一行，从 store 自取。
+  const modeFromStore = useProjectStore((s) => s.detail?.production_mode ?? null);
+  const productionMode = p.productionMode !== undefined ? p.productionMode : modeFromStore;
   // 引擎能力是进程内的常量（同一个 WebView 不会中途换引擎），算一次就够。
   const [rt] = useState(checkRuntime);
   const rtWarn = runtimeWarning(rt);
@@ -363,7 +368,7 @@ export default function SettingsDialog(p: Props) {
 
                 <Group title="当前项目">
                   <Field label="生成模式">
-                    <span className="fw-set-ro">{productionModeLabel(p.productionMode)}</span>
+                    <span className="fw-set-ro">{productionModeLabel(productionMode)}</span>
                   </Field>
                   {p.projectId && artLoaded && styles && styles.length > 0 && (
                     <>
