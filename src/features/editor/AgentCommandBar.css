@@ -1,0 +1,109 @@
+/**
+ * AgentCommandBar.css — AI 指令条（批次 E6）
+ *
+ * 定位：右下角悬浮（overlays 层）。不用模态：AI 改片是**边看边改**的操作，
+ * 全屏遮罩会让用户看不到时间轴上的变化 —— 那正是他要盯着看的东西。
+ *
+ * ⚠️ 颜色一律用 token，不写死色值。这个仓库经历过一次"深色下白底白字"
+ * （见 `AUDIT-2026-09-11` 里的对比度条目），而 token 是唯一能自动跟随主题的层。
+ */
+
+.fw-agbar {
+  position: absolute;
+  right: 18px;
+  /* 底栏（TimelineDock）之上，避免盖住时间轴尾部的镜头 */
+  bottom: 76px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.fw-agbar-fab {
+  width: 36px; height: 36px;
+  border-radius: 18px;
+  border: 1px solid var(--c-border);
+  background: var(--c-raised);
+  color: var(--c-text);
+  display: grid; place-items: center;
+  cursor: pointer;
+  box-shadow: 0 8px 32px oklch(0% 0 0 / 0.5);
+  transition: transform .12s ease, background .12s ease;
+}
+.fw-agbar-fab:hover { transform: translateY(-1px); background: var(--c-hover); }
+.fw-agbar-fab.on { background: var(--c-accent); color: #0b1013; border-color: var(--c-accent); }
+
+.fw-agbar-panel {
+  width: 340px;
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  background: var(--c-raised);
+  box-shadow: 0 8px 32px oklch(0% 0 0 / 0.5);
+  padding: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+.fw-agbar-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--c-text);
+}
+.fw-agbar-head > span { flex: 1; }
+.fw-agbar-x {
+  border: none; background: transparent; color: var(--c-muted);
+  cursor: pointer; padding: 2px; border-radius: 4px; display: grid; place-items: center;
+}
+.fw-agbar-x:hover { background: var(--c-hover); color: var(--c-text); }
+
+/* 确认条：花钱/破坏性步骤才出现。用 warning 色而不是 danger ——
+   它是"要你点头"，不是"出错了"。 */
+.fw-agbar-confirm {
+  border: 1px solid var(--c-warning);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: color-mix(in oklch, var(--c-warning) 12%, transparent);
+}
+.fw-agbar-confirm-t {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 600;
+}
+.fw-agbar-confirm-c { font-size: 12px; line-height: 1.5; color: var(--c-text); }
+.fw-agbar-confirm-s { font-size: 11px; color: var(--c-muted); }
+.fw-agbar-confirm-b { display: flex; gap: 8px; justify-content: flex-end; }
+
+.fw-agbar-ok, .fw-agbar-no, .fw-agbar-run, .fw-agbar-undo {
+  border-radius: 6px; cursor: pointer;
+  font-size: 12px; padding: 5px 10px;
+  border: 1px solid var(--c-border);
+  background: var(--c-surface); color: var(--c-text);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.fw-agbar-ok { background: var(--c-accent); color: #0b1013; border-color: var(--c-accent); }
+.fw-agbar-run:disabled, .fw-agbar-ok:disabled { opacity: .5; cursor: default; }
+.fw-agbar-no:hover, .fw-agbar-undo:hover { background: var(--c-hover); }
+
+.fw-agbar-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 46px;
+  box-sizing: border-box;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  padding: 7px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+.fw-agbar-input:focus { outline: none; border-color: var(--c-accent); }
+
+.fw-agbar-foot { display: flex; align-items: center; gap: 8px; }
+.fw-agbar-line { font-size: 11px; color: var(--c-muted); flex: 1; text-align: right; }
+
+.fw-agbar-note {
+  font-size: 10px;
+  color: var(--c-muted);
+  line-height: 1.5;
+}
