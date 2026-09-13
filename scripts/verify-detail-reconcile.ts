@@ -52,7 +52,11 @@ const epi = (o: number, over: Partial<EpisodeInfo> = {}): EpisodeInfo => ({
 });
 const detail = (over: Partial<ProjectDetail> = {}): ProjectDetail => ({
   id: "p1", title: "测试项目", base_aspect: "9:16", production_mode: "live_action",
-  episodes: [epi(1), epi(2)], raw_script: "正文", optimized_script: null,
+  // 3.12（F8）：详情里已经没有 raw_script / optimized_script 了（全文改按集取），
+  // 这里原来写的两个字段早已不在 `ProjectDetail` 上 —— tsc 一直报 TS2561。
+  // 用现存的 `has_script` 承担同一个角色（"服务端少回一个字段"那条断言需要一个
+  // 真实存在的可选标量）。
+  episodes: [epi(1), epi(2)], has_script: true,
   shots: [shot(1), shot(2), shot(3)], assets: [asset(1), asset(2)], ...over,
 });
 /** 深拷贝：模拟"服务端又回了一份一模一样的 JSON"（每个对象都是新的） */
@@ -148,7 +152,7 @@ console.log("\n[2] reconcileDetail 的复用规则");
 
   // 老后端少字段 / 多字段
   const lean = clone(prev) as unknown as Record<string, unknown>;
-  delete lean.optimized_script;
+  delete lean.has_script;
   const leanOut = reconcileDetail(prev, lean as unknown as ProjectDetail);
   ok(leanOut !== prev, "★ 服务端少回一个字段 → 不判为相同（键数变了就是变了）");
 }
@@ -156,16 +160,16 @@ console.log("\n[2] reconcileDetail 的复用规则");
 // ───────────────────────────────────────────────────────────────────────
 console.log("\n[3] 接线");
 {
-  const UP = read("src/hooks/useProject.ts");
+  const UP = read("src/stores/projectStore.ts");
   ok(/import \{ reconcileDetail \} from "\.\.\/lib\/reconcileDetail"/.test(UP),
-    "useProject 引入了 reconcileDetail");
-  ok(/const d = reconcileDetail\(detailRef\.current, raw\);/.test(UP),
+    "projectStore 引入了 reconcileDetail");
+  ok(/const d = reconcileDetail\(detailRef, raw\);/.test(UP),
     "★ 用**上一轮的 detail**（detailRef）做基准（用 state 里的 detail 会拿到闭包旧值）");
-  const idxRec = UP.indexOf("reconcileDetail(detailRef.current");
-  const idxSeq = UP.indexOf("if (my !== seq.current) return;");
+  const idxRec = UP.indexOf("reconcileDetail(detailRef");
+  const idxSeq = UP.indexOf("if (my !== seq) return;");
   ok(idxSeq > 0 && idxRec > idxSeq,
     "★ 复用发生在序号校验**之后**（过期响应不该参与复用，更不该覆盖新数据）");
-  ok(/setDetail\(d\);\s*\n\s*detailRef\.current = d;/.test(UP),
+  ok(/detailRef = d;\s*\n\s*set\(\{ detail: d, snapshotAt: null \}\);/.test(UP),
     "state 与 detailRef 存的是**同一个**复用后的对象（不同步会让下一轮全不复用）");
 
   const SP = read("src/components/ShotsPanel.tsx");
