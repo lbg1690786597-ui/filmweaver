@@ -20,6 +20,7 @@
  */
 import { api } from "../../api";
 import type { AssetDragData, ShotInfo } from "../../api";
+import type { CommandDraft } from "../../lib/command";
 
 /** 资产轨的行/段在本模块里只用到这几个字段，用结构化子集声明，
  *  免得让这个通用模块反过来依赖 AssetTrack 的完整类型。 */
@@ -51,9 +52,10 @@ export interface InjectArgs {
   isLocation: boolean;
   shot: ShotInfo;
   order: number;
-  onPushUndo: (
-    label: string, undo: () => Promise<void>, redo: () => Promise<void>,
-  ) => void;
+  /** C2：改收 `CommandDraft`。整条资产注入链（AssetTrack → Timeline → App）
+   *  一起换，不留一半老一半新的中间态 —— 两种签名并存时，改动会随拖拽
+   *  通道不同而落到不同形状上，正是这个文件头警告过的那类漂移。 */
+  onPushUndo: (draft: CommandDraft) => void;
   onToast: (m: string) => void;
   onChanged: () => void;
 }
@@ -72,15 +74,21 @@ export async function injectAssetIntoShot(a: InjectArgs): Promise<boolean> {
   const opts = { isLocation: a.isLocation };
   try {
     await api.refOverrides(a.projectId, a.name, { addShotIds: [a.shot.id], ...opts });
-    a.onPushUndo(`「${a.name}」注入镜头 #${a.order}`,
-      async () => {
+    a.onPushUndo({
+      label: `「${a.name}」注入镜头 #${a.order}`,
+      // 资产注入按**名字**寻址（`refOverrides` 收的是「角色名 / 归一场景名」），
+      // 不是 uid —— 所以 affected 只填镜头那一侧，不硬造一个资产 uid。
+      kind: "asset",
+      affected: { shots: [a.shot.id] },
+      unrun: async () => {
         await api.refOverrides(a.projectId, a.name, { removeShotIds: [a.shot.id], ...opts });
         a.onChanged();
       },
-      async () => {
+      run: async () => {
         await api.refOverrides(a.projectId, a.name, { addShotIds: [a.shot.id], ...opts });
         a.onChanged();
-      });
+      },
+    });
     a.onToast(`「${a.name}」已注入镜头 #${a.order}（Ctrl+Z 可撤销）`);
     a.onChanged();
     return true;
@@ -99,9 +107,8 @@ export interface ReplaceRunArgs {
   run: RunRef;
   /** 这条轨是场景轨吗（决定 kind 归类） */
   isLocation: boolean;
-  onPushUndo: (
-    label: string, undo: () => Promise<void>, redo: () => Promise<void>,
-  ) => void;
+  /** C2：同 `InjectArgs.onPushUndo` */
+  onPushUndo: (draft: CommandDraft) => void;
   onToast: (m: string) => void;
   onChanged: () => void;
 }
@@ -149,14 +156,17 @@ export async function replaceRunImage(a: ReplaceRunArgs): Promise<boolean> {
     if (d.kind === "custom" && d.assetId) {
       await api.patchAsset(d.assetId, { kind });
     }
-    a.onPushUndo(label,
-      async () => {
+    a.onPushUndo({
+      label,
+      kind: "asset",
+      unrun: async () => {
         // 归类**不在**撤销范围内：原实现也没管（undo 只回图）。要一起回退的话
         // 得先记住这张卡原来的 kind，而那个值不在本函数的入参里 —— 与其
         // 猜一个，不如明确不做，保持与原路径一致。
         await restore(prevImg); a.onChanged();
       },
-      async () => { await restore(d.imageUrl); a.onChanged(); });
+      run: async () => { await restore(d.imageUrl); a.onChanged(); },
+    });
     a.onToast(`已用「${d.name}」替换「${a.rowName}${a.run.stageName ? `·${a.run.stageName}` : ""}」的参考图`);
     a.onChanged();
     return true;
