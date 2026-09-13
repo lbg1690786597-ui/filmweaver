@@ -3,8 +3,8 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { api, APP_VERSION, JobOut, ShotInfo, sendQueuedWrite } from "./api";
 import type { TransformMeta, TransformPatchOpts } from "./api";
 import { tierModel, TIERS, type QualityTier } from "./lib/qualityTiers";
-// 2.3 乐观锁：transform_meta 的版本号注册表 + 带状态码的写错误
-import { shotRev } from "./lib/shotRev";
+// 2.3 乐观锁：版本号由 projectStore 代管（B4），本文件不再直接摸注册表
+import { setPendingProbe } from "./stores/projectStore";
 import { describeTransform } from "./lib/transformLabel";
 import { SaveHttpError } from "./stores/saveStateStore";
 import { useLoadState } from "./stores/loadStateStore";
@@ -23,7 +23,7 @@ import PreflightDialog from "./components/PreflightDialog";
 import { useToast } from "./hooks/useToast";
 import { decideScreen } from "./lib/appGate";
 import { offlineBannerText, describeReplay } from "./lib/outbox";
-import { getOutboxCount, subscribeOutbox, runReplay, isDurable } from "./lib/outboxStore";
+import { getOutboxCount, subscribeOutbox, isDurable } from "./lib/outboxStore";
 import { describeSnapshotAge } from "./lib/snapshot";
 import { useTheme } from "./hooks/useTheme";
 import { useUpdater } from "./hooks/useUpdater";
@@ -43,6 +43,9 @@ import { useBreakdown } from "./hooks/useBreakdown";
 // ---- Phase 1 重构：编辑器 Shell ----
 import EditorLayout from "./features/editor/EditorLayout";
 import TopBar from "./features/editor/TopBar";
+import UndoHistoryPanel from "./features/editor/UndoHistoryPanel";
+import AgentCommandBar from "./features/editor/AgentCommandBar";
+import { jumpToast } from "./features/editor/undoHistory";
 import Rail from "./features/editor/Rail";
 import LeftPanel from "./features/editor/LeftPanel";
 import Player from "./features/editor/Player";
@@ -111,19 +114,36 @@ export default function App() {
   const { theme, toggleTheme } = useTheme();
   const { updateState, setUpdateState, updateProgress, updateNotes, checkUpdate } = useUpdater(say);
 
+  // B4：`replayOutbox` 要在下面的 `onReconnect` 里用，所以项目层这一行必须
+  // 提到会话层之前 —— 不是风格问题：`const` 有暂时性死区，写在后面会直接
+  // ReferenceError（`verify-hookorder.ts` 钉的就是这类顺序）。
+  // ⚠️ 全 App **只此一处**调用 `useProject()`：它内部带着"挂载时恢复现场"
+  // 的 effect，多调一次就会多发一次详情请求（`seq` 会让先发的那次作废，
+  // 但服务端仍要多扛 1.17 MiB）。
+  const {
+    projectId, setProjectId, detail, snapshotAt, refreshDetail, refreshSoon,
+    patchDetail, clearDetail, transformRevBase, noteTransformRev, forgetTransformRev,
+    replayOutbox,
+  } = useProject();
+
   // ---- 会话层：后端探测 + 登录门控 ----
   // 6.8：断 → 通 的那一下先**补发离线队列**，再把结果原原本本说出来。
   // 6.7 时这里传的是 `say`，由 useAuth 自己造句「有 N 处没能保存」——
   // 现在那句话已经不成立（真的会补发了），造句权因此收回到这一层，
   // 因为只有这里够得着队列。详见 `lib/appGate.ts` 里那块墓碑注释。
+  //
+  // B4：补发**本身**挪进了 projectStore（`replayOutbox`）—— 补发改了服务端，
+  // 就必须把结果落回内存里的 detail，而那只有 store 做得到。这一层留下的
+  // 只有"什么时候补"（连上的那一下）和"怎么对用户说"（`describeReplay`），
+  // 这两件都只有会话层知道。
   const onReconnect = useCallback(() => {
     void (async () => {
-      const r = await runReplay(sendQueuedWrite);
+      const r = await replayOutbox(sendQueuedWrite);
       // null = 队列本来就是空的（或已有一趟在跑）。空队列时不该报补发结果，
       // 但"连上了"这件事仍然要说 —— 用户刚刚一直盯着那条横幅。
       say(r === null ? "已恢复与服务器的连接" : describeReplay(r));
     })();
-  }, [say]);
+  }, [say, replayOutbox]);
   const { backendOk, loginRequired, user, doLogout, onLoggedIn, retry: retryBackend } = useAuth(onReconnect);
 
   // 6.8 待补发笔数。订阅而不是轮询：入队发生在 `trackedFetch` 里（不在任何组件中），
@@ -132,7 +152,7 @@ export default function App() {
   const pendingWrites = useSyncExternalStore(subscribeOutbox, getOutboxCount);
 
   // ---- 项目层（T-R0-07 状态云端化）----
-  const { projectId, setProjectId, detail, snapshotAt, refreshDetail, refreshSoon, clearDetail } = useProject();
+  // 取数在上面的"会话层之前"那一处（B4），这里不再重复调用 `useProject()`。
 
   /** 2.2 画面调整的**真正落库**动作。拖动中的中间值不直接走这里，
    *  由 `stagedTransform` 按尾防抖调用（见 hooks/useStagedTransform.ts）。
@@ -150,20 +170,28 @@ export default function App() {
     try {
       // 2.3 乐观锁：带上"这次改动所基于的版本号"，服务端发现库里已经变了
       // 就回 409。不带的话后写方会静默盖掉先写方的调整。
+      // B4：这一对（读 base / 记新 rev）原来直接摸 `lib/shotRev.ts` 的单例，
+      // 现在经 store —— 版本号注册表与 detail 是同一份事实的两半，
+      // 而 detail 归 store 所有，生命周期（`clearDetail` 里那份清空）也归它。
       const r = await api.patchShotTimeline(shotId, {
-        transformMeta: tm, baseTransformRev: shotRev.base(shotId),
+        transformMeta: tm, baseTransformRev: transformRevBase(shotId),
       });
-      shotRev.noteWritten(shotId, r.transform_rev);
-      // ⚠️ 必须等 refreshDetail 回来再让 stagedWrite 撤掉本地盖层，
-      // 否则会有一帧显示服务端旧值（松手瞬间画面闪回）。
-      await refreshDetail();
+      noteTransformRev(shotId, r.transform_rev);
+      // ⚠️ 3.12（F7）：这里原来是 `await refreshDetail()` —— 一次画面拖动
+      // （缩放/位移/旋转）落库后要重下整份详情（大项目 1.17 MiB）。
+      // 改动只涉及 `transform_meta` 一个字段，本地直接把这一行改掉即可。
+      // 空对象传 {} 是"清除全部调整"，与后端一致（`transform_meta or None`）。
+      //
+      // 顺序仍然是"先落库、再撤本地盖层"（stagedWrite 靠 `await` 的顺序决定
+      // 何时放开），所以松手瞬间**不会**闪回服务端旧值 —— 这点没有被削弱。
+      patchDetail(shotId, { transform_meta: tm as TransformMeta });
     } catch (e) {
       if (e instanceof SaveHttpError && e.status === 409) {
         // 并发冲突。本地值按 2.2 的规则**保留**（用户眼前仍是自己调的画面，
         // 顶栏同时显示未保存），但必须明确告诉他服务端不是这个值。
         // forget 之后再操作一次就不带 base 了 —— 提示给过一次，
         // 之后以他自己的版本为准是他知情下的选择，而不是把他锁死在 409 里。
-        shotRev.forget(shotId);
+        forgetTransformRev(shotId);
         say("该镜头已被其他窗口修改，这次调整未保存 —— 画面上仍是你的版本，再调一次即以你的为准");
         throw e;
       }
@@ -193,19 +221,33 @@ export default function App() {
     const label = Object.keys(tm).length === 0
       ? `清除镜头 #${before?.order ?? "?"} 的画面调整`
       : `调整镜头 #${before?.order ?? "?"} 的画面（${describeTransform(tm)}）`;
-    pushUndo(label,
-      async () => { await writeTransform(shotId, prev); },
-      async () => { await writeTransform(shotId, tm); });
+    pushUndo({
+      label,
+      kind: "transform",
+      affected: { shots: [shotId] },
+      unrun: async () => { await writeTransform(shotId, prev); },
+      run: async () => { await writeTransform(shotId, tm); },
+    });
   };
   // hook 必须在早返回（后端探测 / 登录门控 / 项目列表）之前无条件调用
   const stagedTransform = useStagedTransform(commitTransform);
 
-  // 2.3：详情每回来一次就收下服务端的 transform 版本号，但**跳过还有未落库
-  // 改动的镜头** —— 那些镜头屏幕上显示的是用户自己的值，采纳新版本号等于
-  // 主动放弃冲突检测。规则的完整推导见 lib/shotRev.ts 文件头。
+  // B4 · 2.3：把暂存层的 `hasPending` 交给 projectStore。
+  //
+  // 规则没变（「有未落库改动就不采纳服务端版本号」，推导见 lib/shotRev.ts 文件头），
+  // 变的是**谁在问**：以前是这里一个 `useEffect([detail])` 在渲染之后再 seed 一遍，
+  // 现在是 store 在 `refreshDetail` 内部、紧挨 `set({detail})` 之前问一次。
+  //
+  // 这样才对得上一件事：详情刷新与版本号采纳必须是**同一拍**的。挂在 effect 上时，
+  // `set` 与 `seed` 之间隔着一帧 —— 那一帧里用户（或 `useStagedTransform` 的尾防抖）
+  // 发起的写，读到的是上一轮留下的版本号。
+  //
+  // 依赖数组里给的是 `stagedTransform`：`hasPending` 是它的稳定方法（`useCallback`
+  // 只依赖 writer），但把整个对象列上更保险 —— 少列一个字段而只在某次重建后才失效，
+  // 是那种"平时都对、偶发 409"的 bug。这个 effect 只在对象换引用时跑，代价为零。
   useEffect(() => {
-    shotRev.seed(detail?.shots ?? [], stagedTransform.hasPending);
-  }, [detail, stagedTransform]);
+    setPendingProbe(stagedTransform.hasPending);
+  }, [stagedTransform]);
 
   // ---- 播放器层（P2-1 播放头 + 连播 + 选中镜头）----
   const {
@@ -397,7 +439,22 @@ export default function App() {
   const doSwitchVersion = async (shot: ShotInfo, verNo: number) => {
     try {
       const r = await api.adoptShot(shot.id, verNo);
-      refreshDetail();
+      // B0：就地回填，不再拉整份详情。`/adopt` 的回包把这一镜**所有**会变的
+      // 列都给全了（video_url / thumb_url / adopted_version / 取片窗口），
+      // 正好够拼出与全量刷新一致的一行 —— 见 routes_v2.adopt_shot_version
+      // 的 return。切版本是高频操作（用户在版本列表里来回比），
+      // 每切一次下 1.17 MiB 纯属浪费。
+      //
+      // ⚠️ 用服务端回的 thumb_url，不要用请求里那个：后端在缩略图抽取失败时
+      // 会**保留旧图**而不是擦成空白（它为此专门改过一次），照抄请求值会把
+      // 旧图抹掉。
+      patchDetail(shot.id, {
+        video_url: r.video_url,
+        ...(r.thumb_url ? { thumb_url: r.thumb_url } : {}),
+        adopted_version: verNo,
+        status: "adopted",
+        ...(r.clip_window_cleared ? { clip_in_sec: null, clip_dur_sec: null } : {}),
+      });
       if (r.video_url) previewShotVersion(shot, verNo, r.video_url);
       // 3.1：切版本 = 换素材，后端会清掉取片窗口（旧入点落在新素材上是错的）。
       // 这件事必须说出来 —— 用户回头看时间轴发现镜头变长了，得知道是为什么。
@@ -956,21 +1013,55 @@ export default function App() {
       // 3.7：重建换主键，所以 curId 要跟着重做的结果走 —— 与转场那三条同一个套路
       // （详见 doDeleteTransition）。拿旧 id 去 delete 会 404，撤销从第二次起就坏。
       let curId = r.shot_id;
-      pushUndo(`插入外部素材「${clip.name}」`,
-        async () => {
+      pushUndo({
+        label: `插入外部素材「${clip.name}」`,
+        kind: "asset",
+        unrun: async () => {
           await api.deleteShot(curId);
           await refreshDetail();
         },
-        async () => {
+        run: async () => {
           const again = await api.addSpecialShot(projectId, clip.name, clip.url, undefined, dur);
           curId = again.shot_id;
           await refreshDetail();
-        });
+        },
+      });
     } catch (e) { say(String(e)); }
     finally { setInsertingClip(false); }
   };
 
   // ---- 镜头轨轻剪辑（唯一真源）：改时长 / 改顺序 / 停用 / 删除外部素材 ----
+  /** 3.12（F7）：把一次 `PATCH /timeline` 的结果就地写回 detail，**不再顺手
+   *  拉一遍整份详情**（大项目 1.17 MiB）。
+   *
+   *  `r` 是服务端**落库后**的值（钳过上下限、走过不变式），直接采信它，
+   *  不要拿请求里那个数当结果 —— 时长会被钳到 `[1, 单镜上限]`，窗口长度会被
+   *  钳到 `[0.1, 上限]`，用户拖到 20s 而模型只支持 15s 时本地照抄请求值，
+   *  轨道上就会显示一个服务端并不存在的时长。
+   *
+   *  ⚠️ 三种情况必须退回全量 `refreshDetail()`，别在这里省：
+   *   · `toOrder` —— 服务端会把**别的镜头**一起让位重排（route 里那段
+   *     `others` 循环 + `_renumber`），本地拼不出同一张顺序表。
+   *   · 返回的 `order` 与本地不一致（别的窗口刚插/删过镜头）—— 说明本地这张
+   *     顺序表已经不是服务端那张，只改一行只会更乱，直接重拉。
+   *   · 本地根本没有这一行（`patchDetail` 会静默忽略）—— 该镜可能已被删除，
+   *     静默忽略等于这次改动在界面上凭空消失，重拉一次让它如实消失。 */
+  const applyTimelineResult = async (
+    shotId: string,
+    r: Awaited<ReturnType<typeof api.patchShotTimeline>>,
+    opts: { toOrder?: number; hasDuration?: boolean },
+  ): Promise<void> => {
+    if (opts.toOrder !== undefined) { await refreshDetail(); return; }
+    const cur = detail?.shots.find((s) => s.id === shotId) ?? null;
+    if (!cur || cur.order !== r.order) { await refreshDetail(); return; }
+    patchDetail(shotId, {
+      ...(opts.hasDuration ? { duration_sec: r.duration_sec } : {}),
+      disabled: r.disabled,
+      clip_in_sec: r.clip_in_sec ?? null,
+      clip_dur_sec: r.clip_dur_sec ?? null,
+    });
+  };
+
   const patchTimeline = async (
     shotId: string, patch: {
       durationSec?: number; toOrder?: number; disabled?: boolean;
@@ -981,7 +1072,12 @@ export default function App() {
     try {
       // P2-2：提交前记旧值 → 撤销 = 回写旧值（时长/顺序/停用三类各自独立入栈）
       const old = detail?.shots.find((s) => s.id === shotId);
-      await api.patchShotTimeline(shotId, patch);
+      const r = await api.patchShotTimeline(shotId, patch);
+      // 撤销/重做闭包走同一个回填口径：它们的 PATCH 返回同样够用，
+      // 不必每次都重下全量（撤销一次 = 一次 PATCH，这是高频操作）。
+      const undoApply = (p: Parameters<typeof api.patchShotTimeline>[1],
+                         o: { toOrder?: number; hasDuration?: boolean }) =>
+        api.patchShotTimeline(shotId, p).then((rr) => applyTimelineResult(shotId, rr, o));
       if (old) {
         // 3.1：动了取片窗口时，(in, dur) 必须作为**一条**撤销记录。
         //
@@ -1009,59 +1105,61 @@ export default function App() {
           const label = patch.clearClipWindow
             ? `镜头 #${old.order} 取消入点`
             : `镜头 #${old.order} 修剪 → 入点 ${(patch.clipInSec ?? prevIn ?? 0).toFixed(1)}s`;
-          pushUndo(label,
-            async () => {
-              await api.patchShotTimeline(shotId, undoPatch);
-              await refreshDetail();
-            },
-            async () => {
-              await api.patchShotTimeline(shotId, patch);
-              await refreshDetail();
-            });
+          pushUndo({
+            label,
+            kind: "shot",
+            affected: { shots: [shotId] },
+            unrun: async () => { await undoApply(undoPatch, {}); },
+            run: async () => { await undoApply(patch, {}); },
+          });
         }
         // 三类各自独立入栈。redo = 再做一遍原操作，与 undo 精确互逆。
         if (!windowTouched
             && patch.durationSec !== undefined && old.duration_sec != null) {
           const prev = old.duration_sec;
           const next = patch.durationSec;
-          pushUndo(`镜头 #${old.order} 时长 → ${next}s`,
-            async () => {
-              await api.patchShotTimeline(shotId, { durationSec: prev });
-              await refreshDetail();
-            },
-            async () => {
-              await api.patchShotTimeline(shotId, { durationSec: next });
-              await refreshDetail();
-            });
+          pushUndo({
+            label: `镜头 #${old.order} 时长 → ${next}s`,
+            kind: "shot",
+            affected: { shots: [shotId] },
+            unrun: async () => { await undoApply({ durationSec: prev }, { hasDuration: true }); },
+            run: async () => { await undoApply({ durationSec: next }, { hasDuration: true }); },
+          });
         }
         if (patch.toOrder !== undefined) {
           const prev = old.order;
           const next = patch.toOrder;
-          pushUndo(`镜头 #${prev} 移到 #${next}`,
-            async () => {
-              await api.patchShotTimeline(shotId, { toOrder: prev });
-              await refreshDetail();
-            },
-            async () => {
-              await api.patchShotTimeline(shotId, { toOrder: next });
-              await refreshDetail();
-            });
+          pushUndo({
+            label: `镜头 #${prev} 移到 #${next}`,
+            kind: "shot",
+            // ⚠️ 重排是**多镜头**操作：服务端会把中间那些镜头一起让位。
+            // 只写自己这一个 id 会漏掉真正一起动了的那些（C3 面板按 affected
+            // 定位时，用户会看到"只有这一镜变了"的假象）。
+            affected: { shots: [shotId] },
+            unrun: async () => { await undoApply({ toOrder: prev }, { toOrder: prev }); },
+            run: async () => { await undoApply({ toOrder: next }, { toOrder: next }); },
+          });
         }
         if (patch.disabled !== undefined) {
           const prev = old.disabled;
           const next = patch.disabled;
-          pushUndo(`镜头 #${old.order} ${next ? "停用" : "恢复启用"}`,
-            async () => {
-              await api.patchShotTimeline(shotId, { disabled: prev });
-              await refreshDetail();
-            },
-            async () => {
-              await api.patchShotTimeline(shotId, { disabled: next });
-              await refreshDetail();
-            });
+          pushUndo({
+            label: `镜头 #${old.order} ${next ? "停用" : "恢复启用"}`,
+            kind: "shot",
+            affected: { shots: [shotId] },
+            unrun: async () => { await undoApply({ disabled: prev }, {}); },
+            run: async () => { await undoApply({ disabled: next }, {}); },
+          });
         }
       }
-      await refreshDetail();
+      await applyTimelineResult(shotId, r, {
+        toOrder: patch.toOrder,
+        // 只在调用方**明确改了时长**时采信返回的 duration_sec。写窗口时服务端
+        // 会把 duration_sec 同步成窗口长度（不变式），那不是本次要改的字段 ——
+        // 但 `trim.ts` 的 inPatch 本来就两个一起发，所以照采信也对；这条分支
+        // 只为挡住"只改窗口长度却把 duration 单独回填"的将来误用。
+        hasDuration: patch.durationSec !== undefined || patch.clipDurSec !== undefined,
+      });
     } catch (e) { say(String(e)); }
   };
   // ---- 6.9 音频/字幕轨轻剪辑：修剪 / 拖动 / 删除 ----
@@ -1112,9 +1210,15 @@ export default function App() {
         };
         const name = old.kind === "music" ? "配乐" : "旁白";
         const act = patch.clearClip ? "还原修剪" : touchedWindow ? "修剪" : "移动";
-        pushUndo(`${name}${act}`,
-          async () => { await api.patchAudioClip(patch.id, prev); await refreshAudio(); },
-          async () => { await api.patchAudioClip(patch.id, next); await refreshAudio(); });
+        pushUndo({
+          label: `${name}${act}`,
+          kind: "audio",
+          // 音频段挂在**镜头顺序**上（start_shot_order），不挂在某一镜的 uid 上，
+          // 所以 affected 留空 —— 填一个段 id 会与 `CommandScope` 的
+          // shots/assets 两个 uid 空间都对不上（见 lib/command.ts 的注释）。
+          unrun: async () => { await api.patchAudioClip(patch.id, prev); await refreshAudio(); },
+          run: async () => { await api.patchAudioClip(patch.id, next); await refreshAudio(); },
+        });
         await refreshAudio();
         return;
       }
@@ -1137,9 +1241,12 @@ export default function App() {
         ...(patch.startOffsetSec !== undefined
           ? { start_offset_sec: old.start_offset_sec } : {}),
       };
-      pushUndo(patch.durationSec !== undefined ? "字幕改时长" : "字幕移动",
-        async () => { await api.patchSubtitleClip(patch.id, prev); await refreshSubtitles(); },
-        async () => { await api.patchSubtitleClip(patch.id, next); await refreshSubtitles(); });
+      pushUndo({
+        label: patch.durationSec !== undefined ? "字幕改时长" : "字幕移动",
+        kind: "subtitle",
+        unrun: async () => { await api.patchSubtitleClip(patch.id, prev); await refreshSubtitles(); },
+        run: async () => { await api.patchSubtitleClip(patch.id, next); await refreshSubtitles(); },
+      });
       await refreshSubtitles();
     } catch (e) { say(String(e)); }
   };
@@ -1172,8 +1279,10 @@ export default function App() {
         // 与 restoreSpecialShot 完全同一个模式（那里踩过：redo 去删旧 id，
         // 报 404，用户看到的是"重做失败"而那一段其实还在)。
         let curId = clip.id;
-        pushUndo("移除音频段",
-          async () => {
+        pushUndo({
+          label: "移除音频段",
+          kind: "audio",
+          unrun: async () => {
             const r = await api.createAudioClip({
               projectId: projectId!, kind: old.kind as "tts" | "music",
               text: old.text ?? undefined, url: old.url ?? undefined,
@@ -1193,7 +1302,8 @@ export default function App() {
             }
             await refreshAudio();
           },
-          async () => { await api.deleteAudioClip(curId); await refreshAudio(); });
+          run: async () => { await api.deleteAudioClip(curId); await refreshAudio(); },
+        });
         return;
       }
       const old = subtitles.find((s) => s.id === clip.id);
@@ -1202,8 +1312,10 @@ export default function App() {
       await refreshSubtitles();
       say("已从字幕轨移除（Ctrl+Z 可撤销）");
       let curId = clip.id;
-      pushUndo("移除字幕段",
-        async () => {
+      pushUndo({
+        label: "移除字幕段",
+        kind: "subtitle",
+        unrun: async () => {
           const r = await api.createSubtitleClip({
             project_id: projectId!, text: old.text, kind: old.kind,
             start_shot_order: old.start_shot_order,
@@ -1214,7 +1326,8 @@ export default function App() {
           curId = r.id;
           await refreshSubtitles();
         },
-        async () => { await api.deleteSubtitleClip(curId); await refreshSubtitles(); });
+        run: async () => { await api.deleteSubtitleClip(curId); await refreshSubtitles(); },
+      });
     } catch (e) { say(String(e)); }
   };
 
@@ -1230,15 +1343,21 @@ export default function App() {
       if (old) {
         let curId = shotId;
         say("已从镜头轨移除（Ctrl+Z 可撤销）");
-        pushUndo(`移除外部素材「${old.special_name ?? `#${old.order}`}」`,
-          async () => {
+        pushUndo({
+          label: `移除外部素材「${old.special_name ?? `#${old.order}`}」`,
+          kind: "asset",
+          // 被删的是哪一镜现在只能按 order 描述（uid 已随硬删消失），
+          // 所以 affected 留空 —— 写一个撤不回来的 id 进去，C3 的历史面板
+          // 会指着一个不存在的镜头做高亮。
+          unrun: async () => {
             curId = await restoreSpecialShot(old);
             await refreshDetail();
           },
-          async () => {
+          run: async () => {
             await api.deleteShot(curId);
             await refreshDetail();
-          });
+          },
+        });
       } else {
         say("已从镜头轨移除");
       }
@@ -1387,6 +1506,26 @@ export default function App() {
   const tlUndoCount = useTimelineStore((s) => s.undoStack.length);
   const tlRedoCount = useTimelineStore((s) => s.redoStack.length);
 
+  /** C3：撤销历史面板里"点第 N 条，连撤 N 步回到那里"。
+   *
+   *  ⚠️ 部分失败的语义由 store 的 `jumpBack` 定死：**撤到哪儿算哪儿**，
+   *  已经撤掉的不回滚，并把 `undoneSteps` 挂在抛出的错误上。这里按那个
+   *  数字如实说话 —— 说"撤销失败"是不准确的，用户界面上明明退了好几步，
+   *  他需要知道的是"退到第 3 步停了"，好决定是再点一下还是先看看别处。 */
+  const jumpHistory = async (steps: number) => {
+    const st = tlStore();
+    const label = st.undoStack[st.undoStack.length - steps]?.label ?? "";
+    try {
+      const n = await st.jumpBack(steps);
+      say(jumpToast(n, label));
+    } catch (e) {
+      const done = typeof (e as { undoneSteps?: unknown })?.undoneSteps === "number"
+        ? (e as { undoneSteps: number }).undoneSteps : 0;
+      if (done > 0) say(`↩ 已撤销 ${done} 步后停下（${String(e)}）`);
+      else say(`撤销失败：${String(e)}`);
+    }
+  };
+
   /** 剪映里 Delete 是"把选中的片段从轨道上拿掉"。本软件两类片段的
    *  "拿掉"含义不同，但**都必须有反馈**——旧实现遇到 AI 镜头直接
    *  `return`，按下去毫无动静，用户以为快捷键坏了。
@@ -1485,15 +1624,25 @@ export default function App() {
       say(`已粘贴 ${buf.length} 个片段${hit ? `（在 #${hit.shotOrder} 之后）` : "（追加到末尾）"}`
         + "（Ctrl+Z 可撤销）");
       const redoAfter = hit?.shotOrder;
-      pushUndo(`粘贴 ${buf.length} 个片段`,
-        async () => {
+      const scope: { shots: string[] } = { shots: createdIds };
+      pushUndo({
+        label: `粘贴 ${buf.length} 个片段`,
+        kind: "asset",
+        // ⚠️ 传的是**同一个可变对象**，不是 `{ shots: createdIds }` 的一次性快照。
+        // redo 会重建出**新主键**并把 `createdIds` 指向新数组 —— 若 affected
+        // 存的是当初那个数组，撤销历史里这条命令就会永远指着几个已经不存在的
+        // 镜头（C3 的面板据此高亮/跳转时表现为"点了没反应"）。
+        // 下面两个分支都把它同步一遍。
+        affected: scope,
+        unrun: async () => {
           // 倒着删：删中间一条会让后面的 order 前移，正序删时后面那条的位置
           // 已经不是记录时的那个了。按 id 删本身不受影响，但倒序还能让服务端
           // 少做几次重排，且与"撤销 = 反着走一遍"的直觉一致。
           for (const id of [...createdIds].reverse()) await api.deleteShot(id);
+          scope.shots = createdIds;
           await refreshDetail();
         },
-        async () => {
+        run: async () => {
           let a = redoAfter;
           const again: string[] = [];
           for (const c of buf) {
@@ -1503,8 +1652,10 @@ export default function App() {
             a = r.order;
           }
           createdIds = again;   // 重建换主键，下一次撤销要认新的
+          scope.shots = again;
           await refreshDetail();
-        });
+        },
+      });
     } catch (e) { say(`粘贴失败：${String(e)}`); }
   };
 
@@ -1867,7 +2018,10 @@ export default function App() {
     clearTransitions();     // Render V2：转场同理
     clearJobs();            // P2-3：停掉上一项目的 job 轮询（新项目从服务端重新接回）
     clearDetail();          // P2-5：合并刷新定时器一并清 + 旧 detail 立即失效
-    shotRev.clear();        // 2.3：上个项目的 transform 版本号不能带进新项目
+    // 2.3 的 transform 版本号不清在这儿了 —— B4 把它挪进了 `clearDetail()`
+    // 内部。两者是同一份事实的两半（"这一镜我手上是哪个版本"离开了镜头就
+    // 没有意义），而 `resetWorkspace` 只是**其中一条**离开项目的路径；
+    // 靠这一行清，新加路径的人只记得调 `clearDetail` 时就会漏掉它。
     // 2.4：读失败条目是"上一个项目的哪些数据没加载"，换项目后这句话不再成立；
     // 留着会在新项目顶栏挂一条永远不消失的「字幕未加载」（新项目加载成功也不清，
     // 因为 noteLoaded 清的是同一个 key —— 实际上会被清掉，但在新项目那几百毫秒里
@@ -2021,14 +2175,12 @@ export default function App() {
       inserting={insertingClip}
       onPreview={(c) => previewMedia(c.url, c.name)}
       onDeleteClip={deleteClip}
-      assetsMeta={detail?.assets ?? []}
       stages={stages}
       deletedStages={deletedStages}
       onRefreshStages={() => refreshStages()}
       onRefresh={() => refreshDetail()}
       onToast={say}
       shots={shots}
-      episodes={detail?.episodes ?? []}
       selectedShotId={selectedShot?.id ?? null}
       cursorOrder={cursor?.order ?? null}
       cursorChars={cursorChars}
@@ -2058,7 +2210,7 @@ export default function App() {
   const doMoveTrack = async (shotId: string, trackIndex: number, startSec?: number) => {
     try {
       // 3.7：回主轨时后端**不需要** overlay_start_sec，但撤销回叠加层时需要 ——
-      // 所以旧值必须在 PATCH 之前抄下来，之后 refreshDetail 一刷就没了。
+      // 所以旧值必须在 PATCH 之前抄下来，之后 detail 一刷就没了。
       const old = detail?.shots.find((s) => s.id === shotId) ?? null;
       const prevIndex = old?.track_index ?? 0;
       const prevStart = old?.overlay_start_sec ?? 0;
@@ -2067,26 +2219,45 @@ export default function App() {
         trackIndex,
         ...(trackIndex > 0 ? { overlayStartSec: nextStart } : {}),
       });
-      await refreshDetail();
+      // ⚠️ 3.12（F7）：移轨只改 `track_index` / `overlay_start_sec` 两个字段，
+      // 不发顺序、不动镜头集合 —— 本地回填足够，不必重下整份详情。
+      //
+      // 这一条对**手感**尤其重要：时间轴的手势层靠 `await` 这个 Promise
+      // 决定何时撤掉 DOM 预览（见 gesture.ts 的 onSettle 约定）。原来它 await 的是
+      // "PATCH + 1.17 MiB 详情"，块要在光标下多挂整整一圈；现在只 await PATCH。
+      patchDetail(shotId, {
+        track_index: trackIndex,
+        ...(trackIndex > 0 ? { overlay_start_sec: nextStart } : {}),
+      });
       say(trackIndex > 0
         ? `已移到叠加层，起点 ${(startSec ?? 0).toFixed(1)}s（可在检查器调整，Ctrl+Z 可撤销）`
         : "已移回主轨（Ctrl+Z 可撤销）");
       if (old && prevIndex !== trackIndex) {
-        pushUndo(trackIndex > 0 ? `镜头 #${old.order} 移到叠加层` : `镜头 #${old.order} 移回主轨`,
-          async () => {
+        pushUndo({
+          label: trackIndex > 0 ? `镜头 #${old.order} 移到叠加层` : `镜头 #${old.order} 移回主轨`,
+          kind: "shot",
+          affected: { shots: [shotId] },
+          unrun: async () => {
             await api.patchShotTimeline(shotId, {
               trackIndex: prevIndex,
               ...(prevIndex > 0 ? { overlayStartSec: prevStart } : {}),
             });
-            await refreshDetail();
+            patchDetail(shotId, {
+              track_index: prevIndex,
+              ...(prevIndex > 0 ? { overlay_start_sec: prevStart } : {}),
+            });
           },
-          async () => {
+          run: async () => {
             await api.patchShotTimeline(shotId, {
               trackIndex,
               ...(trackIndex > 0 ? { overlayStartSec: nextStart } : {}),
             });
-            await refreshDetail();
-          });
+            patchDetail(shotId, {
+              track_index: trackIndex,
+              ...(trackIndex > 0 ? { overlay_start_sec: nextStart } : {}),
+            });
+          },
+        });
       }
     } catch (e) { say(String(e)); }
   };
@@ -2132,16 +2303,20 @@ export default function App() {
       await refreshTransitions();
       // 3.7 前置：转场的增删改此前一个撤销点都没有，加错了只能靠"再加一个覆盖"。
       let curId = r.id;
-      pushUndo(`加转场 #${selectedShot.order} → #${next.order}`,
-        async () => { await api.deleteTransition(curId); await refreshTransitions(); },
-        async () => {
+      pushUndo({
+        label: `加转场 #${selectedShot.order} → #${next.order}`,
+        kind: "transition",
+        affected: { shots: [selectedShot.id, next.id] },
+        unrun: async () => { await api.deleteTransition(curId); await refreshTransitions(); },
+        run: async () => {
           const again = await api.createTransition({
             project_id: projectId,
             from_shot_id: selectedShot.id, to_shot_id: next.id, type, duration,
           });
           curId = again.id;               // 重建后主键会变，撤销要认新的
           await refreshTransitions();
-        });
+        },
+      });
       say(`已在 #${selectedShot.order} → #${next.order} 加「${type}」转场（${r.duration}s`
         + `${duration < 0.5 ? "，因镜头较短已缩短" : ""}）`
         + `${r.replaced ? "，替换了原有转场" : ""}`);
@@ -2157,9 +2332,13 @@ export default function App() {
     try {
       await api.patchTransition(id, { duration: durationSec });
       await refreshTransitions();
-      pushUndo(`转场时长 → ${durationSec.toFixed(1)}s`,
-        async () => { await api.patchTransition(id, { duration: before }); await refreshTransitions(); },
-        async () => { await api.patchTransition(id, { duration: durationSec }); await refreshTransitions(); });
+      pushUndo({
+        label: `转场时长 → ${durationSec.toFixed(1)}s`,
+        kind: "transition",
+        affected: { shots: [prev.from_shot_id, prev.to_shot_id] },
+        unrun: async () => { await api.patchTransition(id, { duration: before }); await refreshTransitions(); },
+        run: async () => { await api.patchTransition(id, { duration: durationSec }); await refreshTransitions(); },
+      });
       say(`转场时长 ${durationSec.toFixed(1)}s（成片会相应缩短 ${durationSec.toFixed(1)}s）`);
     } catch (e) { say(String(e)); }
   };
@@ -2174,8 +2353,11 @@ export default function App() {
       await api.deleteTransition(m.id);
       await refreshTransitions();
       let curId = m.id;
-      pushUndo(`删除转场「${t.type}」`,
-        async () => {
+      pushUndo({
+        label: `删除转场「${t.type}」`,
+        kind: "transition",
+        affected: { shots: [t.from_shot_id, t.to_shot_id] },
+        unrun: async () => {
           const again = await api.createTransition({
             project_id: projectId,
             from_shot_id: t.from_shot_id, to_shot_id: t.to_shot_id,
@@ -2185,7 +2367,8 @@ export default function App() {
           curId = again.id;
           await refreshTransitions();
         },
-        async () => { await api.deleteTransition(curId); await refreshTransitions(); });
+        run: async () => { await api.deleteTransition(curId); await refreshTransitions(); },
+      });
       say(`已删除转场「${t.type}」，这条接缝恢复硬切`);
     } catch (e) { say(String(e)); }
   };
@@ -2207,26 +2390,74 @@ export default function App() {
 
   /** TB-05 生成变体：同提示词换一个随机 seed 再出一版，落成新的 shot_version，
    *  用户可在 Inspector 版本列表里对比、择优采用。 */
-  /** 修正镜头拆解结果。后端会置 stale，提示已出片内容已过期。 */
+  /** 修正镜头拆解结果。后端会置 stale，提示已出片内容已过期。
+   *
+   *  B0：就地回填。`PATCH /breakdown` 的回包把「哪些字段真的变了」和
+   *  「该标哪个 stale 原因」都算好了（`changed` / `stale` / `stale_reason`，
+   *  见 backend `patch_shot_breakdown`），够拼出与全量刷新一致的一行。
+   *
+   *  ⚠️ 三个字段不能想当然地照抄请求值：
+   *   · `characters` —— 后端会去空白、去重、**保序**（顺序决定参考图注入优先级），
+   *     且与库里现有值**逐字比较**过，没变就不进 `changed`。
+   *   · `location` —— 后端会剥掉「5-1」这种镜号前缀（N3，防同一场景在资产里
+   *     裂成多个同名资产），本地拿不到 `strip_shot_prefix` 的逻辑，更不该抄。
+   *   · `stale` / `stale_reason` —— 是 `stale.py` 的 `mark_stale` 按**只升不降**
+   *     算出来的（先改过正文的 rebreak 不会被这次的 reprompt 顶掉）。
+   *     把这张严重度表在前端再抄一份，就是第二个事实来源，早晚漂移。
+   *  所以只有 `changed` 里点过名的字段才回填，且回填的不是请求值 ——
+   *  这四列的值在后端与请求值等价（`script_ref` 只 trim、`link_to_prev` 只校验），
+   *  而 `characters` / `location` 走的是**列表内容**：后端已按自己的规则归一，
+   *  我们用它归一后的结果。 */
   const doPatchBreakdown = async (shotId: string, patch: {
     scriptRef?: string; characters?: string[];
     location?: string; linkToPrev?: "continuous" | "transition";
   }) => {
-    await api.patchShotBreakdown(shotId, patch);
-    await refreshDetail();
+    const r = await api.patchShotBreakdown(shotId, patch);
+    const next: Partial<ShotInfo> = {
+      stale: r.stale,
+      stale_reason: r.stale_reason ?? null,
+    };
+    for (const k of r.changed) {
+      if (k === "script_ref") next.script_ref = patch.scriptRef;
+      else if (k === "characters") next.characters = patch.characters;
+      else if (k === "location") next.location = patch.location;
+      else if (k === "link_to_prev") next.link_to_prev = patch.linkToPrev;
+    }
+    patchDetail(shotId, next);
   };
 
   /** 保存手改的提示词。后端同时写 profile_override.prompt，
    *  否则有参考图时会被 AI 重新优化覆盖。 */
   const doPatchPrompt = async (shotId: string, text: string) => {
     await api.patchShotPrompt(shotId, text);
-    await refreshDetail();
+    // B0：只改这三样，就地回填。`profile_override` 要**整份**合并而不是
+    // 覆写 —— 它同一个 JSON 里还装着模型/模式/时长/画质/首尾帧，
+    // 用 `{prompt: text}` 整个替换会把用户调好的那几项一起抹掉。
+    const cur = detail?.shots.find((s) => s.id === shotId);
+    patchDetail(shotId, {
+      gen_prompt: text,
+      prompt_state: "manual",
+      profile_override: { ...(cur?.profile_override ?? {}), prompt: text },
+    });
   };
 
   /** 撤销手改，交还给 AI */
   const doResetPrompt = async (shotId: string) => {
     await api.resetShotPrompt(shotId);
-    await refreshDetail();
+    // B0：`DELETE /prompt` 只 **pop** 掉 `profile_override.prompt`、把
+    // `prompt_state` 置回 "draft"，**不碰 gen_prompt**（后端如此，见
+    // reset_shot_prompt）。所以这里也只调这两样 —— 顺手把 gen_prompt
+    // 清成空串会与库里的真值不一致，下次生成又会「复活」出旧文本。
+    const cur = detail?.shots.find((s) => s.id === shotId);
+    const ov = cur?.profile_override;
+    let nextOv = ov;
+    if (ov && typeof ov === "object" && "prompt" in ov) {
+      const { prompt: _drop, ...rest } = ov as Record<string, unknown>;
+      // 空对象要写成 undefined（后端也是 `if ov else None`），
+      // 留个 `{}` 会让详情页显示"本镜已有覆盖"而实际没有任何覆盖。
+      nextOv = (Object.keys(rest).length ? rest : undefined) as typeof ov;
+    }
+    patchDetail(shotId, { prompt_state: "draft", profile_override: nextOv });
   };
 
   /** 单镜重算提示词（异步 job，只调文本模型，不出图不出片） */
@@ -2268,15 +2499,21 @@ export default function App() {
       say(`已分割为 #${r.head_order}（${r.head_duration}s）+ #${r.tail_order}（${r.tail_duration}s）`);
       // Ctrl+B 在剪映里是能 Ctrl+Z 回去的。这里的逆操作要走专门的 unsplit：
       // 后半段是 is_special=0 的 AI 镜头行，delete_shot 明确拒删它。
-      pushUndo(`分割镜头 #${r.head_order}`,
-        async () => {
+      pushUndo({
+        label: `分割镜头 #${r.head_order}`,
+        kind: "shot",
+        // 分割把**一条**命令变成**两条**镜头行，两半的新 uid 都要记进来 ——
+        // 只记 head 的话，撤销历史里这条命令看起来只动了一半镜头。
+        affected: { shots: [r.head_shot_id, r.tail_shot_id] },
+        unrun: async () => {
           await api.unsplitShot(r.head_shot_id, r.tail_shot_id);
           await refreshDetail();
         },
-        async () => {
+        run: async () => {
           await api.splitShot(r.head_shot_id, atSec);
           await refreshDetail();
-        });
+        },
+      });
     } catch (e) { say(String(e)); }
   };
 
@@ -2298,15 +2535,24 @@ export default function App() {
       await refreshDetail();
       say(`已划出待重生成区间：${r.head_duration}s 保留 · `
         + `${r.mid_duration}s 待生成 · ${r.tail_duration}s 保留`);
-      pushUndo(`划出待重生成区间（${r.mid_duration}s）`,
-        async () => {
+      pushUndo({
+        label: `划出待重生成区间（${r.mid_duration}s）`,
+        kind: "shot",
+        // 划分同样是把一镜变成三行，三个 uid 都算这条命令动过的。
+        affected: { shots: [r.head_shot_id, r.mid_shot_id, r.tail_shot_id] },
+        unrun: async () => {
           await api.undoRecutShot(r.head_shot_id, r.mid_shot_id);
           await refreshDetail();
         },
-        async () => {
+        // ⚠️ 上面注释里那句「撤销是**不可逆**的」说的是 **A|B|C 这三行本身**
+        // 一旦合回去就没了，不是在说这条命令 `reversible: false` —— 重做确实
+        // 存在（重放同样两个切点），只是重做出来的行全是新的。别把这两件事
+        // 混成一个标志位：`reversible` 问的是"能不能再走一遍"。
+        run: async () => {
           await api.recutShot(r.head_shot_id, cutA, cutB);
           await refreshDetail();
-        });
+        },
+      });
     } catch (e) { say(String(e)); }
   };
 
@@ -2327,11 +2573,8 @@ export default function App() {
     <AudioPanel
       projectId={projectId}
       audioClips={audioClips}
-      assets={detail?.assets ?? []}
       ttsAvailable={ttsAvailable}
       synthBusy={ttsJobId !== null}
-      productionMode={detail?.production_mode}
-      narrationVoiceUrl={detail?.narration_voice_url}
       onSynthTts={doSynthTts}
       onPreview={previewAudio}
       onAudioChanged={() => refreshAudio()}
@@ -2343,14 +2586,17 @@ export default function App() {
     <EditorLayout
       topBar={
         <TopBar
-          projectTitle={detail?.title ?? "加载中…"}
           appVersion={APP_VERSION}
-          baseAspect={detail?.base_aspect}
-          productionMode={detail?.production_mode}
           backendOk={backendOk}
           onBack={closeProject}
           canUndo={tlUndoCount > 0} onUndo={() => { void doUndo(); }}
           canRedo={tlRedoCount > 0} onRedo={() => { void doRedo(); }}
+          undoHistory={
+            <UndoHistoryPanel
+              onJump={(n) => { void jumpHistory(n); }}
+              onRedo={() => { void doRedo(); }}
+              onToast={say} />
+          }
           generating={generating}
           progress={prodJob?.progress ?? 0}
           stageLabel={oneClickStage}
@@ -2373,10 +2619,9 @@ export default function App() {
           onRelaunch={() => relaunch()}
         />
       }
-      rail={<Rail productionMode={detail?.production_mode} />}
+      rail={<Rail />}
       leftPanel={
         <LeftPanel
-          productionMode={detail?.production_mode}
           panels={{
             /* Phase 3：媒体 / 音频 / 文本 / 转场 / 特效 / 调节 —— 新面板 */
             media: (
@@ -2391,7 +2636,6 @@ export default function App() {
                 onPreview={(c) => previewMedia(c.url, c.name)}
                 onDeleteClip={deleteClip}
                 onRenameClip={renameClip}
-                assets={detail?.assets ?? []}
                 onAssetsChanged={() => { refreshStages(); refreshDetail(); }}
                 onRemoveClips={(ids) => { for (const id of ids) deleteClip(id); }}
                 onToast={say} />
@@ -2409,8 +2653,6 @@ export default function App() {
                 // 真人剧的台词长在镜头视频的声轨里，没有旁白音频可对齐 ——
                 // 但**文本仍然是已知的**（就在 script_ref 里），所以走的是同一种
                 // 强制对齐，只是声轨与文本换了来源（见 TextPanel 的 fromVideo 注释）。
-                fromVideo={detail?.production_mode === "drama"}
-                shots={detail?.shots ?? []}
                 clips={subtitles}
                 style={subtitleStyle}
                 onSaveStyle={saveSubtitleStyle}
@@ -2454,7 +2696,6 @@ export default function App() {
             "ai-script": (
               <ScriptPanel
                 projectId={projectId}
-                episodes={detail?.episodes ?? []}
                 shots={shots}
                 breakdownProgress={bdProgress}
                 onBreakdown={doBreakdown}
@@ -2467,7 +2708,6 @@ export default function App() {
                 generating={generating}
                 progress={prodJob?.progress ?? 0}
                 jobPhase={jobPhase}
-                productionMode={detail?.production_mode ?? null}
                 tier={tier}
                 onTierChange={setTier}
                 onGenerate={doGenerate}
@@ -2498,7 +2738,6 @@ export default function App() {
           cursor={cursor}
           autoNext={autoNext}
           setAutoNext={setAutoNext}
-          baseAspect={detail?.base_aspect}
           playing={isPlaying}
           shuttleRate={shuttle}
           // 3.9 本镜之后那条接缝上的转场（供播放器演一次转场预览）。
@@ -2585,9 +2824,6 @@ export default function App() {
             const start = buildOrderOffsetMap(shots).get(inspectorShot.order) ?? 0;
             movePlayheadTo(start + sec);
           }}
-          projectTitle={detail?.title ?? ""}
-          baseAspect={detail?.base_aspect}
-          maxDurationSec={detail?.shot_duration_max}
           shotCount={shots.length}
           doneCount={doneCount}
           totalSec={totalSec}
@@ -2612,7 +2848,6 @@ export default function App() {
           onGenerateVariant={doGenerateVariant}
           onUpgrade={(sh) => { void doUpgrade(sh); }}
           onSwitchVersion={doSwitchVersion}
-          assets={detail?.assets ?? []}
           onPatchBreakdown={doPatchBreakdown}
           onPatchPrompt={doPatchPrompt}
           onResetPrompt={doResetPrompt}
@@ -2634,8 +2869,6 @@ export default function App() {
           onDeleteTransition={(m) => { void doDeleteTransition(m); }}
           stages={stages}
           locations={locations}
-          assets={detail?.assets ?? []}
-          maxClipSec={detail?.shot_duration_max}
           selectedShotId={selectedShot?.id ?? null}
           onSelectShot={onSelectShot}
           playhead={playhead}
@@ -2665,7 +2898,11 @@ export default function App() {
           onRecut={(id, a, b) => { void doRecut(id, a, b); }}
           onUndoRecut={(head, mid) => { void doUndoRecut(head, mid); }}
           onDropClip={(c) => { void addToTimeline(c as LibClip); }}
-          onMoveTrack={(id, idx, st) => { void doMoveTrack(id, idx, st); }}
+          /* ⚠️ 3.12（F4）：这里**不能**再写 `void`。时间轴的落点手势要
+             `await` 它，好让 DOM 预览一直挂到 PATCH + refreshDetail 都回来
+             —— 写完才撤预览，块就不会按旧位置闪一帧。`void` 会把 Promise
+             丢掉，`await` 变成立即返回，修复就失效了。 */
+          onMoveTrack={doMoveTrack}
           onPushUndo={pushUndo}
           onToast={say}
           onAssetsChanged={() => { refreshStages(); refreshDetail(); }}
@@ -2730,9 +2967,6 @@ export default function App() {
         <>
           {preflight && detail && (
             <PreflightDialog projectId={projectId} mode="film"
-              hasScript={!!(detail.raw_script || detail.optimized_script)}
-              productionMode={detail.production_mode}
-              narrationVoiceUrl={detail.narration_voice_url}
               onNarrationVoiceChanged={() => refreshDetail(projectId)}
               running={!!prodJob} progress={prodJob?.progress} phase={jobPhase}
               onToast={say} onClose={() => setPreflight(false)} onFilm={doOneClick}
@@ -2743,24 +2977,23 @@ export default function App() {
               onCostumeScan={doCostumeScan} />
           )}
           {advancedShot && (
-            <ShotAdvanced shot={advancedShot} productionMode={detail?.production_mode ?? null}
+            <ShotAdvanced shot={advancedShot}
               onClose={() => setAdvancedShot(null)}
               onSaved={() => refreshDetail()} onToast={say} />
           )}
           {fineCutOpen && detail && (
-            <FineCut projectId={projectId} baseAspect={detail.base_aspect}
-              shots={shots} onClose={() => setFineCutOpen(false)}
+            <FineCut projectId={projectId}
+              onClose={() => setFineCutOpen(false)}
               onRegenerate={doGenerate} onToast={say} />
           )}
 
           {/* Phase 6：导出对话框（只有本机 ffmpeg 一条通道，云端合成已下线） */}
           {exportOpen && detail && (
             <ExportDialog
+              /* B2：画幅 / 项目名 / 集标题 / 镜头已改从 store 自取。
+                 `shots` 除外——这里传的是**经过 staged 暂存合成**的那份，
+                 store 里没有暂存态（见 App 的 stagedTransform 注释）。 */
               shots={shots}
-              baseAspect={detail.base_aspect}
-              projectTitle={detail.title}
-              episodeTitles={Object.fromEntries(
-                detail.episodes.map((e) => [e.order, e.title]))}
               exportDir={exportDir}
               onPickPath={pickExportPath}
               onLocalExport={doLocalExport}
@@ -2794,7 +3027,6 @@ export default function App() {
             <SettingsDialog
               theme={theme}
               onToggleTheme={toggleTheme}
-              productionMode={detail?.production_mode ?? null}
               projectId={projectId}
               onToast={say}
               onClose={() => setSettingsOpen(false)} />
@@ -2803,6 +3035,12 @@ export default function App() {
           {/* 归属确认面板：由 App 顶层的上传管道持有（它同时服务系统拖入）。
               面板自己那份只在没被传 pipeline 时才会用到，正常路径下这里是唯一实例。 */}
           {osPipeline.attributionDialog}
+
+          {/* 批次 E6：AI 指令条。
+              浮在编辑器右下角而不是进 TopBar —— TopBar 自己的文件头写着
+              "别再往里堆 AI 按钮"；也不是模态，因为用户需要一边看着时间轴
+              一边让 AI 改。没打开项目时 `enabled=false` 直接不渲染。 */}
+          <AgentCommandBar onToast={say} enabled={!!projectId} />
         </>
       }
     />
