@@ -10,6 +10,7 @@
 import { ReactNode } from "react";
 import { useEditorStore, LeftPanelTab } from "../../stores/editorStore";
 import Placeholder from "../../components/Panel/Placeholder";
+import { useProjectStore } from "../../stores/projectStore";
 import "./LeftPanel.css";
 
 const TITLES: Record<LeftPanelTab, string> = {
@@ -41,12 +42,17 @@ interface Props {
   /** 面板标题栏右侧的操作区（随 Tab 变化）*/
   actions?: Partial<Record<LeftPanelTab, ReactNode>>;
   /** 项目生产模式。真人剧的 ai-voice 面板是「角色音色」而不是「AI 配音」——
-   *  标题不跟着改的话，标题栏会和它下面的内容自相矛盾。 */
+   *  标题不跟着改的话，标题栏会和它下面的内容自相矛盾。
+   *  B2（2026-09-11）：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
   productionMode?: string | null;
 }
 
-export default function LeftPanel({ panels, actions, productionMode }: Props) {
+export default function LeftPanel({ panels, actions, productionMode: pmProp }: Props) {
   const tab = useEditorStore((s) => s.leftPanelTab);
+  // B2：本容器自己不消费 detail，只为标题栏读一个字段 —— 直接订阅，
+  // 省掉 App 那一跳转运。
+  const pmStore = useProjectStore((s) => s.detail?.production_mode ?? null);
+  const productionMode = pmProp !== undefined ? pmProp : pmStore;
   const content = panels[tab];
   const pending = PENDING[tab];
   const title = tab === "ai-voice" && productionMode !== "narration"
