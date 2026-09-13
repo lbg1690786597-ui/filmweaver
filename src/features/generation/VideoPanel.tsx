@@ -23,15 +23,16 @@ import "./VideoPanel.css";
 
 import type { QualityTier as Tier } from "../../lib/qualityTiers";
 import { productionModeLabel } from "../../lib/modelLabels";
+import { useProjectStore } from "../../stores/projectStore";
 
 interface Props {
   shots: ShotInfo[];
   generating: boolean;
   progress: number;
   jobPhase?: JobPhase | null;
-  productionMode: string | null;
+  productionMode?: string | null;
+  /** B2：`productionMode` 改从 store 自取；保留字段设为可选只为脱离 App 单测。 */
   videoModel?: string;
-
   onGenerate: (shotIds: string[]) => void;
   /** 当前质量档由 App 持有——它决定实际下发哪个模型，
    *  组件内部 state 会让"选了精品却还在用快速模型"这种错悄悄发生 */
@@ -54,6 +55,10 @@ export default function VideoPanel(p: Props) {
   const tier = p.tier;
   const setTier = p.onTierChange;
   const [advOpen, setAdvOpen] = useState(false);
+  // B2：生成模式只用于「高级」里那行只读展示，从 store 自取即可。
+  // 显式传入（含 null）以传入为准，便于脱离 App 单独挂载。
+  const modeFromStore = useProjectStore((s) => s.detail?.production_mode ?? null);
+  const productionMode = p.productionMode !== undefined ? p.productionMode : modeFromStore;
 
   const stat = useMemo(() => {
     const active = p.shots.filter((s) => !s.disabled);
@@ -239,7 +244,7 @@ export default function VideoPanel(p: Props) {
       </button>
       {advOpen && (
         <div className="fw-vp-adv">
-          <Row k="生成模式" v={productionModeLabel(p.productionMode)} />
+          <Row k="生成模式" v={productionModeLabel(productionMode)} />
           <Row k="视频模型" v={p.videoModel ?? "跟随项目默认"} />
           <Row k="当前质量档" v={tier === "final" ? "◆ 精品" : "⚡ 快速验证"} />
           <div className="fw-vp-adv-note">
