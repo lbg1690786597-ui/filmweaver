@@ -23,6 +23,10 @@
  *   ⑤ 切项目清空，老后端不下发 rev 时退回"没有锁"而不是"全部 409"
  *   ⑥ 静态守卫：前端真的在发 base_transform_rev、真的按 409 分支处理；
  *      后端真的在比对并回 409
+ *
+ * ⚠️ **B4（2026-09-11）后 ⑥ 的落点换了地方**：版本号注册表的读写从
+ * 「App 直接摸 `lib/shotRev` 单例」改成「经 `projectStore` 代管」——
+ * 理由与断言的逐条对照写在该节开头的注释里。本节其余五节的语义一字未改。
  */
 
 import { readFileSync } from "node:fs";
@@ -257,26 +261,72 @@ console.log("\n⑥ 静态守卫：前后端两侧都真的在做这件事");
   // 把每个变异都报成"转红"，等于什么都没测。
   const i = app.indexOf("const writeTransform");
   const body = app.slice(i, app.indexOf("const commitTransform"));
+  // ⚠️ B4（2026-09-11）把这一整套从"App 直接摸 `lib/shotRev` 的单例"
+  // 改成了"经 `projectStore` 代管"——因为版本号注册表与 `detail` 是同一份
+  // 事实的两半，而 `detail` 归 store 所有。
+  //
+  // 本节的**断言意图一个字没改**（base 送对了没有 / 新版本号收下了没有 /
+  // 409 有没有 forget 并 rethrow / 详情回来有没有按 hasPending 播种 /
+  // 切项目有没有清空），改的只是"这些调用现在长什么样"。
+  // 下面一律用**行为**（哪个方法名、传了什么参数）而不是"摸的是哪个模块"来断言。
   ok("writeTransform 带上 base 版本号",
-     /baseTransformRev: shotRev\.base\(shotId\)/.test(body));
+     /baseTransformRev: transformRevBase\(shotId\)/.test(body));
   ok("落库成功后记下新版本号（连着改不会撞上自己刚写的值）",
-     /shotRev\.noteWritten\(shotId, r\.transform_rev\)/.test(body));
+     /noteTransformRev\(shotId, r\.transform_rev\)/.test(body));
   ok("有 409 专属分支", /e\.status === 409/.test(body));
-  ok("409 时 forget（否则用户被锁死在冲突里）", /shotRev\.forget\(shotId\)/.test(body));
+  ok("409 时 forget（否则用户被锁死在冲突里）", /forgetTransformRev\(shotId\)/.test(body));
   ok("409 时给用户看得懂的提示", /say\("该镜头已被其他窗口修改/.test(body));
   // 切段查，不用通配跨段：body 里有两条 rethrow，通配段会从 forget 一路够到
   // 后面那条 `say(String(e)); throw e;`，于是"删掉 409 的 rethrow"照样绿。
-  const c409 = body.slice(body.indexOf("shotRev.forget(shotId);"),
+  const c409 = body.slice(body.indexOf("forgetTransformRev(shotId);"),
                           body.indexOf("say(String(e))"));
   ok("409 仍然 rethrow（stagedWrite 靠异常保留本地值）",
      c409.length > 0 && /throw e;/.test(c409));
   // 撤销/重做闭包也必须走这一层，否则撤销那次写不带 base、绕过乐观锁
   ok("撤销/重做闭包走 writeTransform（否则撤销的那次写会绕过乐观锁）",
      /async \(\) => \{ await writeTransform\(shotId, prev\); \}/.test(app));
-  ok("详情回来时按 hasPending 播种版本号",
-     /shotRev\.seed\(detail\?\.shots \?\? \[\], stagedTransform\.hasPending\)/.test(app),
+
+  // ---- B4：播种与清空的**新家** ----
+  // 这两条以前断言的是 App 里的 `useEffect([detail])` 与 `resetWorkspace()`。
+  // 现在它们住在 store 里，断言随之搬家 —— 但**必须真的检查新位置**，
+  // 不能改成"反正某处有就行"：播种要在 `refreshDetail` 内部、紧挨 `set`
+  // 之前（差一帧就是"用上一轮的版本号发这次写"），清空要在 `clearDetail`
+  // 内部（差一句就是"新项目带着旧项目的版本号"）。两处都钉到具体函数体里。
+  const store = readFileSync(join(ROOT, "src/stores/projectStore.ts"), "utf8");
+  const iR = store.indexOf("refreshDetail: async");
+  const rBody = store.slice(iR, store.indexOf("refreshSoon: () =>", iR));
+  ok("详情回来时按 hasPending 播种版本号（在 refreshDetail 内部）",
+     /shotRev\.seed\(d\.shots, hasPendingFn\)/.test(rBody),
      "不传 hasPending 就会采纳对方版本号 → 409 永不触发，锁形同不存在");
-  ok("切项目清空注册表", /shotRev\.clear\(\)/.test(app));
+  ok("……且播种早于 set（同一拍，不许隔一帧）",
+     rBody.indexOf("shotRev.seed(d.shots, hasPendingFn)") > 0
+     && rBody.indexOf("shotRev.seed(d.shots, hasPendingFn)")
+        < rBody.indexOf("set({ detail: d, snapshotAt: null })"),
+     "挂在 effect 上时 set 与 seed 之间隔着一次渲染，那一帧里发出的写带的是旧版本号");
+  // 播种也不能插在 `detailRef = d` 与 `set(...)` **中间** —— 那两句的相邻
+  // 是承重的（`verify-detail-reconcile.ts`：state 与 detailRef 必须是同一个
+  // 复用后的对象，否则下一轮整份复用不上，1424 张卡片全部重渲染）。
+  // 这条不是重复：它防的是"为了让播种更靠近 set 而把它挪进去"这个很自然的改动。
+  ok("……且没插进 detailRef 与 set 之间（那两句必须相邻）",
+     /detailRef = d;\s*\n\s*set\(\{ detail: d, snapshotAt: null \}\);/
+       .test(rBody),
+     "插在中间会切断 detailRef/set 的相邻关系，reconcileDetail 的复用随之失效");
+  const iC = store.indexOf("clearDetail: () => {");
+  const cBody = store.slice(iC, store.indexOf("transformRevBase:", iC));
+  ok("清 detail 时一并清空注册表（clearDetail 内部）",
+     /shotRev\.clear\(\)/.test(cBody),
+     "两句话分处两个文件时，新加一条离开项目的路径只会记得调其中一句");
+  ok("hasPending 探针由 App 注入（store 不 import React 侧的暂存层）",
+     /setPendingProbe\(stagedTransform\.hasPending\)/.test(app)
+     && /export function setPendingProbe/.test(store));
+  // 探针不能是"注册一次就完事"的：stagedTransform 换实例后仍须指到新的
+  ok("探针在 stagedTransform 变化时重新注入",
+     /\}, \[stagedTransform\]\);/.test(
+       app.slice(app.indexOf("setPendingProbe(stagedTransform.hasPending)"),
+                 app.indexOf("setPendingProbe(stagedTransform.hasPending)") + 200)));
+  ok("App 里不再直接摸注册表单例（唯一入口是 store）",
+     !/from "\.\/lib\/shotRev"/.test(app),
+     "两处事实来源 = 将来谁改了 store 那侧的口径，App 这侧会把旧口径盖回去");
 }
 
 {
