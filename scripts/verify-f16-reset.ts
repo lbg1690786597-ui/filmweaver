@@ -58,8 +58,11 @@ store.setPlayheadSec(320.5);
 store.setCursorSec(18.0);
 store.selectClip("c1");
 store.copySelection();
-store.pushUndo({ label: "操作A", undo: async () => {}, redo: async () => {} });
-store.pushUndo({ label: "操作B", undo: async () => {}, redo: async () => {} });
+// C2：`pushUndo` 只收 `CommandDraft` 了（旧 `{label, undo, redo}` 的翻译收在
+// `hooks/useUndo.ts`，那是 UI 边界；store 不该绕道去认那对旧名字）。本脚本直接
+// 调 store，所以得自己给成型命令 —— 正好也更贴近 C2 之后调用点的写法。
+store.pushUndo({ label: "操作A", run: async () => {}, unrun: async () => {} });
+store.pushUndo({ label: "操作B", run: async () => {}, unrun: async () => {} });
 
 // 确认状态已被写入
 const before = useTimelineStore.getState();
