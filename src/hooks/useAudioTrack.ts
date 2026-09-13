@@ -4,6 +4,7 @@ import type { Say } from "./useToast";
 import { useLoadState } from "../stores/loadStateStore";
 import { prefetcher } from "../lib/mediaCache";
 import { SSE_FALLBACK_MS, isSseUp, shouldSkipTick } from "../lib/sseHealth";
+import { readArtifact } from "../lib/artifact";
 
 /** 连续拿不到合成进度多少轮才提示（×5 秒轮询间隔）。
  *  1~2 轮是常见的网络抖动，为此弹提示是噪音；到第 3 轮（≈15 秒）
@@ -21,15 +22,19 @@ const POLL_MISS_LIMIT = 3;
  *
  * result 解析失败按"完成"处理：那是后端换了格式，不是"没合成"，
  * 这时报 ✅ 至少不会把成功说成失败。
+ *
+ * D2 起解析走 `lib/artifact.ts`：它认得 `tts_batch` 的 schema，
+ * 并在形态不对时只**记诊断**、不拒收 —— 与这里"解析不了也按完成说"的
+ * 既有立场一致（那条立场是对的：报 ❌ 会把成功说成失败）。
  */
 function doneMsg(result: string | null): string {
-  try {
-    const r = JSON.parse(result ?? "") as { clips?: unknown[]; note?: string };
+  const r = readArtifact(result, "tts_batch").value as { clips?: unknown[]; note?: string } | null;
+  if (r) {
     if (Array.isArray(r.clips) && r.clips.length === 0) {
       return `ℹ️ ${r.note || "没有需要合成的旁白"}`;
     }
     if (Array.isArray(r.clips)) return `✅ 旁白合成完成（${r.clips.length} 段）`;
-  } catch { /* 见上：解析不了就按完成说 */ }
+  }
   return "✅ 旁白合成完成";
 }
 
