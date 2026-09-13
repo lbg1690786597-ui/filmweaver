@@ -18,6 +18,7 @@ import { transformToFilter, transformToTransform, transformToClipPath,
          vignetteOverlay, unpreviewableEffects } from "../../render/previewCss";
 import { useGradePreview } from "../../hooks/useGradePreview";
 import { useCanvasToolStore } from "../../stores/canvasToolStore";
+import { useProjectStore } from "../../stores/projectStore";
 import { styleToCss } from "../../lib/subtitleStyle";
 import type { SubtitleStyleLike } from "../../lib/subtitleStyle";
 import CropZoomOverlay from "./CropZoomOverlay";
@@ -88,6 +89,9 @@ export interface PlayerProps {
 interface VideoRect { left: number; top: number; width: number; height: number }
 
 export default function Player(p: PlayerProps) {
+  // B2（2026-09-11）：画幅基准挂在项目 detail 上，直接订阅。
+  const aspect = useProjectStore((s) => s.detail?.base_aspect);
+  const baseAspect = p.baseAspect !== undefined ? p.baseAspect : aspect;
   const { canvasRef, gpuActive } = useGradePreview(
     p.videoRef, p.transform, p.previewUrl);
 
@@ -510,7 +514,7 @@ export default function Player(p: PlayerProps) {
           </label>
         )}
 
-        {p.baseAspect && <span className="fw-pl-meta">{p.baseAspect}</span>}
+        {baseAspect && <span className="fw-pl-meta">{baseAspect}</span>}
 
         {speed !== 1 && (
           <span className="fw-pl-meta speed" title="该镜头已变速，预览与导出同步">
