@@ -33,6 +33,7 @@ import { fmtTime } from "../../types";
 import {
   useLoadState, describeLoadError, LOAD_LABELS,
 } from "../../stores/loadStateStore";
+import { useProjectStore } from "../../stores/projectStore";
 import VoicePicker from "./VoicePicker";
 import "./AudioPanel.css";
 
@@ -40,10 +41,15 @@ const STATUS_LABEL: Record<string, string> = {
   done: "已就绪", generating: "合成中…", pending: "排队中", failed: "合成失败",
 };
 
+/** 稳定空数组（见组件内 B2 注释） */
+const EMPTY_ASSETS: AssetInfo[] = [];
+
 interface Props {
   projectId: string;
   audioClips: AudioClipInfo[];
-  assets: AssetInfo[];        // 角色资产（音色候选）
+  /** B2：`assets` / `productionMode` / `narrationVoiceUrl` 三个都改从 store 自取
+   *  （它们全在项目 detail 上）。保留为可选只为脱离 App 单测本组件。 */
+  assets?: AssetInfo[];        // 角色资产（音色候选）
   ttsAvailable: boolean;
   synthBusy: boolean;
   /** 项目生产模式（drama/narration）。解说剧才显示"按剧本生成旁白"入口。 */
@@ -60,6 +66,13 @@ interface Props {
 }
 
 export default function AudioPanel(p: Props) {
+  // B2：三个 detail 字段自取。显式传入（含 null）时以传入为准。
+  // 空数组用模块级常量兜底，避免每次渲染换引用。
+  const d = useProjectStore((s) => s.detail);
+  const assets = p.assets ?? d?.assets ?? EMPTY_ASSETS;
+  const productionMode = p.productionMode !== undefined ? p.productionMode : d?.production_mode;
+  const nvProp = p.narrationVoiceUrl;
+  const narrationVoiceUrl = nvProp !== undefined ? nvProp : d?.narration_voice_url;
   const [tab, setTab] = useState<"clips" | "tts" | "bgm">("clips");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   // ---- BGM / 音效素材库（TB-07）----
@@ -101,8 +114,8 @@ export default function AudioPanel(p: Props) {
   const musicClips = p.audioClips.filter((c) => c.kind === "music");
   const shotClips = p.audioClips.filter((c) => c.kind === "shot");
   const narrClips = p.audioClips.filter((c) => c.kind === "narration");
-  const chars = p.assets.filter((a) => a.kind === "character");
-  const isNarration = p.productionMode === "narration";
+  const chars = assets.filter((a) => a.kind === "character");
+  const isNarration = productionMode === "narration";
 
   // ---- 解说剧：按剧本生成旁白 ----
   const [genNarr, setGenNarr] = useState(false);
@@ -218,16 +231,16 @@ export default function AudioPanel(p: Props) {
                 {/* 解说音色：整片一个声音，必须先设好才能合成。
                     做成醒目卡片而不是一行小字——没设它整条解说链路都跑不通，
                     此前的低对比度提示实测会被直接忽略。 */}
-                <div className={`fw-voice-card ${p.narrationVoiceUrl ? "ok" : "missing"}`}>
+                <div className={`fw-voice-card ${narrationVoiceUrl ? "ok" : "missing"}`}>
                   <div className="fw-voice-head">
                     <Volume2 size={14} />
                     <b>解说音色</b>
-                    {p.narrationVoiceUrl
+                    {narrationVoiceUrl
                       ? <span className="fw-voice-state ok">已设置</span>
                       : <span className="fw-voice-state missing">必填</span>}
                   </div>
                   <div className="fw-voice-desc">
-                    {p.narrationVoiceUrl
+                    {narrationVoiceUrl
                       ? "整片解说共用这个声音。可随时更换，换后需重新合成旁白。"
                       : "上传一段人声（音频或视频均可），用来克隆解说员音色。不设置无法合成旁白。"}
                   </div>
@@ -235,12 +248,12 @@ export default function AudioPanel(p: Props) {
                     <button className="fw-audio-btn primary" disabled={upVoice}
                       onClick={() => voiceRef.current?.click()}>
                       {upVoice ? <><Loader2 size={13} className="fw-spin" /> 上传中…</>
-                        : <><Upload size={13} /> {p.narrationVoiceUrl ? "更换音色" : "上传解说音色"}</>}
+                        : <><Upload size={13} /> {narrationVoiceUrl ? "更换音色" : "上传解说音色"}</>}
                     </button>
-                    {p.narrationVoiceUrl && (
+                    {narrationVoiceUrl && (
                       <div className="fw-voice-sub">
                         <button className="fw-audio-link"
-                          onClick={() => p.onPreview(api.mediaUrl(p.narrationVoiceUrl!), "解说音色")}>
+                          onClick={() => p.onPreview(api.mediaUrl(narrationVoiceUrl!), "解说音色")}>
                           ▶ 试听
                         </button>
                         <button className="fw-audio-link" onClick={async () => {
