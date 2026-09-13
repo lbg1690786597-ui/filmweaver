@@ -22,6 +22,7 @@
  * 最典型的是"拖到段上"在 A 处算换图、在 B 处算注入，同一个手势两个结果。
  */
 import type { AssetDragData, ShotInfo } from "../../api";
+import type { CommandDraft } from "../../lib/command";
 import { injectAssetIntoShot, replaceRunImage } from "./injectAsset";
 
 export type AssetDropTarget =
@@ -107,7 +108,8 @@ export interface AssetDropCtx {
   offsetMap: Map<number, number>;
   pxPerSec: number;
   onToast: (m: string) => void;
-  onPushUndo: (label: string, undo: () => Promise<void>, redo: () => Promise<void>) => void;
+  /** C2：改收 `CommandDraft`（见 injectAsset.ts 的同名参数注释） */
+  onPushUndo: (draft: CommandDraft) => void;
   onChanged: () => void;
 }
 
