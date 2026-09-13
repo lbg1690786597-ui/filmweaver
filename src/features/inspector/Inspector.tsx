@@ -19,6 +19,7 @@ import { shotDuration } from "../../adapters/shotToClip";
 import { outputSec, shotSecOf } from "../../lib/keyframeEdit";
 import { staleHint } from "../../lib/stale";
 import { useCanvasToolStore } from "../../stores/canvasToolStore";
+import { useProjectStore } from "../../stores/projectStore";
 import ClipProperties from "./ClipProperties";
 import MosaicPanel from "./MosaicPanel";
 import CropZoomPanel from "./CropZoomPanel";
@@ -45,12 +46,15 @@ const PROMPT_STATE_LABEL: Record<string, { text: string; cls: string }> = {
 
 export interface InspectorProps {
   shot: ShotInfo | null;
-  projectTitle: string;
+  /** B2：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
+  projectTitle?: string;
   /** 项目已有的角色/场景资产——拆解编辑时从这里选，不让用户手打
    *  （手打的名字对不上资产库就注入不到参考图，等于白填） */
-  assets: AssetInfo[];
+  /** B2：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
+  assets?: AssetInfo[];
   baseAspect?: string;
-  /** 单镜时长上限（秒），来自 detail.shot_duration_max（seedance-2.5 = 30）。 */
+  /** 单镜时长上限（秒），来自 detail.shot_duration_max（seedance-2.5 = 30）。
+   *  B2：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
   maxDurationSec?: number;
   shotCount: number;
   doneCount: number;
@@ -104,7 +108,17 @@ export interface InspectorProps {
   onToast: (m: string) => void;
 }
 
+/** 稳定空数组：`?? []` 每次渲染换引用，会把下游 useMemo 打穿 */
+const EMPTY_ASSETS: AssetInfo[] = [];
+
 export default function Inspector(p: InspectorProps) {
+  // B2（2026-09-11）：资产候选池 / 画幅基准 / 单镜时长上限都挂在项目 detail 上，
+  // 本组件直接订阅，不再由 App 经 props 转运。显式传入时以传入为准。
+  const d = useProjectStore((s) => s.detail);
+  const projectTitle = p.projectTitle !== undefined ? p.projectTitle : (d?.title ?? "");
+  const assets = p.assets ?? d?.assets ?? EMPTY_ASSETS;
+  const baseAspect = p.baseAspect !== undefined ? p.baseAspect : d?.base_aspect;
+  const maxDurationSec = p.maxDurationSec !== undefined ? p.maxDurationSec : d?.shot_duration_max;
   const [tab, setTab] = useState<Tab>("ai");
 
   // 检查器页签 ↔ 画面覆盖层联动。
@@ -210,8 +224,8 @@ export default function Inspector(p: InspectorProps) {
         <div className="fw-insp-head"><span className="fw-insp-title">项目信息</span></div>
         <div className="fw-insp-body">
           <Section title="概览" Icon={Info}>
-            <Row label="项目" value={p.projectTitle} />
-            <Row label="比例" value={p.baseAspect ?? "-"} />
+            <Row label="项目" value={projectTitle} />
+            <Row label="比例" value={baseAspect ?? "-"} />
             <Row label="镜头总数" value={String(p.shotCount)} />
             <Row label="已生成" value={`${p.doneCount} / ${p.shotCount}`} />
             <Row label="时长" value={`${Math.floor(p.totalSec / 60)}分${Math.round(p.totalSec % 60)}秒`} />
@@ -238,8 +252,8 @@ export default function Inspector(p: InspectorProps) {
 
   // 拆解编辑的可选项：只给资产库里真实存在的名字。
   // 手打的名字对不上资产库就注入不到参考图，等于白填——所以不给自由输入。
-  const charOptions = p.assets.filter((a) => a.kind === "character").map((a) => a.name);
-  const locOptions = p.assets.filter((a) => a.kind === "location").map((a) => a.name);
+  const charOptions = assets.filter((a) => a.kind === "character").map((a) => a.name);
+  const locOptions = assets.filter((a) => a.kind === "location").map((a) => a.name);
 
   return (
     <>
@@ -469,7 +483,7 @@ export default function Inspector(p: InspectorProps) {
 
         {tab === "time" && (
           <ClipProperties tab="time" shotId={s.id} durationSec={shotDuration(s)}
-            maxDurationSec={p.maxDurationSec}
+            maxDurationSec={maxDurationSec}
             clipInSec={s.clip_in_sec ?? undefined}
             clipDurSec={s.clip_dur_sec ?? undefined}
             onClearClipWindow={() => p.onClearClipWindow(s.id)}
@@ -526,7 +540,7 @@ export default function Inspector(p: InspectorProps) {
           <CropZoomPanel
             shotId={s.id}
             transform={s.transform_meta ?? null}
-            baseAspect={p.baseAspect}
+            baseAspect={baseAspect}
             onPatchTransform={(tm, o) => p.onPatchTransform(s.id, tm, o)}
             onToast={p.onToast} />
         )}
