@@ -20,9 +20,11 @@ import SaveIndicator from "./SaveIndicator";
 import LoadIndicator from "./LoadIndicator";
 import "./TopBar.css";
 import { productionModeLabel } from "../../lib/modelLabels";
+import { useProjectStore } from "../../stores/projectStore";
 
 export interface TopBarProps {
-  projectTitle: string;
+  /** B2：改从 store 自取；保留为可选只为脱离 App 单测本组件。 */
+  projectTitle?: string;
   appVersion: string;
   baseAspect?: string;
   productionMode?: string | null;
@@ -35,6 +37,10 @@ export interface TopBarProps {
   onUndo: () => void;
   canRedo: boolean;
   onRedo: () => void;
+  /** C3：撤销历史面板。做成**元素**而不是让 TopBar 自己去 import 那个面板 ——
+   *  面板要连 store、要拿 App 的 toast 与跳转回调，塞进来会让本组件没法脱离
+   *  App 单测（B2 起 TopBar 只在 projectStore 上留了一个读取依赖）。 */
+  undoHistory?: React.ReactNode;
 
   // AI 生产主入口
   generating: boolean;
@@ -79,6 +85,14 @@ function onTitlebarDoubleClick(e: React.MouseEvent) {
 }
 
 export default function TopBar(p: TopBarProps) {
+  // B2（2026-09-11）：项目元数据从 store 自取，App 不再逐字段转运。
+  // 显式传入（含 `null` / `""`）时仍以传入为准，便于脱离 App 单独挂载。
+  const title = useProjectStore((s) => s.detail?.title);
+  const aspect = useProjectStore((s) => s.detail?.base_aspect);
+  const mode = useProjectStore((s) => s.detail?.production_mode ?? null);
+  const projectTitle = p.projectTitle !== undefined ? p.projectTitle : (title ?? "加载中…");
+  const baseAspect = p.baseAspect !== undefined ? p.baseAspect : aspect;
+  const productionMode = p.productionMode !== undefined ? p.productionMode : mode;
   return (
     <>
       {/* ---- 左段 ---- */}
@@ -86,8 +100,8 @@ export default function TopBar(p: TopBarProps) {
         <ChevronLeft size={17} />
       </button>
 
-      <div className="fw-tb-brand" title={p.projectTitle}>
-        <span className="fw-tb-title">{p.projectTitle}</span>
+      <div className="fw-tb-brand" title={projectTitle}>
+        <span className="fw-tb-title">{projectTitle}</span>
         <span className="fw-tb-ver">v{p.appVersion}</span>
       </div>
 
@@ -106,6 +120,7 @@ export default function TopBar(p: TopBarProps) {
         disabled={!p.canRedo} onClick={p.onRedo}>
         <Redo2 size={16} />
       </button>
+      {p.undoHistory}
 
       {/* ---- 中段：生产主入口 + 窗口拖拽区 ----
           decorations:false 后没有系统标题栏可拖，中段的空白就是拖拽把手。
@@ -137,7 +152,7 @@ export default function TopBar(p: TopBarProps) {
         <span className={`fw-tb-dot ${p.backendOk === null ? "" : p.backendOk ? "ok" : "bad"}`}
           title={p.backendOk ? "已连上服务器" : "未连上服务器"} />
         <span className="fw-tb-meta">
-          {p.baseAspect ?? "-"} · {productionModeLabel(p.productionMode)}
+          {baseAspect ?? "-"} · {productionModeLabel(productionMode)}
         </span>
 
         <button className="fw-tb-btn" disabled={!p.fineCutEnabled}
