@@ -35,10 +35,14 @@ const COLLAPSED_PX = 14;
 interface Props {
   clip: Clip;
   /** Alt+按下：交给时间轴统一处理（点=在此分割，拖=框选）。
-   *  片段自己不判断到底是点还是拖 —— 那要等 mouseup，而框选的整套
-   *  mousemove/mouseup 生命周期在 Timeline 的 `beginMarquee` 里，
-   *  这里再写一份必然与它漂移。 */
-  onAltMouseDown?: (e: React.MouseEvent) => void;
+   *  片段自己不判断到底是点还是拖 —— 那要等抬起，而框选的整套
+   *  pointermove/pointerup 生命周期在 Timeline 的 `beginMarquee` 里，
+   *  这里再写一份必然与它漂移。
+   *
+   *  3.12：与 `onPointerDownBody` 同批改走 pointer 通道（原来挂在
+   *  `onMouseDown` 上）。两者必须同一通道，否则同一次按下会既进
+   *  marquee 又进主体拖拽。 */
+  onAltPointerDown?: (e: React.PointerEvent) => void;
   /** 3.11 P1：主体按下时交给时间轴的指针状态机（拖到别的位置换 order）。
    *
    *  为什么它替代了原来的 `mousedown` 就开拖：指针状态机要能从**按下那一刻**
@@ -60,8 +64,13 @@ interface Props {
   variant?: "video" | "audio" | "subtitle";
   /** 所在轨道高度（波形按它画） */
   height?: number;
-  /** 拖动预览：非 null 时用它覆盖真实值 */
-  previewStartSec?: number;
+  /** 修剪中的宽度预览：非 null 时用它覆盖真实时长。
+   *
+   *  ⚠️ 3.12：这里**没有** `previewStartSec` 了。位置一律由 `gesture.ts` 的
+   *  `stylePreview` 直接写 DOM `transform`，不走 React —— 一旦位置也由 props
+   *  驱动，拖动时"DOM 跟手"与"React 重画"会为同一个像素打架，就是那个来回闪。
+   *  宽度则相反：`widthPx()` 写的数与这里的 `previewDurationSec` 同源同值，
+   *  两条通道写同一个数不会打架，且在 DOM 预览被清掉的那一帧仍兜得住。 */
   previewDurationSec?: number;
   /** 拖动中（半透明 + 不响应 hover） */
   dragging?: boolean;
@@ -70,9 +79,9 @@ interface Props {
   trackLocked: boolean;
   onSelect: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
-  onBeginTrim: (e: React.MouseEvent) => void;
+  onBeginTrim: (e: React.PointerEvent) => void;
   /** 3.1：拖左边缘修剪入点。只有已出片的镜头会渲染这个手柄。 */
-  onBeginTrimIn?: (e: React.MouseEvent) => void;
+  onBeginTrimIn?: (e: React.PointerEvent) => void;
   onDoubleClick: () => void;
   /** 3.11 R1：点版本角标 → 打开检查器的版本区。
    *  不传就不渲染角标（音频/字幕轨本就没有版本概念）。 */
@@ -81,7 +90,7 @@ interface Props {
 
 function ClipViewInner(p: Props) {
   const { clip: c } = p;
-  const start = p.previewStartSec ?? c.startSec;
+  const start = c.startSec;
   const dur = p.previewDurationSec ?? c.durationSec;
   // 7.2：停用镜头折叠成标记。它的 startSec 与后继镜头**必然相同**（停用不占
   // 时间），折叠前是按原时长整格画出来、再被后继镜头整块盖住——看不见、点不到、
@@ -123,20 +132,26 @@ function ClipViewInner(p: Props) {
     <div className={cls}
       style={{ left, width }}
       data-shot-id={c.shotId ?? undefined}
+      /* 3.12：`gesture.ts` 的 `stylePreview` 按 id 找元素写拖动预览。
+         `data-shot-id` 对音频/字幕段是空的（它们没有镜头），拿它当选择器
+         会让这几类片段永远找不到自己、预览静默失效。 */
+      data-clip-id={c.id}
       onMouseDown={(e) => {
         if (e.button !== 0) return;
-        // Alt 一律交给时间轴统一处理：点 = 在此切一刀，拖 = 框选。
-        // 这里**不能**再走 onSelect/onPointerDownBody —— 否则 Alt+拖会变成
-        // "选中并把这个片段拖走"，用户想框选却把素材挪了位置。
-        if (e.altKey && p.onAltMouseDown) { p.onAltMouseDown(e); return; }
         p.onSelect(e);
       }}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
-        // Alt 起手是"点哪切哪 / 框选"，那个手势的整个生命周期在 Timeline
-        // 的 `beginMarquee` 里（它挂在 lane 的 onMouseDown 上）—— 这里
-        // 连 pointer 都不要再起一次，否则一次按下会同时开两套覆盖层。
-        if (e.altKey) return;
+        // Alt 一律交给时间轴统一处理：点 = 在此切一刀，拖 = 框选。
+        // 这里**不能**再走 onSelect/onPointerDownBody —— 否则 Alt+拖会变成
+        // "选中并把这个片段拖走"，用户想框选却把素材挪了位置。
+        //
+        // ⚠️ Alt 分流必须在 `preventDefault` **之前**：分割/框选都不该吃
+        // 这次按下的默认行为抑制（`onPointerDownBody` 那条路径才需要它）。
+        if (e.altKey) {
+          if (p.onAltPointerDown) p.onAltPointerDown(e);
+          return;
+        }
         if (p.trackLocked) return;
         // 3.11：抑制这次按下的**默认行为**（WebView2 里是"拖动选区 / 原生
         // 图片拖拽"，Windows 上还会连带出指针样式闪烁）。CSS 的 `user-select:
@@ -233,7 +248,10 @@ function ClipViewInner(p: Props) {
             : c.entity === "audio"
               ? `拖动裁掉开头（已裁掉 ${(c.clipInSec ?? 0).toFixed(1)}s；这一段会晚一点开始放）`
               : "拖动让字幕晚点出现（同时缩短显示时长）"}
-          onMouseDown={(e) => { e.stopPropagation(); p.onBeginTrimIn!(e); }} />
+          /* 3.12：`pointerdown` 而不是 `mousedown` —— 手势层走 pointer 通道，
+             见 gesture.ts 头注释。`stopPropagation` 必须留着：不拦的话，按下
+             手柄会同时触发片段本体的 `onPointerDownBody`，一次按下开两套拖拽。 */
+          onPointerDown={(e) => { e.stopPropagation(); p.onBeginTrimIn!(e); }} />
       )}
 
       {/* 右缘 trim 手柄。
@@ -250,7 +268,7 @@ function ClipViewInner(p: Props) {
             : c.entity === "audio"
               ? `拖动裁掉结尾（最长 ${(c.sourceDurSec ?? dur).toFixed(1)}s，就是素材总长；每格 0.1s）`
               : "拖动调整字幕显示时长（每格 0.1s）"}
-          onMouseDown={(e) => { e.stopPropagation(); p.onBeginTrim(e); }} />
+          onPointerDown={(e) => { e.stopPropagation(); p.onBeginTrim(e); }} />
       )}
     </div>
   );
