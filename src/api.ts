@@ -1693,8 +1693,15 @@ export const api = {
       model_id: body.modelId ?? null,
     }),
 
-  /** Agent 提示词契约版本。`verify-agent.ts` 拿它与客户端常量比对，
-   *  防止两端提示词格式漂移（漂移的失败长相是"模型偶尔乱回"，极难定位）。 */
+  /** 后端 agent 提示词契约的**只读快照**（返回 contract_version / max_commands /
+   *  max_input_chars）。
+   *
+   *  ⚠️ 这个函数目前**没有任何调用点**，它不校验任何东西。真正的契约守卫是
+   *  **编译期**的：`scripts/verify-agent.ts` ⑧ 段直接读 `agent_proxy.py` 源码，
+   *  比对 `AGENT_CONTRACT_VERSION === PROMPT_CONTRACT_VERSION`，并核对
+   *  `routes_v2.py` 在**模块级**导入了那三个名字（曾经函数体内才 import，
+   *  导致 `/v2/agent/protocol` 必然 500）。改契约版本时由 `npm run verify:ui` 拦截，
+   *  不是靠这里。保留本函数只为手工排查后端契约用。 */
   agentProtocol: () =>
     get<{ contract_version: number; max_commands: number; max_input_chars: number }>(
       "/v2/agent/protocol",
