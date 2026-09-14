@@ -59,6 +59,14 @@ export default function AgentCommandBar(p: AgentCommandBarProps) {
   const [last, setLast] = useState<{ turnId: string | null; line: string } | null>(null);
   // 上一轮改动了什么，供"撤销这一轮"按钮的 tooltip 说清楚代价
   const [lastSummary, setLastSummary] = useState("");
+  /** 会话内的前几轮问答，回给后端拼 `【之前的对话】`。
+   *
+   *  ⚠️ 只活在内存里，**不落盘、不跨项目**：关掉指令条再打开还是同一份
+   *  （组件不卸载），但切项目时清空 —— 上一个项目的镜头 id 带进新项目
+   *  只会让模型指着一个不存在的 id 说话。
+   *  用 ref 而不是 state：`submit` 里读的是"提交那一刻"的快照，
+   *  而 state 更新是异步的，连点两次提交会读到同一份旧历史。 */
+  const historyRef = useRef<{ role: "user" | "assistant"; text: string }[]>([]);
 
   const gateRef = useRef<ReturnType<typeof createConfirmGate> | null>(null);
   if (!gateRef.current) gateRef.current = createConfirmGate();
@@ -97,9 +105,19 @@ export default function AgentCommandBar(p: AgentCommandBarProps) {
           };
         },
         confirm: gate.confirm,
+        // 之前几轮。`runAgent` 自己会再截一次（HISTORY_TURNS），后端也只取最后几条。
+        history: historyRef.current,
       });
       const line = runStatusLine(r);
       const detail = summarizeRun(r);
+      // 记进会话历史。`r.reply` 是**给用户的那句**（runAgent 已经在各分支里
+      // 填好了），不是模型原始输出 —— 原始输出里可能有 JSON 命令体，
+      // 那东西回灌给下一轮会把模型带偏成"照抄上一轮的 JSON"。
+      const prior = historyRef.current;
+      prior.push({ role: "user", text: q });
+      prior.push({ role: "assistant", text: r.reply || line });
+      // 只留最近 8 条（4 轮），防止长会话把请求体撑大；后端还会再截
+      if (prior.length > 8) prior.splice(0, prior.length - 8);
       setLast({ turnId: r.turnId, line });
       setLastSummary(detail);
       // `runAgent` 已经在成功/失败各分支里 `say` 过一句了，这里不重复报同一件事，
