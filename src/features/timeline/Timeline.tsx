@@ -31,6 +31,7 @@ import ContextMenu from "../../components/ContextMenu/ContextMenu";
 import type { MenuItem } from "../../components/ContextMenu/ContextMenu";
 import AssetTrack, { AssetTrackKind, AssetRun } from "../assets/AssetTrack";
 import { injectAssetIntoShot, snapSecToOrder } from "../assets/injectAsset";
+import { displayOrdersOf, useAssetOverrideRev } from "../../stores/assetOverrideStore";
 import { collectSnapPoints, snapRange } from "./snap";
 import {
   quantizeSec, trimOut, trimIn, outPatch, inPatch, minTrimSec,
@@ -325,6 +326,14 @@ export default function Timeline(p: Props) {
 
   // ---- 播放器播放头 → 时间轴绝对秒 ----
   const offsetMap = buildOrderOffsetMap(p.shots);
+  // 3.13：资产轨的**行数**要看台账投影后的结果（见下方 `assetRows`）。
+  // 订阅版本号即可 —— 台账一写入就要重算行高，否则刚拖进来的行没有高度。
+  // 台账变更后必须重渲染：`displayOrdersOf` 读的是 store 里的**模块级**表，
+  // React 感知不到它变了 —— 只有订阅 rev，下面的投影才会重算。
+  useAssetOverrideRev();
+  const specialOrders = useMemo(
+    () => new Set(p.shots.filter((s) => s.is_special).map((s) => s.order)), [p.shots]);
+  const isSpecialOrder = useCallback((o: number) => specialOrders.has(o), [specialOrders]);
   useEffect(() => {
     if (!p.playhead) return;
     const base = offsetMap.get(p.playhead.order) ?? 0;
@@ -1283,12 +1292,18 @@ export default function Timeline(p: Props) {
               : track.kind === "asset-loc" ? "location"
                 : track.kind === "asset-ref" ? "reference" : null;
 
-          // 资产轨行数不定（每角色一行），高度按行数算而不是固定值
+          // 资产轨行数不定（每角色一行），高度按行数算而不是固定值。
+          // ⚠️ 3.13：必须用**台账投影后**的 order 判行，不能只看服务端的
+          // `present_orders` —— 刚拖进来、还没落库的那一行在这里是空的，
+          // 行高会算成 0，段画在没有高度的容器里（看着像"没生效"）。
+          // 判据与 `AssetTrack.rows` 一致：投影后非空即算一行。
+          const projRows = (name: string, base: number[]) =>
+            displayOrdersOf(base, p.projectId, name, isSpecialOrder).length;
           const assetRows = assetKind === "character"
-            ? new Set((p.stages ?? []).filter((s) => s.present_orders?.length)
+            ? new Set((p.stages ?? []).filter((s) => projRows(s.character_name, s.present_orders ?? []))
                 .map((s) => s.character_name)).size
             : assetKind === "location"
-              ? (p.locations ?? []).filter((l) => l.present_orders?.length).length
+              ? (p.locations ?? []).filter((l) => projRows(l.name, l.present_orders ?? [])).length
               : (assetsFromStore ?? []).filter((a) => a.kind === "custom").length;
           // 22px：字号 10→11 后 20px 会把文字挤到贴边
           const ASSET_ROW_H = 22;
@@ -1381,7 +1396,6 @@ export default function Timeline(p: Props) {
                         projectId: p.projectId, name: d.name,
                         isLocation: d.kind === "location",
                         shot: sh, order,
-                        onPushUndo: p.onPushUndo,
                         onToast: p.onToast,
                         onChanged: p.onAssetsChanged,
                       });
