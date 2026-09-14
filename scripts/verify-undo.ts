@@ -279,9 +279,16 @@ ok("AssetTrack 的 onPushUndo 收 CommandDraft（run 是必填字段）",
 ok("整条资产注入链（AssetTrack → useAssetDrop → injectAsset）签名一致",
   [asset, drop, injectAsset].every((f) => /onPushUndo: \(draft: CommandDraft\) => void;/.test(f)));
 ok("五个资产轨入口一个不少",
-  ((asset + injectAsset).match(/(?:p|a)\.onPushUndo\(/g) ?? []).length === 5,
-  "第 5 个（拖资产卡进轨道）已挪进 injectAsset.ts，与镜头轨那条 lane 共用同一份实现，"
-  + "所以要合起来数；数少了说明真丢了一个入口");
+  // 3.13 起记账点从 `p.onPushUndo({…})` 换成了 store 的 `recordWithUndo(…, ops, affected)`：
+  // 调整只写本地台账，撤销也是往台账里记一条**反向 op**，不再有"撤销时补发请求"那一步。
+  // 判据随之改成数 `recordWithUndo(` —— 同样是**锚在入口**上（标签就在它里面），
+  // 新增一处/删掉一处照样能抓。指针通道的落点（`injectAssetIntoShot`）现在
+  // **只**在 injectAsset.ts 里记一次账（它把两处 `onPushUndo` 合并成了同一个实现），
+  // 所以 AssetTrack 侧数 4 个 + injectAsset 侧 1 个，合起来仍是 5 个入口。
+  ((asset.match(/recordWithUndo\(/g) ?? []).length === 4
+   && (injectAsset.match(/recordWithUndo\(/g) ?? []).length === 1),
+  "AssetTrack 4 个（拖边缘 / 平移 / 删除段 / 卡片落轨）+ injectAsset 1 个（镜头轨落点，两通道共用）；"
+  + "数少了说明真丢了一个入口 —— 别的都对，就那一个手势不能撤销");
 
 /* ================================================================== *
  * ⑤ 轨道开关的说明必须与它实际做的事一致
