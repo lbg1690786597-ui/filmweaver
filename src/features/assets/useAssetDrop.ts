@@ -167,15 +167,27 @@ export async function commitAssetDrop(
   const shot = shotAtClientX(target.el, clientX, ctx);
   if (!shot) { ctx.onToast("请拖到某个镜头上方"); return true; }
 
-  // 行名：资产轨上有行就用行名（拖的是"这个角色/场景"），没有就用卡片自己的名字。
+  // ⚠️ 身份检查（3.13）。旧版是 `target.kind === "lane" ? (target.rowName ?? d.name) : d.name`
+  // —— 把**落点行**的名字当成了资产名。于是把角色 A 的卡片拖到角色 B 的轨道上，
+  // 会静默地在 B 上注入 B 的图：用户拖的是 A，落下去的是 B，谁都没提示。
+  //
+  // 正确语义：**卡片是谁，就注入谁**。
+  //   · 拖到别的角色的行上 → 拒绝，并说清该拖到哪一行
+  //   · 拖到自己的行上 → 注入自己
+  //   · 拖到空轨（没有行名）→ 用卡片自己的名字建行
+  //   · custom 卡落到任何行都有意义（它是"额外参考"，不属于任何角色）
+  if (target.kind === "lane" && target.rowName && target.rowName !== d.name
+      && d.kind !== "custom") {
+    ctx.onToast(`「${d.name}」不能注入到「${target.rowName}」的轨道上 —— 请拖到「${d.name}」自己那一行`);
+    return true;
+  }
   const name = target.kind === "lane" ? (target.rowName ?? d.name) : d.name;
-  if (!name) { ctx.onToast("这条轨需要先有角色/场景行"); return true; }
 
-  await injectAssetIntoShot({
+  injectAssetIntoShot({
     projectId: ctx.projectId, name,
     isLocation: target.kind === "lane" ? target.isLocation : d.kind === "location",
     shot, order: shot.order,
-    onPushUndo: ctx.onPushUndo, onToast: ctx.onToast, onChanged: ctx.onChanged,
+    onToast: ctx.onToast, onChanged: ctx.onChanged,
   });
   return true;
 }
