@@ -27,13 +27,20 @@ import {
 import { api } from "../../api";
 import type { ShotInfo, StageInfo, LocationInfo, AssetInfo, AssetDragData } from "../../api";
 import ContextMenu, { MenuItem } from "../../components/ContextMenu/ContextMenu";
-import { injectAssetIntoShot, replaceRunImage } from "./injectAsset";
+import { replaceRunImage } from "./injectAsset";
 import type { CommandDraft } from "../../lib/command";
 import { inSpan } from "../timeline/virtual";
 import type { SpanRange } from "../timeline/virtual";
 // 3.12（F1）：资产段的三个手势（拖左边缘 / 拖右边缘 / 拖整段）与时间轴共用同一层
 // —— 统一走 Pointer Events，拖动期间直接写 DOM 几何，见 gesture.ts 头注释。
 import { beginGesture, stylePreview } from "../timeline/gesture";
+// 3.13：本地台账。所有调整先记台账、画面立刻按台账画，落库是后台防抖的事。
+import {
+  displayOrdersOf, displayManualAddsOf, recordWithUndo,
+  useAssetOverride, useAssetOverrideRev,
+} from "../../stores/assetOverrideStore";
+import type { AssetOverrideOp } from "./assetOverrides";
+import { clampEdge, opsOf, runGeometry } from "./assetOverrides";
 import "./AssetTrack.css";
 
 export type AssetTrackKind = "character" | "location" | "reference";
@@ -73,6 +80,17 @@ function splitRuns(orders: number[]): number[][] {
   }
   runs.push(cur);
   return runs;
+}
+
+/** 段覆盖的 order 列表（只保留**真实存在**的镜头；特殊镜不参与资产注入）。
+ *  台账按 order 记账，所有动作都得先摊成 order。 */
+function ordersOf(run: { from: number; to: number }, isSpecial?: (o: number) => boolean): number[] {
+  const out: number[] = [];
+  for (let o = run.from; o <= run.to; o++) {
+    if (isSpecial?.(o)) continue;
+    out.push(o);
+  }
+  return out;
 }
 
 interface Props {
@@ -128,150 +146,246 @@ export default function AssetTrack(p: Props) {
   }, [p.offsetMap]);
 
   // ---- 组装行数据 ----
+  // 3.13：行数据取自**本地台账投影后**的 order（`displayOrdersOf`），不是服务端
+  // 底座。改完一段边缘，画面下一帧就该变 —— 不能等服务端算完再回来。`rev` 是
+  // 台账版本号，用它当依赖才会重算。
+  const rev = useAssetOverrideRev();
+  const table = useAssetOverride((s) => s.table);
   const rows: AssetRow[] = useMemo(() => {
+    void rev;   // 台账变了要重算（值本身不参与计算，只是触发）
+    if (p.kind === "reference") {
+      return p.assets
+        .filter((a) => a.kind === "custom")
+        .map((a) => ({ key: a.id, name: a.name, imageUrl: a.image_url, runs: [] }));
+    }
+    const isSpecial = (o: number) => !!orderToShot.get(o)?.is_special;
+    const byName = new Map<string, AssetRow>();
+
+    const mkRow = (name: string, imageUrl: string | null): AssetRow => {
+      let row = byName.get(name);
+      if (!row) { row = { key: name, name, imageUrl, runs: [] }; byName.set(name, row); }
+      return row;
+    };
+
     if (p.kind === "character") {
-      const byChar = new Map<string, AssetRow>();
+      /** 台账里被标成"人工加入"的 order（该角色） —— 服务端底座之外的本地意图 */
+      const manualSet = (name: string): Set<number> => {
+        const ops = opsOf(table, name);
+        return new Set(ops.filter((o) => o.manual && o.present).map((o) => o.order));
+      };
+
       for (const st of p.stages) {
-        if (!st.present_orders?.length) continue;
-        let row = byChar.get(st.character_name);
-        if (!row) {
-          const asset = p.assets.find(
-            (a) => a.kind === "character" && a.name === st.character_name);
-          row = { key: st.character_name, name: st.character_name,
-                  imageUrl: asset?.image_url ?? null, runs: [] };
-          byChar.set(st.character_name, row);
-        }
-        for (const run of splitRuns(st.present_orders)) {
+        // ⚠️ 底座用的是**这一个造型**的 `present_orders`，不是整个角色的并集。
+        // 并集会把两个造型的区间画成同一条（同一角色的不同造型区段会重叠），
+        // 那正是 `splitRuns` 要避免的事。
+        const base = st.present_orders ?? [];
+        if (!base.length) continue;
+        const name = st.character_name;
+        const asset = p.assets.find((a) => a.kind === "character" && a.name === name);
+        const row = mkRow(name, asset?.image_url ?? null);
+        const shown = displayOrdersOf(base, p.projectId, name, isSpecial);
+        const manual = displayManualAddsOf(base, shown, p.projectId, name);
+        for (const r of splitRuns(shown)) {
           row.runs.push({
-            id: `${st.id}:${run[0]}`,
-            from: run[0], to: run[run.length - 1],
+            id: `${st.id}:${r[0]}`,
+            from: r[0], to: r[r.length - 1],
             stageName: st.stage_name,
             stageId: st.virtual ? undefined : st.id,
             imageUrl: st.effective_image_url ?? st.image_url,
-            manualAdd: (st.manual_add_orders ?? []).filter((o) => run.includes(o)),
+            manualAdd: manual.filter((o) => r.includes(o)),
             locked: st.status === "confirmed",
           });
         }
       }
-      return [...byChar.values()];
-    }
 
-    if (p.kind === "location") {
-      return p.locations
-        .filter((l) => l.present_orders?.length)
-        .map((l) => ({
-          key: l.name, name: l.name, imageUrl: l.image_url,
-          runs: splitRuns(l.present_orders).map((run) => ({
-            id: `loc:${l.name}:${run[0]}`,
-            from: run[0], to: run[run.length - 1],
-            imageUrl: l.image_url,
-            manualAdd: (l.manual_add_orders ?? []).filter((o) => run.includes(o)),
+      // 台账里那些**不属于任何造型区段**的 order：第一次把某个角色注入进去时
+      // 就是这种情况 —— 服务端还没有这一行，只按造型画的话用户的注入会
+      // 完全看不见。单独合成一条「人工注入」段，坐标仍然精确到镜头。
+      const covered = new Map<string, Set<number>>();
+      for (const st of p.stages) {
+        const s = covered.get(st.character_name) ?? new Set<number>();
+        for (const o of st.present_orders ?? []) s.add(o);
+        covered.set(st.character_name, s);
+      }
+      const names = new Set<string>([
+        ...covered.keys(),
+        ...p.assets.filter((a) => a.kind === "character").map((a) => a.name),
+        ...Object.keys(table),
+      ]);
+      for (const name of names) {
+        const cov = covered.get(name) ?? new Set<number>();
+        const extra = displayOrdersOf([], p.projectId, name, isSpecial)
+          .filter((o) => !cov.has(o));
+        if (!extra.length) continue;
+        const asset = p.assets.find((a) => a.kind === "character" && a.name === name);
+        const row = mkRow(name, asset?.image_url ?? null);
+        const manual = manualSet(name);
+        for (const r of splitRuns(extra)) {
+          row.runs.push({
+            id: `local:${name}:${r[0]}`,
+            from: r[0], to: r[r.length - 1],
+            stageName: "人工注入",
+            // 没有 AssetStage 行 → 换图走 upsertAssetImage（同场景轨的 virtual 段）
+            stageId: undefined,
+            imageUrl: asset?.image_url ?? null,
+            manualAdd: r.filter((o) => manual.has(o)),
             locked: false,
-          })),
-        }));
+          });
+        }
+      }
+      return [...byName.values()];
     }
 
-    // 参考资产轨：custom 类资产（无角色/场景绑定）
-    return p.assets
-      .filter((a) => a.kind === "custom")
-      .map((a) => ({ key: a.id, name: a.name, imageUrl: a.image_url, runs: [] }));
-  }, [p.kind, p.stages, p.locations, p.assets]);
+    // 场景轨
+    for (const l of p.locations) {
+      const base = l.present_orders ?? [];
+      if (!base.length) continue;
+      const row = mkRow(l.name, l.image_url);
+      const shown = displayOrdersOf(base, p.projectId, l.name, isSpecial);
+      const manual = displayManualAddsOf(base, shown, p.projectId, l.name);
+      for (const r of splitRuns(shown)) {
+        row.runs.push({
+          id: `loc:${l.name}:${r[0]}`,
+          from: r[0], to: r[r.length - 1],
+          imageUrl: l.image_url,
+          manualAdd: manual.filter((o) => r.includes(o)),
+          locked: false,
+        });
+      }
+    }
+    const locNames = new Set<string>([...p.locations.map((l) => l.name), ...Object.keys(table)]);
+    for (const name of locNames) {
+      const extra = displayOrdersOf([], p.projectId, name, isSpecial);
+      if (!extra.length) continue;
+      const asset = p.assets.find((a) => a.name === name);
+      const row = mkRow(name, asset?.image_url ?? null);
+      for (const r of splitRuns(extra)) {
+        row.runs.push({
+          id: `local:loc:${name}:${r[0]}`,
+          from: r[0], to: r[r.length - 1],
+          imageUrl: asset?.image_url ?? null,
+          manualAdd: [],
+          locked: false,
+        });
+      }
+    }
+    return [...byName.values()];
+  }, [p.kind, p.stages, p.locations, p.assets, p.projectId, orderToShot, rev]);
 
   // ---- 改生效范围（拖边缘）----
-  const applyEdge = async (row: AssetRow, run: AssetRun, edgeKind: "from" | "to", newOrder: number) => {
-    const isLoc = p.kind === "location";
-    const oldFrom = run.from, oldTo = run.to;
-    const nf = edgeKind === "from" ? Math.min(newOrder, run.to) : run.from;
-    const nt = edgeKind === "to" ? Math.max(newOrder, run.from) : run.to;
-    if (nf === oldFrom && nt === oldTo) return;
-
-    // 差集：新区间多出来的 → add；旧区间少掉的 → remove
-    const inOld = (o: number) => o >= oldFrom && o <= oldTo;
-    const inNew = (o: number) => o >= nf && o <= nt;
-    const addIds: string[] = [], removeIds: string[] = [];
-    const lo = Math.min(oldFrom, nf), hi = Math.max(oldTo, nt);
-    for (let o = lo; o <= hi; o++) {
-      const sh = orderToShot.get(o);
-      if (!sh || sh.is_special) continue;
-      if (inNew(o) && !inOld(o)) addIds.push(sh.id);
-      if (!inNew(o) && inOld(o)) removeIds.push(sh.id);
-    }
-    if (!addIds.length && !removeIds.length) return;
-
-    try {
-      await api.refOverrides(p.projectId, row.name,
-        { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-      p.onPushUndo({
-        label: `「${row.name}」生效范围 #${oldFrom}-#${oldTo} → #${nf}-#${nt}`,
-        kind: "asset",
-        // 生效范围动的是**一批**镜头（新范围内加进去的 + 旧范围里被移出的），
-        // 两类都塞进 affected —— 这正是不用 order 区间、用 uid 列表的理由：
-        // 区间在两个方向上不是同一批镜头。
-        affected: { shots: [...addIds, ...removeIds] },
-        unrun: async () => {
-          await api.refOverrides(p.projectId, row.name,
-            { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
-          p.onChanged();
-        },
-        run: async () => {
-          await api.refOverrides(p.projectId, row.name,
-            { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-          p.onChanged();
-        },
-      });
-      p.onToast(`「${row.name}」生效范围改为 #${nf}-#${nt}`);
-      p.onChanged();
-    } catch (e) { p.onToast(String(e)); }
+  /** 该行当前**生效**的操作（后写覆盖先写），用于算"要不要新增一条 op"。 */
+  const effective = (rowName: string): Map<number, { present: boolean; manual: boolean }> => {
+    const m = new Map<number, { present: boolean; manual: boolean }>();
+    for (const o of opsOf(table, rowName)) m.set(o.order, { present: o.present, manual: o.manual });
+    return m;
   };
 
-  const beginEdgeDrag = (e: React.PointerEvent, row: AssetRow, run: AssetRun, edgeKind: "from" | "to") => {
+  /**
+   * 改生效范围。**只写本地台账** —— 不再 `await api.refOverrides`。
+   *
+   * 3.13 之前这里是真的发请求：于是每拖一下都要等一个来回，服务端算完返回前
+   * 画面只能按旧值渲染 —— 用户报的"每次调整都会闪一下才到正确位置"就是这个。
+   * 现在几何由台账投影直接决定，下一帧就是最终位置；落库交给 store 的防抖队列。
+   *
+   * `manual` 落在**被拖进来的那一端**：用户手动把边缘拖过去覆盖的镜头是"人工
+   * 判定"，与 AI 拆解出来的区分开（画斜纹），右键"重置"才有东西可回。
+   */
+  const applyEdge = (
+    row: AssetRow, run: AssetRun, edgeKind: "from" | "to", newOrder: number,
+  ): void => {
+    const anchor = edgeKind === "from" ? run.to : run.from;
+    const nf = edgeKind === "from" ? Math.min(newOrder, anchor) : run.from;
+    const nt = edgeKind === "to" ? Math.max(newOrder, anchor) : run.to;
+    if (nf === run.from && nt === run.to) return;
+
+    const manual = edgeKind === "from" ? nf === run.from : nt === run.to;
+    const cur = effective(row.name);
+    const ops: Omit<AssetOverrideOp, "at">[] = [];
+    const lo = Math.min(run.from, nf), hi = Math.max(run.to, nt);
+    for (let o = lo; o <= hi; o++) {
+      const sh = orderToShot.get(o);
+      if (!sh || sh.is_special) continue;          // 外部素材镜头不参与注入
+      const inNew = o >= nf && o <= nt;
+      const inOld = o >= run.from && o <= run.to;
+      if (inNew === inOld) continue;
+      const prev = cur.get(o);
+      if (prev && prev.present === inNew) continue; // 台账已经表达了同一件事
+      ops.push({ order: o, present: inNew, manual: inNew && manual });
+    }
+    if (!ops.length) return;
+
+    const affected: string[] = [];
+    for (let o = lo; o <= hi; o++) {
+      const sh = orderToShot.get(o);
+      if (sh) affected.push(sh.id);
+    }
+    recordWithUndo(
+      `「${row.name}」生效范围 #${run.from}-#${run.to} → #${nf}-#${nt}`,
+      row.name, ops, affected);
+    p.onToast(`「${row.name}」生效范围改为 #${nf}-#${nt}`);
+  };
+
+  /** 段边缘的手势。**按下时一次性冻结几何**，之后全部基于这份冻结值算 ——
+   *  每帧 `parseFloat(el.style.left)` 读回自己刚写的、已取整的值，误差会随
+   *  拖动距离累加，就是用户报的"鼠标移动距离和段边缘有微小差异，越拖越明显"。 */
+  const beginEdgeDrag = (
+    e: React.PointerEvent, row: AssetRow, run: AssetRun, edgeKind: "from" | "to",
+  ) => {
     e.preventDefault(); e.stopPropagation();
     if (run.locked) { p.onToast(`「${row.name}」该造型已确认，先解锁再调整`); return; }
-    // 时间原点是这条 lane：段的 left/width 都是 `order → 秒 × pxPerSec` 算出来的，
-    // 用 lane 的左边缘当 0 才对得上（拿段自己当原点会整体错一段）。
     const self = e.currentTarget as HTMLElement;
     const lane = self.closest<HTMLElement>(".fw-at-lane") ?? self.parentElement;
     const el = self.closest<HTMLElement>(".fw-at-run");
     if (!lane || !el) return;
     const box = lane.getBoundingClientRect();
-    const left0 = parseFloat(el.style.left) || 0;      // 段的静态左边缘（px）
-    const width0 = parseFloat(el.style.width) || 0;    // 段的静态宽度（px）
-    // 手柄在段上的位置：拖左边缘时指针挨着段的左边，拖右边缘挨着右边。
-    // 用「指针 → 这一侧边缘」的距离算，段就会**贴着指针**走，而不是按格跳。
-    const grabOffset = edgeKind === "from"
-      ? e.clientX - (box.left + left0)
-      : e.clientX - (box.left + left0 + width0);
+    const scroll0 = lane.scrollLeft;
+    // 冻结几何：与渲染同一个函数、同一组入参（`run.from/to`），不是读回 DOM。
+    const g0 = runGeometry(run.from, run.to, p.offsetMap, p.pxPerSec, durOf);
+    // 一格的最小宽度：拖到极限时这一段至少还完整覆盖一镜
+    const minSpan = durOf(edgeKind === "from" ? run.to : run.from) * p.pxPerSec / 2;
+    const anchorPx = edgeKind === "from" ? g0.right : g0.left;
+    // 指针相对**它抓的那条边**的偏移：拖的时候保持它不变，边就贴着指针走
+    const grabOffset = e.clientX
+      - (box.left - scroll0 + (edgeKind === "from" ? g0.left : g0.right));
     const pv = stylePreview(el);
     let latest = edgeKind === "from" ? run.from : run.to;
+    let lastPx = edgeKind === "from" ? g0.left : g0.right;   // 最后算出的边缘 px（提交用）
     beginGesture(e.nativeEvent, {
+      thresholdPx: 3,      // 误点不该改数据
       cursor: "ew-resize",
       onFrame: (g) => {
-        const edgePx = g.clientX - grabOffset - box.left;
-        const sec = Math.max(0, edgePx / p.pxPerSec);
-        const o = secToOrder(sec);
-        // ① 跟手：每次都直接写几何，不等任何 state。
+        const edgePx = (g.clientX - box.left + lane.scrollLeft) - grabOffset;
+        const clamped = clampEdge(edgePx, edgeKind, anchorPx, minSpan);
+        lastPx = clamped;
+        // ① 跟手：直接写 DOM 几何，不等任何 state。
         if (edgeKind === "from") {
-          const w = Math.max(6, left0 + width0 - edgePx);
-          pv.widthPx(w, w > 6 ? edgePx - left0 : 0);
+          pv.widthPx(g0.right - clamped, clamped - g0.left);
         } else {
-          pv.widthPx(Math.max(6, edgePx - left0));
+          pv.widthPx(clamped - g0.left);
         }
         // ② 离散的那部分（落点提示 + 松手提交用哪个 order）才碰 React。
+        const o = secToOrder(Math.max(0, clamped / p.pxPerSec));
         if (o == null || o === latest) return;
         latest = o;
         setEdge({ runId: run.id, edge: edgeKind, order: o });
       },
-      onCommit: async () => {
-        const cur = edgeKind === "from" ? run.from : run.to;
-        if (latest === cur) return;              // 没落到别的镜头边界，什么都不发
-        await applyEdge(row, run, edgeKind, latest);
+      onCommit: () => {
+        // 用**最后一帧算出的**边缘 px 吸附（不是指针位置），保证"看到哪就是哪"
+        const o = secToOrder(Math.max(0, lastPx / p.pxPerSec));
+        if (o != null) applyEdge(row, run, edgeKind, o);
       },
       onSettle: () => { pv.reset(); setEdge(null); },
     });
   };
 
   // ---- 拖资产卡片进轨道 → 在落点镜头注入 ----
-  // 注入本身走 injectAsset.ts（镜头轨那条 lane 共用同一份实现）。
+  // 3.13：不再发请求，改成往本地台账写一条 `{order, present:true, manual:true}`。
+  // 真正上传发生在"发起需要服务端的能力"那一刻（见 `flushAssetOverrides`）。
+  //
+  // ⚠️ 身份检查：拖进来的卡片是谁，就只注入谁。
+  // 旧版 `name: row?.name ?? d.name` 把**落点行**的名字当成了资产名 ——
+  // 把角色 A 的卡片拖到角色 B 的轨道上，会静默在 B 上注入 B 的造型图，
+  // 用户看到的和自己拖的完全不是一回事。落到别的行上必须拒绝并说清原因。
   const onLaneDrop = async (e: React.DragEvent, row?: AssetRow) => {
     e.preventDefault();
     setDropOrder(null);
@@ -287,16 +401,30 @@ export default function AssetTrack(p: Props) {
     if (order == null) { p.onToast("请拖到某个镜头上方"); return; }
     const sh = orderToShot.get(order);
     if (!sh) return;
+    if (sh.is_special) { p.onToast("特殊镜不参与资产注入"); return; }
 
-    await injectAssetIntoShot({
-      projectId: p.projectId,
-      name: row?.name ?? d.name,
-      isLocation: p.kind === "location",
-      shot: sh, order,
-      onPushUndo: p.onPushUndo,
-      onToast: p.onToast,
-      onChanged: p.onChanged,
-    });
+    // 卡片身份 vs 落点行身份
+    if (row && d.kind === "character" && d.name !== row.name) {
+      p.onToast(`「${d.name}」不能注入到「${row.name}」的轨道上 —— 请拖到「${d.name}」自己那一行`);
+      return;
+    }
+    if (p.kind === "character" && d.kind !== "character") {
+      p.onToast("人物轨只接受人物资产卡");
+      return;
+    }
+    if (p.kind === "location" && d.kind !== "location") {
+      p.onToast("场景轨只接受场景资产卡");
+      return;
+    }
+
+    // 落点行没给（空轨的 onDrop）时用卡片自己的名字建行
+    const name = row?.name ?? d.name;
+    recordWithUndo(
+      `注入「${name}」到镜头 #${order}`,
+      name,
+      [{ order, present: true, manual: true }],
+      [sh.id]);
+    p.onToast(`已把「${name}」注入镜头 #${order}`);
   };
 
   const onLaneDragOver = (e: React.DragEvent) => {
@@ -308,32 +436,19 @@ export default function AssetTrack(p: Props) {
   };
 
   // ---- 删除段 ----
-  const removeRun = async (row: AssetRow, run: AssetRun) => {
-    const ids: string[] = [];
-    for (let o = run.from; o <= run.to; o++) {
+  // 台账记成「这一批 order 都不生效」，不再发请求、不再进 undo 网络栈。
+  const removeRun = (row: AssetRow, run: AssetRun) => {
+    const orders = ordersOf(run).filter((o) => {
       const sh = orderToShot.get(o);
-      if (sh) ids.push(sh.id);
-    }
-    if (!ids.length) return;
-    const isLoc = p.kind === "location";
-    try {
-      await api.refOverrides(p.projectId, row.name, { removeShotIds: ids, isLocation: isLoc });
-      p.onPushUndo({
-        label: `删除「${row.name}」#${run.from}-#${run.to} 注入段`,
-        kind: "asset",
-        affected: { shots: ids },
-        unrun: async () => {
-          await api.refOverrides(p.projectId, row.name, { addShotIds: ids, isLocation: isLoc });
-          p.onChanged();
-        },
-        run: async () => {
-          await api.refOverrides(p.projectId, row.name, { removeShotIds: ids, isLocation: isLoc });
-          p.onChanged();
-        },
-      });
-      p.onToast(`已删除「${row.name}」#${run.from}-#${run.to} 注入段（Ctrl+Z 可撤销）`);
-      p.onChanged();
-    } catch (e) { p.onToast(String(e)); }
+      return !!sh && !sh.is_special;
+    });
+    if (!orders.length) return;
+    recordWithUndo(
+      `删除「${row.name}」#${run.from}-#${run.to} 注入段`,
+      row.name,
+      orders.map((o) => ({ order: o, present: false, manual: false })),
+      orders.map((o) => orderToShot.get(o)!.id));
+    p.onToast(`已删除「${row.name}」#${run.from}-#${run.to} 注入段（Ctrl+Z 可撤销）`);
   };
 
   // ---- 替换资产图（拖资产卡到段上）----
@@ -362,19 +477,12 @@ export default function AssetTrack(p: Props) {
   };
 
   // ---- 重置人工覆写（回到 AI 拆解判定）----
-  const resetRun = async (row: AssetRow, run: AssetRun) => {
-    const ids: string[] = [];
-    for (let o = run.from; o <= run.to; o++) {
-      const sh = orderToShot.get(o);
-      if (sh) ids.push(sh.id);
-    }
-    if (!ids.length) return;
-    try {
-      await api.refOverrides(p.projectId, row.name,
-        { resetShotIds: ids, isLocation: p.kind === "location" });
-      p.onToast(`已重置「${row.name}」#${run.from}-#${run.to} 的人工调整，回到 AI 判定`);
-      p.onChanged();
-    } catch (e) { p.onToast(String(e)); }
+  // 「回到 AI 判定」= 把这一行的本地台账整个抹掉，而不是给服务端发 reset。
+  // 发 reset 的话，本地台账里还压着没落库的调账，等服务端回来又把它盖回去。
+  const resetRun = (row: AssetRow, run: AssetRun) => {
+    if (!opsOf(table, row.name).length) return;
+    useAssetOverride.getState().clearRow(row.name);
+    p.onToast(`已重置「${row.name}」#${run.from}-#${run.to} 的人工调整，回到 AI 判定`);
   };
 
   // ---- 整段平移（按住段身拖动）----
@@ -394,65 +502,68 @@ export default function AssetTrack(p: Props) {
     const el = e.currentTarget as HTMLElement;
     if (!lane) return;
     const box = lane.getBoundingClientRect();
-    // 指针按住的位置相对**段左边缘**的偏移：拖动时保持它不变，段才"粘"在手上
-    const grabOffset = e.clientX - box.left - (parseFloat(el.style.left) || 0);
+    const lane0 = lane.scrollLeft;
+
+    // 3.13：按下时把几何**冻结**一次，之后所有换算都基于它。
+    // 旧版每帧 `parseFloat(el.style.left)` 读的是被 `Math.round` 过的像素值，
+    // 拿它反推"想在哪"会逐帧累积舍入误差 —— 拖得越长偏得越多，正是用户报的
+    // 「鼠标移动距离和实际资产块边缘有微小的差异，移动距离越长越明显」。
+    const g0 = runGeometry(run.from, run.to, p.offsetMap, p.pxPerSec, durOf);
+    const grabOffset = e.clientX - (box.left - lane0 + g0.left);
     const span = run.to - run.from;
-    const startSec = p.offsetMap.get(run.from) ?? 0;
-    // 提交用：跨了几个镜头。只认**吸附后**的变化，所以拖半格不会提交。
+    // 可移区间：段整体不许移出镜头范围
+    const orders = [...p.offsetMap.keys()].sort((a, b) => a - b);
+    const minFrom = orders.length ? orders[0] : run.from;
+    const maxFrom = orders.length ? orders[orders.length - 1] - span : run.from;
+    // 提交用：跨了几个镜头（吸附后）
     let delta = 0;
     let moved = false;
     const pv = stylePreview(el);
     beginGesture(e.nativeEvent, {
+      thresholdPx: 3,
       onFrame: (g) => {
-        const px = g.clientX - box.left - grabOffset;      // 段左边缘**想**在的 px
+        const px = g.clientX - (box.left - lane0) - grabOffset;   // 段左边缘**想**在的 px
         const sec = Math.max(0, px / p.pxPerSec);
         const target = secToOrder(sec);
         if (target == null) return;
-        const d = target - run.from;
+        let d = target - run.from;
+        d = Math.max(minFrom - run.from, Math.min(maxFrom - run.from, d));
         // ① 跟手：位移直接写 transform，不等 state、不量化到"格"。
+        const startSec = p.offsetMap.get(run.from) ?? 0;
         pv.shiftPx(((p.offsetMap.get(run.from + d) ?? startSec) - startSec) * p.pxPerSec);
         // ② 离散部分：只有真的跨了一格才记，提交与 toast 都用它。
         if (d !== delta) { delta = d; moved = true; }
       },
-      onCommit: async () => {
+      onCommit: () => {
         if (!moved || delta === 0) return;
-        const nf = Math.max(1, run.from + delta);
+        const nf = run.from + delta;
         const nt = nf + span;
-        const addIds: string[] = [], removeIds: string[] = [];
-        for (let o = run.from; o <= run.to; o++) {
+        const cur = effective(row.name);
+        const ops: Omit<AssetOverrideOp, "at">[] = [];
+        const lo = Math.min(run.from, nf), hi = Math.max(run.to, nt);
+        for (let o = lo; o <= hi; o++) {
           const sh = orderToShot.get(o);
-          if (sh && (o < nf || o > nt)) removeIds.push(sh.id);
+          if (!sh || sh.is_special) continue;
+          const inNew = o >= nf && o <= nt, inOld = o >= run.from && o <= run.to;
+          if (inNew === inOld) continue;
+          const prev = cur.get(o);
+          if (prev && prev.present === inNew) continue;
+          // 平移靠"人工搬过去"的那一端也算人工判定
+          ops.push({ order: o, present: inNew, manual: inNew && (o < run.from || o > run.to) });
         }
-        for (let o = nf; o <= nt; o++) {
+        if (!ops.length) return;
+        const affected: string[] = [];
+        for (let o = lo; o <= hi; o++) {
           const sh = orderToShot.get(o);
-          if (sh && !sh.is_special && (o < run.from || o > run.to)) addIds.push(sh.id);
+          if (sh) affected.push(sh.id);
         }
-        if (!addIds.length && !removeIds.length) return;
-        const isLoc = p.kind === "location";
-        try {
-          await api.refOverrides(p.projectId, row.name,
-            { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-          p.onPushUndo({
-            label: `平移「${row.name}」#${run.from}-#${run.to} → #${nf}-#${nt}`,
-            kind: "asset",
-            affected: { shots: [...addIds, ...removeIds] },
-            unrun: async () => {
-              await api.refOverrides(p.projectId, row.name,
-                { addShotIds: removeIds, removeShotIds: addIds, isLocation: isLoc });
-              p.onChanged();
-            },
-            run: async () => {
-              await api.refOverrides(p.projectId, row.name,
-                { addShotIds: addIds, removeShotIds: removeIds, isLocation: isLoc });
-              p.onChanged();
-            },
-          });
-          p.onToast(`「${row.name}」已平移到 #${nf}-#${nt}`);
-          p.onChanged();
-        } catch (err) { p.onToast(String(err)); }
+        recordWithUndo(
+          `平移「${row.name}」#${run.from}-#${run.to} → #${nf}-#${nt}`,
+          row.name, ops, affected);
+        p.onToast(`「${row.name}」已平移到 #${nf}-#${nt}`);
       },
-      // ⚠️ 预览要挂到 `onChanged()` 把新数据渲进 DOM 之后才撤（这正是
-      // `onSettle` 的语义）。顺序反了的话，段会先弹回旧位置再跳到新位置。
+      // 预览撤销：本地台账当场就出结果了，没有"等服务端渲染"这一步，
+      // 下一帧 `rows` 重算后段就在新位置上，撤掉 transform 不会回跳。
       onSettle: () => { pv.reset(); },
     });
   };
@@ -533,9 +644,12 @@ export default function AssetTrack(p: Props) {
                 ? Math.min(edge.order, run.to) : run.from;
               const to = edge?.runId === run.id && edge.edge === "to"
                 ? Math.max(edge.order, run.from) : run.to;
-              const left = (p.offsetMap.get(from) ?? 0) * p.pxPerSec;
-              const endStart = p.offsetMap.get(to) ?? 0;
-              const width = Math.max(16, (endStart + durOf(to)) * p.pxPerSec - left);
+              // 3.13：渲染与手势共用同一个 `runGeometry`。旧版这里手算 left/width，
+              // 手势里另有一套 `parseFloat(el.style.left)`，两套算法对"段在哪"的
+              // 认识本来就不一致 —— 拖拽越久偏得越多。
+              const geom = runGeometry(from, to, p.offsetMap, p.pxPerSec, durOf);
+              const left = geom.left;
+              const width = geom.width;
               // 3.10：视口外的段不进 DOM。正在拖边缘的那个例外——它可能被拖出
               // 视口，卸载了预览就没了（拖拽本身挂在 window 上不会断，
               // 于是表现为"段凭空消失、松手又回来"，不报任何错）。
