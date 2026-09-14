@@ -68,6 +68,10 @@ import type { ClipEditPatch } from "./features/timeline/clipEdit";
 import type { Clip } from "./types/timeline";
 import { clearWaveformCache } from "./features/timeline/Waveform";
 import type { AssetRun, AssetTrackKind } from "./features/assets/AssetTrack";
+import {
+  useAssetOverride, setAssetSyncContext, flushAssetOverrides,
+} from "./stores/assetOverrideStore";
+import type { RowBase } from "./stores/assetOverrideStore";
 // ---- Phase 3 重构：基础剪辑面板 ----
 import MediaPanel from "./features/media/MediaPanel";
 import AudioPanel from "./features/audio/AudioPanel";
@@ -111,6 +115,21 @@ import { useCanvasToolStore } from "./stores/canvasToolStore";
 export default function App() {
   // ---- UI 层：toast / 主题 / 应用内更新 ----
   const { toast, say, clearToast } = useToast();
+
+  /** 3.13：调服务端能力之前，把本地资产台账落库。
+   *
+   *  调整资产块**本身**已经不碰网络了（见 `assetOverrideStore` 头注释），
+   *  代价是"服务端不知道用户刚拖了什么"。所以每一个会**读**服务端
+   *  `ref_overrides` 的动作（生成图/视频/音频、导出、重新拆解、跑 pipeline）
+   *  都必须先调这里，否则用户看到的是"我明明把角色 A 拖到了这一镜，
+   *  生成出来的画面里却没有 A"。
+   *
+   *  失败**不阻断**生成：台账还在本地，下一次入口会重试。但必须说一句 ——
+   *  悄悄带着半份参考图去生成，是比排队等待更坏的结果。 */
+  const flushAssets = useCallback(async (): Promise<void> => {
+    const ok = await flushAssetOverrides();
+    if (!ok) say("⚠️ 有资产调整没同步上服务器，这一批生成可能没算上它 —— 稍后会自动重试", 12000);
+  }, [say]);
   const { theme, toggleTheme } = useTheme();
   const { updateState, setUpdateState, updateProgress, updateNotes, checkUpdate } = useUpdater(say);
 
@@ -372,6 +391,10 @@ export default function App() {
   const doGenerate = async (shotIds: string[], modelId?: string) => {
     if (!projectId || !shotIds.length) return;
     try {
+      // ⚠️ 3.13：本地台账必须先落库。后端是**按 shot_id 算注入**的，
+      // 刚拖进去的资产还在本地，不 flush 的话这一批生成出来的画面里就没有它
+      // —— 用户看到的是"我明明把角色 A 拖到了这一镜，生成的视频里却没有 A"。
+      await flushAssets();
       const model = modelId ?? tierModel(tier);
       const job = await api.submitShotsByIds(projectId, shotIds, model);
       trackJob(job, "shot_videos");
@@ -389,6 +412,7 @@ export default function App() {
   const doFirstFrames = async (shotIds?: string[]) => {
     if (!projectId) return;
     try {
+      await flushAssets();   // 同上：首帧按资产注入构图
       const job = await api.submitFirstFrames(projectId, { shotIds });
       trackJob(job, "first_frames");
       sayIfDeduped(job, shotIds?.length ? `已提交 ${shotIds.length} 个镜头首帧生成`
@@ -402,6 +426,7 @@ export default function App() {
                                     stopAfter?: "assets" | "frames" }) => {
     if (!projectId) return;
     try {
+      await flushAssets();   // 一键成片含"资产→首帧→片段"，更要先落库
       const job = await api.submitFirstFramePipeline(projectId, {
         genAssets: opts.genAssets, stopAfter: opts.stopAfter,
       });
@@ -2094,6 +2119,55 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, shots, detail]);
 
+  /**
+   * 3.13：把「本地台账」接进 App 级上下文。
+   *
+   * 资产轨上的一切调整（拖边缘、平移、注入、删除）现在**只写本地台账**，落库是
+   * 后台防抖队列的事。队列需要一个能回答这三个问题的地方：这一行的服务端底座
+   * 是什么、order 怎么翻成 shot_id、撤销往哪记。答案全在 App 这一层 ——
+   * `stages` / `locations` 给底座，`shots` 给映射，`pushUndo` 给撤销。
+   *
+   * ⚠️ 依赖里必须带 `stages` / `locations` / `shots`：底座换了而 ctx 还是旧的，
+   * 落库就会拿旧底座算差集，把用户的调整"发回"成一个反向请求。
+   */
+  useEffect(() => {
+    if (!projectId) { setAssetSyncContext(null); return; }
+    const stageBase = new Map<string, RowBase>();
+    for (const st of stages ?? []) {
+      const row = stageBase.get(st.character_name) ?? {
+        present: [], manualAdd: [], isSpecial: false, isLocation: false,
+      };
+      // 同一角色的多个造型共享一行：present_orders 取并集，manual 同理。
+      // （渲染是按**单个造型**分段画的，见 `AssetTrack.rows`；这里要并集是因为
+      //  落库按**行名**发一次请求，行是角色粒度。）
+      row.present = [...new Set([...row.present, ...(st.present_orders ?? [])])].sort((a, b) => a - b);
+      row.manualAdd = [...new Set([...row.manualAdd, ...(st.manual_add_orders ?? [])])].sort((a, b) => a - b);
+      stageBase.set(st.character_name, row);
+    }
+    for (const l of locations ?? []) {
+      stageBase.set(l.name, {
+        present: [...(l.present_orders ?? [])].sort((a, b) => a - b),
+        manualAdd: [...(l.manual_add_orders ?? [])].sort((a, b) => a - b),
+        isSpecial: false,
+        isLocation: true,
+      });
+    }
+    setAssetSyncContext({
+      projectId,
+      shots,
+      baseOf: (rowName) => stageBase.get(rowName) ?? null,
+      pushUndo,
+      onToast: say,
+    });
+    return () => setAssetSyncContext(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, stages, locations, shots, pushUndo, say]);
+
+  // 切项目：读该项目的台账（同步，首帧就能画对 —— 见 store 头注释）
+  useEffect(() => {
+    if (projectId) useAssetOverride.getState().openProject(projectId);
+  }, [projectId]);
+
   // ---- 顶层门禁（6.7）----
   // 规则本身全在 `lib/appGate.ts`，这里只按结论渲染。搬走的理由见那个文件的开头：
   // 门禁是"错了就整个软件进不去"的逻辑，而写在 .tsx 里 node 下 import 不进来，
@@ -2473,6 +2547,7 @@ export default function App() {
     // seed 在前端摇：后端拿到显式 seed 会记进版本 meta，同一个 seed 可复现
     const seed = Math.floor(Math.random() * 2_000_000_000);
     try {
+      await flushAssets();
       const job = await api.submitShotsByIds(projectId, [shot.id], undefined, seed);
       trackJob(job, "shot_videos");
       say(`🎲 正在为镜头 #${shot.order} 生成变体（seed ${seed}）`);
@@ -2607,7 +2682,7 @@ export default function App() {
           onFineCut={() => setFineCutOpen(true)}
           exporting={localProgress !== null}
           exportProgress={localProgress?.pct ?? 0}
-          onExport={() => setExportOpen(true)}
+          onExport={() => { void flushAssets(); setExportOpen(true); }}
           theme={theme}
           onToggleTheme={toggleTheme}
           userName={user ? (user.display_name ?? user.username) : null}
@@ -3040,7 +3115,11 @@ export default function App() {
               浮在编辑器右下角而不是进 TopBar —— TopBar 自己的文件头写着
               "别再往里堆 AI 按钮"；也不是模态，因为用户需要一边看着时间轴
               一边让 AI 改。没打开项目时 `enabled=false` 直接不渲染。 */}
-          <AgentCommandBar onToast={say} enabled={!!projectId} />
+          {/* ⚠️ `key={projectId}` 是**必须**的：指令条内部攒着"之前几轮"的
+              会话历史（回给后端拼【之前的对话】）。换项目不换实例的话，模型会
+              拿着上一个项目的镜头 id 和上一批改动来理解这一句。换 key = 换实例
+              = 历史清空，代价只是切项目时面板自动收起（本来也该收起）。 */}
+          <AgentCommandBar key={projectId ?? "none"} onToast={say} enabled={!!projectId} />
         </>
       }
     />
