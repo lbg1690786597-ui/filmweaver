@@ -66,6 +66,11 @@ export const MAX_DESCRIBE_CALLS = 3;
 /** 每页给模型看多少个镜头。**小于等于 `MAX_LIMIT`**（那个是硬上限）。 */
 const PAGE_LIMIT = 60;
 
+/** 回给后端的**之前对话**保留几轮（一问一答算一轮）。
+ *  后端 `agent_proxy.run_turn` 自己也只取最后 6 条，这里再截一次是
+ *  为了别把整段会话塞进请求体 —— 双方都截，取更小的那个生效。 */
+const HISTORY_TURNS = 6;
+
 export type AgentRunStatus =
   | "done"          // 模型说做完了，或这一轮没有任何事可做
   | "incomplete"    // 撞上轮次上限，还有没做完的
@@ -165,6 +170,17 @@ export async function runAgent(
 
   const maxTurns = Math.max(1, opts.maxTurns ?? MAX_TURNS);
   const history = [...(opts.history ?? [])];
+  /** 传给后端的**之前几轮**对话。
+   *
+   *  ⚠️ 不能用下面那个会增长的 `history`：它在每次循环末尾 `push` 本轮
+   *  自己的问答，第二轮起就会把"本轮已经发过的话"再当历史发一遍 ——
+   *  模型看到自己刚说的话被标记成"之前的对话"，会误以为用户已经确认过它。
+   *  这里冻结一份快照，整个 run 期间不变。
+   *
+   *  后端**确实消费** history（`agent_proxy.run_turn` 取最后 6 条折进
+   *  `【之前的对话】`），之前恒传 `[]` 等于把"把第 3 场再改回去"这类
+   *  指代上一轮的 follow-up 能力白扔了。 */
+  const priorHistory = history.slice(-HISTORY_TURNS);
 
   // ⚠️ `host.projectId()` 在没打开项目时**抛错**（host.ts 的设计）。
   // 这里提前接住：没打开项目时连模型都不该叫（叫了也只能得到"我改不了"）。
@@ -231,7 +247,7 @@ export async function runAgent(
           timelineText: renderTimelineForPrompt(scopePage),
           capabilities: exportCapabilities(CAPABILITIES),
           projectId,
-          history: [],
+          history: priorHistory,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
