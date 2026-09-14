@@ -19,3 +19,6 @@ src-tauri/binaries/
 scripts/.align-fixture.txt
 # 同理：e2e-narration.ts 的后端数据快照（含真实项目的镜头/旁白文本）
 .e2e-data.json
+
+# tsc 增量构建信息（构建产物，不入库）
+tsconfig.tsbuildinfo
