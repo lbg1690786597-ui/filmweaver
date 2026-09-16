@@ -264,7 +264,11 @@ console.log("\n④ 深度上限、clear、不可重做计数");
  * ================================================================== */
 console.log("\n⑤ 迁移收口：旧的 (label, undo, redo?) 形状确实不存在了");
 {
-  const ROOT = new URL("..", import.meta.url).pathname;
+  // ⚠️ 这里原本是 `new URL("..", import.meta.url).pathname` —— **Windows 上必崩**：
+  // file URL 的 pathname 是 `/D:/a/...`（前面那个斜杠是 URL 语法的一部分），
+  // 拿去 join 就成了 `D:\D:\a\...`，ENOENT。Linux 上 pathname 恰好等于路径，
+  // 所以本机一直看不出问题，只有 CI（windows-latest）会红。
+  // 用文件顶部那个已经算好的 ROOT（走 fileURLToPath，两个平台都对）。
   const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
   const cmd = read("src/lib/command.ts");
   const hook = read("src/hooks/useUndo.ts");
