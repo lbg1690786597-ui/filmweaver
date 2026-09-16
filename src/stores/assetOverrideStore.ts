@@ -118,8 +118,13 @@ export interface AssetOverrideState {
 
   /** 切项目：读该项目的台账（同步，供首帧直接用） */
   openProject: (projectId: string) => void;
+  /** 摘掉当前项目（不碰 localStorage）。见实现处的说明。 */
+  unloadProject: () => void;
+  /** 把一份已知的台账**装回**到某个项目名下（并落盘）。见实现处的说明。 */
+  adoptTable: (projectId: string, table: AssetOverrideTable) => void;
   /** 记一批调整（同一行的同一个瞬间） */
-  record: (rowName: string, ops: readonly Omit<AssetOverrideOp, "at">[]) => void;
+  /** 返回 false = 这批 op 没被接受（台账还没 openProject / 空 op）。调用方据此决定要不要报成功。 */
+  record: (rowName: string, ops: readonly Omit<AssetOverrideOp, "at">[]) => boolean;
   /** 清空某一行（重置人工调整、删除段之后用） */
   clearRow: (rowName: string) => void;
   /** 服务端 `present_orders` 回来了：摘掉已兑现的 op（**只摘落库前记下的**，见 `pruneTable`） */
@@ -136,29 +141,61 @@ export const useAssetOverride = create<AssetOverrideState>((set, get) => ({
 
   openProject: (projectId) => {
     if (get().projectId === projectId) return;
-    // ⚠️ 换项目要先掐掉上一项目挂着的重试定时器。`syncRow` 从 store 现读
-    // `projectId`，定时器不掐的话，上一项目那笔失败的写入会在新项目里
-    // 重发 —— A 项目的角色名发到 B 项目的 `/shots/ref-overrides`。
-    for (const t of timers.values()) clearTimeout(t);
-    timers.clear();
-    retryDelay.clear();
-    baseSnapshot.clear();
-    syncedAt.clear();
+    clearSyncState();
     const table = loadTable(projectId);
+    set((s) => ({ projectId, table, pending: countOps(table), lastError: null, rev: s.rev + 1 }));
+  },
+
+  /**
+   * 摘掉当前项目，**不动 localStorage** —— 落盘的台账原样留着，下次
+   * `openProject` 同一个 id 会把它读回来。
+   *
+   * ⚠️ 这不是"清空台账"。它的真实用途是复刻真机上确实存在的那一刻：
+   * `App.tsx` 是在拿到 `projectId` 之后的 effect 里才 `openProject`，**首帧
+   * 渲染时 store 还是空的**。此时 `record()` 第一行 `if (!projectId) return false`
+   * —— 什么都不该改，包括那句 toast。谁想测"注入被拒时不许报成功"，
+   * 就得有一个能把 store 打回这一帧的入口，而不是自己去 `setState`。
+   */
+  unloadProject: () => {
+    clearSyncState();
+    set((s) => ({ projectId: "", table: {}, pending: 0, lastError: null, rev: s.rev + 1 }));
+  },
+
+  /**
+   * 把一份**已知**的台账装回到某个项目名下，并落盘。
+   *
+   * 与 `openProject` 的区别是"信谁"：`openProject` 信 localStorage，
+   * 这个信调用方给的 `table`。两处需要它：
+   *   · 开发台上的**重置** —— 要的是"台账回到空白"，而 `openProject` 见
+   *     `projectId` 没变会直接早退，内存里那份旧台账还在，上一轮的 op 会跟着
+   *     下一轮测试跑；
+   *   · 开发台上**快照的放回** —— 探针临时把台账摘掉测一帧，之后要原样放回，
+   *     不能走 localStorage（那读回来的可能是被中途写脏的版本）。
+   */
+  adoptTable: (projectId, table) => {
+    clearSyncState();
+    // 先删再存：`saveTable` 对空表是 `removeItem`，顺序反了会留下上一份
+    saveTable(projectId, table);
     set((s) => ({ projectId, table, pending: countOps(table), lastError: null, rev: s.rev + 1 }));
   },
 
   record: (rowName, ops) => {
     const { projectId, table } = get();
-    if (!projectId || !ops.length) return;
+    // ⚠️ **返回值必须如实反映"有没有写进去"**。老写法在这里静默 return，
+    // 调用方照样弹「生效范围改为 #1-#3」，可台账里一条 op 都没有 —— 于是
+    // 预览里段确实变窄了、松手却弹回原样，用户看到的是"缩了一格没反应"。
+    // 唯一会走到这条早退的是"台账还没 openProject"（首帧竞态、或组件被挂在
+    // 没有 App 外壳的地方），此时**什么都不该改**，包括那句 toast。
+    if (!projectId || !ops.length) return false;
     const next = appendOps(table, rowName, ops, Date.now());
-    if (next === table) return;
+    if (next === table) return false;
     saveTable(projectId, next);
     set((s) => ({ table: next, pending: countOps(next), rev: s.rev + 1 }));
     // ⚠️ **这里不发请求、也不排定时器**（3.13）。调整只活在本地台账里，
     // 落库统一由 `flushAssetOverrides()` 在需要服务端能力的那一刻触发。
     // 3.12 在这里排的那个 600ms 尾防抖，就是"每次调整都闪一下"的来源：
     // 请求回来 → 服务端底座变了 → 按底座重画 → 用户看到段先弹回原位再落定。
+    return true;
   },
 
   clearRow: (rowName) => {
@@ -189,6 +226,25 @@ function countOps(t: AssetOverrideTable): number {
   let n = 0;
   for (const ops of Object.values(t)) n += ops.length;
   return n;
+}
+
+/**
+ * 换/摘项目前必须先掐掉"上一个项目挂着的"落库状态。
+ *
+ * ⚠️ `syncRow` 是从 store 现读 `projectId` 的，定时器不掐的话，上一项目那笔
+ * 失败的写入会在新项目里重发 —— A 项目的角色名发到 B 项目的 `/shots/ref-overrides`。
+ * `baseSnapshot` / `syncedAt` 同理：它们是"这一行在服务端是什么样"的记忆，
+ * 换了项目就整批失效，留着会让 `pruneTable` 按旧底座摘掉新项目的 op。
+ *
+ * 抽成函数是因为**三个入口都要它**（`openProject` / `unloadProject` /
+ * `adoptTable`）—— 各抄一份的话，早晚有一处漏掉某个 Map。
+ */
+function clearSyncState(): void {
+  for (const t of timers.values()) clearTimeout(t);
+  timers.clear();
+  retryDelay.clear();
+  baseSnapshot.clear();
+  syncedAt.clear();
 }
 
 /* ------------------------------------------------------------------ *
@@ -406,11 +462,20 @@ if (typeof window !== "undefined") {
  * 台账是"后写覆盖先写"的时间线，顺序天然正确。
  * ------------------------------------------------------------------ */
 
-/** 由一批已应用的调整生成逆操作（present 取反，manual 保持）。 */
+/**
+ * 由一批已应用的调整生成逆操作（present 取反，manual 保持）。
+ *
+ * ⚠️ `stageId` 必须**原样带过去**。正向 op 是「林昭 · 常服」盖了章的注入，逆操作
+ * 要是把章丢了，它就成了"无主的加法"——`shownForStage` 的老 op 规则不肯认领，
+ * 撤销之后那一格会从造型段里掉出来、变成一条「未设阶段」的兜底段。用户看到的是
+ * 「Ctrl+Z 撤一下，块没变回去，反而多出一块」，比不撤销还费解。
+ */
 export function inverseOps(
   ops: readonly Omit<AssetOverrideOp, "at">[],
 ): Omit<AssetOverrideOp, "at">[] {
-  return ops.map((o) => ({ order: o.order, present: !o.present, manual: o.manual }));
+  return ops.map((o) => ({
+    order: o.order, present: !o.present, manual: o.manual, stageId: o.stageId,
+  }));
 }
 
 /**
@@ -418,15 +483,19 @@ export function inverseOps(
  *
  * `ops` 是这次调整**已经写进台账**的那些操作。撤销/重做都是再记一条反向操作
  * （`run` 记正向的逆、`unrun` 记正向），而不是直接发请求。
+ *
+ * 返回 `false` 表示台账**没有接受**这批 op（还没 `openProject`）—— 此时既不能
+ * 推撤销栈（撤销一条从未发生过的改动，只会让 Ctrl+Z 白白吃掉一次），调用方也
+ * **不许报成功**。这是"预览动了、松手弹回、toast 却说改好了"的直接来源。
  */
 export function recordWithUndo(
   label: string, rowName: string,
   ops: readonly Omit<AssetOverrideOp, "at">[],
   affectedShotIds: string[],
-): void {
-  useAssetOverride.getState().record(rowName, ops);
+): boolean {
+  if (!useAssetOverride.getState().record(rowName, ops)) return false;
   const pushUndo = ctx?.pushUndo;
-  if (!pushUndo) return;
+  if (!pushUndo) return true;
   const forward = ops.map((o) => ({ ...o }));
   pushUndo({
     label,
@@ -437,6 +506,117 @@ export function recordWithUndo(
     unrun: async () => { useAssetOverride.getState().record(rowName, inverseOps(forward)); },
     run: async () => { useAssetOverride.getState().record(rowName, forward); },
   });
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 删除一个注入段（给键盘 Delete 用）
+ *
+ * `AssetTrack` 里的 `removeRun` 拿得到 `AssetRun`（含 `row.name`），键盘路径
+ * 只有 App 里那份"选中了什么"的快照，拿不到组件里那份 `rows`。两边都要能删，
+ * 且必须走**同一份**口径 —— 把规则抽到这里，组件与 App 各调一次。
+ *
+ * 为什么要从**投影后**的显示集里挑，而不是直接用 `[from, to]`：
+ * `from..to` 是台账投影的结果，中间可能有洞（特殊镜、被别的造型挡住的镜头）。
+ * 整段按下 `present: false` 会把那段区间里**根本没被这段覆盖**的镜头也标掉，
+ * 而那些 order 本来是别人的。
+ * ------------------------------------------------------------------ */
+
+/** 把某一行 `[from, to]` 之内**当前显示为生效**的非特殊镜头标成删除。
+ *  返回真正删掉的 order；空数组 = 这一段本来就什么都不显示，调用方不该报成功。
+ *
+ *  `isLocation` 只影响落库时的请求体（`syncDiff` 那一侧会读 `ctx.baseOf`），
+ * 投影这里两种轨走同一条路：`ctx.baseOf` 对场景行返回 `present: []`，
+ * 也就是"全部来自台账"，与 `AssetTrack` 里场景轨的 `displayOrdersOf([], …)`
+ * 是同一个结果。 */
+export function deleteRunOrders(
+  projectId: string | null, rowName: string, from: number, to: number,
+  shots: readonly ShotInfo[], isLocation: boolean, stageId?: string,
+): number[] {
+  void isLocation;
+  const st = useAssetOverride.getState();
+  if (!st.projectId || st.projectId !== projectId) return [];
+  const shotOf = new Map(shots.map((s) => [s.order, s]));
+  const isSpecial = (o: number) => !!shotOf.get(o)?.is_special;
+  const orders = projectOrders(
+    ctx?.baseOf(rowName)?.present ?? [], opsOf(st.table, rowName), isSpecial)
+    .filter((o) => o >= from && o <= to && !isSpecial(o));
+  if (!orders.length) return [];
+  // ⚠️ 盖上 `stageId`（`AssetRun.stageId`，形如 `st-day`）。台账按**角色名**
+  // 存，一个角色有多套造型时，不盖章的 op 会被**每一条**造型段读到：删掉
+  // 「夜行衣」#9-12 写下的 `present:false`，常服段也会照单执行。本例里常服
+  // 底座是 #1-4、与 #9-12 不相交所以看不出来，可只要两套造型的区间有重叠
+  // （用户把常服拉长到 #9 之后就有），删一段就会顺手削掉另一段。
+  // 拿不到造型（场景轨 / 「人工注入」段）时留空 —— 那本来就是行级的东西。
+  const ops = orders.map((o) => ({ order: o, present: false, manual: false, stageId }));
+  recordWithUndo(
+    `删除「${rowName}」#${from}-#${to} 注入段`,
+    rowName, ops,
+    orders.map((o) => shotOf.get(o)!.id));
+  return orders;
+}
+
+/* ------------------------------------------------------------------ *
+ * 复制一个注入段（给 Ctrl+C / Ctrl+V 用）
+ *
+ * 与 `deleteRunOrders` 同源：都从**投影后**的显示集里挑，不用 `[from, to]`
+ * 裸区间 —— 区间里可能有洞（特殊镜、别的造型挡住的镜头），整段 `present: true`
+ * 会把别人的镜头也标成自己的。
+ * ------------------------------------------------------------------ */
+
+/** 读出某一行 `[from, to]` 之内当前显示的、非特殊的镜头。**不写台账**，
+ *  供"复制"把内容揣进剪贴板。
+ *
+ *  `from`/`to` 传 `-Infinity` / `Infinity` 就是"这一行全部"（读剪贴板落点的
+ *  占用情况时用得上）—— 传具体区间时只返回区间内的。 */
+export function readRunOrders(
+  projectId: string | null, rowName: string, from: number, to: number,
+  shots: readonly ShotInfo[],
+): number[] {
+  const st = useAssetOverride.getState();
+  if (!projectId || st.projectId !== projectId) return [];
+  const shotOf = new Map(shots.map((s) => [s.order, s]));
+  const isSpecial = (o: number) => !!shotOf.get(o)?.is_special;
+  return projectOrders(
+    ctx?.baseOf(rowName)?.present ?? [], opsOf(st.table, rowName), isSpecial)
+    .filter((o) => o >= from && o <= to && !isSpecial(o));
+}
+
+/** 把一段连续 order 落到 `at` 起的位置（复制/粘贴）。返回真正写入的 order。
+ *
+ *  `blocked` 是落点上**已经被这一行别的段占住**的 order —— 撞上就整个拒绝，
+ *  不做"挤一挤"。注入段的语义是"这几镜用这套造型"，重叠的两段无从解释。
+ *
+ *  ⚠️ 调用方（App 的 Ctrl+V）拿不到组件里那份按**造型**切好的行数据，只能给
+ *  一个大概的 `blocked`（见那里的注释）。所以这里**只拒绝、不改写** —— 拦不住
+ *  的极端情况（同一角色另有造型覆盖了落点）由服务端底座兜：那些 order 本来
+ *  就在 `base.present` 里，写进去也不会凭空多出重叠块。
+ */
+export function pasteRunOrders(
+  projectId: string | null, rowName: string, orders: readonly number[],
+  at: number, shots: readonly ShotInfo[], blocked: ReadonlySet<number>,
+  stageId?: string,
+): number[] {
+  const st = useAssetOverride.getState();
+  if (!projectId || st.projectId !== projectId || !orders.length) return [];
+  const shotOf = new Map(shots.map((s) => [s.order, s]));
+  const base = orders[0];
+  const target = orders.map((o) => at + (o - base));
+  const ok = target.filter((o) => {
+    const sh = shotOf.get(o);
+    return !!sh && !sh.is_special && !blocked.has(o);
+  });
+  if (ok.length !== target.length) return [];
+  // ⚠️ 同 `deleteRunOrders`：必须盖章，而且粘贴这一侧后果更重。不盖章的
+  // `present:true` 会被同角色**每一条**造型段捡去 —— 把常服 #1-4 粘到 #5，
+  // 夜行衣（底座 #9-12，从没声明过 #5）也会在 #5 画出一块，外加一条
+  // 「人工注入」段，三块叠在一起。这正是用户报的"拉长会创建一个新的资产块
+  // （如果没有，就有一个人工注入），而且是覆盖重叠的"，只是入口换成了键盘。
+  const ops = ok.map((o) => ({ order: o, present: true, manual: true, stageId }));
+  recordWithUndo(
+    `复制「${rowName}」注入段到 #${target[0]}-#${target[target.length - 1]}`,
+    rowName, ops, ok.map((o) => shotOf.get(o)!.id));
+  return ok;
 }
 
 /* ------------------------------------------------------------------ *
