@@ -27,6 +27,13 @@ const VIDEO_MODELS_FALLBACK = [
   { key: "seedance-2.5", label: "Seedance 2.5", icon: "🏆", hint: "单镜可出 30s 长镜 · 同场戏少切几刀 · 音画一体" },
   { key: "seedance-2.0", label: "Seedance 2.0", icon: "💎", hint: "音画一体 · 首尾帧/参考图全能" },
   { key: "seedance-2.0-mini", label: "Seedance mini", icon: "🔹", hint: "轻量快出 · 成本更低" },
+  // 低价 seedance2.5：三条第三方中转渠道互为兜底，**不走火山官方通道**。
+  // 能力比官方窄（只有 30s、只有 9:16/16:9、无首尾帧、无参考音频），
+  // 换来的是一致性可接受的更低单价——试片/长剧铺量用。
+  // ⚠️ 「固定 720p」不是笔误：这三条第三方渠道的成片分辨率写在渠道清单里
+  // （lowcost_channels.json 每条一个 resolution），项目档案里选的 480p/1080p/2k
+  // **对本模型完全无效且不会报错**。提示写出来，免得用户以为 1080p 项目缩水是 bug。
+  { key: "seedance-lowcost-2.5", label: "低价 Seedance 2.5", icon: "💰", hint: "三渠道兜底 · 30s长镜 · 固定720p · 仅9:16/16:9" },
 ];
 
 /** 生图模型的展示补充（图标/一句话用途）。
