@@ -81,6 +81,10 @@
   position: absolute;
   top: 2px;
   bottom: 2px;
+  /* 拖动预览期由 `--fw-pv-w` 定宽（见 gesture.ts 的 stylePreview）。
+     平时该变量不存在，这条规则不生效，宽度仍由 React 写在元素内联上的 width 决定；
+     兜底给一个 px 而不是 auto —— 绝对定位元素拿到 auto 会退化成按内容撑开。 */
+  width: var(--fw-pv-w, 120px);
   display: flex;
   align-items: center;
   gap: 3px;
