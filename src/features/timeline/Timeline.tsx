@@ -31,7 +31,8 @@ import ContextMenu from "../../components/ContextMenu/ContextMenu";
 import type { MenuItem } from "../../components/ContextMenu/ContextMenu";
 import AssetTrack, { AssetTrackKind, AssetRun } from "../assets/AssetTrack";
 import { injectAssetIntoShot, snapSecToOrder } from "../assets/injectAsset";
-import { displayOrdersOf, useAssetOverrideRev } from "../../stores/assetOverrideStore";
+import { displayOrdersOf, useAssetOverride, useAssetOverrideRev } from "../../stores/assetOverrideStore";
+import { opsOf } from "../assets/assetOverrides";
 import { collectSnapPoints, snapRange } from "./snap";
 import {
   quantizeSec, trimOut, trimIn, outPatch, inPatch, minTrimSec,
@@ -331,6 +332,9 @@ export default function Timeline(p: Props) {
   // 台账变更后必须重渲染：`displayOrdersOf` 读的是 store 里的**模块级**表，
   // React 感知不到它变了 —— 只有订阅 rev，下面的投影才会重算。
   useAssetOverrideRev();
+  // 台账快照：拖卡片注入时要用它认出"先缩掉、再把卡片拖回来"那一格的原作者
+  // （见 `stageIdAt`）。订阅 rev 已经让组件在每次改动后重渲染，这里直接取即可。
+  const table = useAssetOverride((s) => s.table);
   const specialOrders = useMemo(
     () => new Set(p.shots.filter((s) => s.is_special).map((s) => s.order)), [p.shots]);
   const isSpecialOrder = useCallback((o: number) => specialOrders.has(o), [specialOrders]);
@@ -1396,6 +1400,24 @@ export default function Timeline(p: Props) {
                         projectId: p.projectId, name: d.name,
                         isLocation: d.kind === "location",
                         shot: sh, order,
+                        // 场景轨没有造型这一层；人物轨才需要归属推断
+                        // （不给的话这条注入只能画到兜底段上，见 stageIdAt）。
+                        stages: d.kind === "character"
+                          ? (p.stages ?? []).map((s) => ({
+                            stageId: s.virtual ? undefined : s.id,
+                            base: s.present_orders ?? [],
+                          }))
+                          : undefined,
+                        ops: d.kind === "character" ? opsOf(table, d.name) : undefined,
+                        // `p.stages` 是**全量**造型。不筛的话，往一条服务端还没有
+                        // 造型行的角色上注入（落到公共空地 → 画「未设阶段」段）会被
+                        // 判成"有造型、但这一格没画出来"，弹一句「没能画上去」——
+                        // 而屏幕上那段明明已经出来了。
+                        ownStageIds: d.kind === "character"
+                          ? new Set((p.stages ?? [])
+                            .filter((st) => st.character_name === d.name)
+                            .map((st) => st.id))
+                          : undefined,
                         onToast: p.onToast,
                         onChanged: p.onAssetsChanged,
                       });
