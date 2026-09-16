@@ -29,10 +29,11 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，判失败会钉死发版链路
+import { readBackend, skipBackend } from "./backendSrc";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DESKTOP = resolve(HERE, "..");
-const REPO = resolve(DESKTOP, "..");
 
 let pass = 0;
 let fail = 0;
@@ -121,11 +122,13 @@ console.log("\n[2] ① 增删镜头：这些函数的**回包拼得出一行 Sho
    * 逐条核对端点回包。表里写的是"后端 return 了哪些键"，
    * 少一个必填字段（id/order/...）就足以让本地拼出的行与真源漂移。
    */
-  const routes = `${REPO}/backend/app/routes_v2.py`;
-  if (!existsSync(routes)) {
-    ok(false, "找得到 backend/app/routes_v2.py（用来核对回包字段）");
+  // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+  // ⚠️ 这里原本是 `ok(false, ...)`——把"读不到对面"判成不通过。那在全仓里没错，
+  // 但 CI 跑的是只含 desktop/ 的公开仓，等于让一条跨仓断言把发版链路钉死。
+  const rs = readBackend("app/routes_v2.py");
+  if (rs === null) {
+    skipBackend("端点回包字段核对（①类端点能否降级）");
   } else {
-    const rs = readFileSync(routes, "utf8");
     /**
      * 每条 = 一个①类端点的**回包形状**。`path` 是路由字面量（用来确认端点还在），
      * `has` 是回包**确实给了**的键，`lacks` 是拼一行完整 ShotInfo 所必需、
