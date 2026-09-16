@@ -13,6 +13,9 @@ export const VIDEO_MODEL_LABELS: Record<string, string> = {
   "seedance-2.5": "Seedance 2.5",
   "seedance-2.0": "Seedance 2.0",
   "seedance-2.0-mini": "Seedance mini",
+  // 三条第三方渠道互为兜底的便宜通道，与上面的官方 seedance-2.5 **不是同一个东西**
+  // （不同上游、不同单价），展示名必须能把两者区分开。
+  "seedance-lowcost-2.5": "低价 Seedance 2.5",
 };
 
 /** 生图模型 id → 展示名 */
