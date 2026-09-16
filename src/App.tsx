@@ -15,6 +15,7 @@ const TIER_LABEL: Record<QualityTier, string> = {
 import { LibClip, fmtTime } from "./types";
 import LibraryPanel, { Tab as LibTab } from "./components/LibraryPanel";
 import type { AssetDropCtx } from "./features/assets/useAssetDrop";
+import { assetDropStageFacts } from "./features/assets/dropContext";
 import ProjectList from "./components/ProjectList";
 import ShotAdvanced from "./components/ShotAdvanced";
 import FineCut from "./components/FineCut";
@@ -69,7 +70,8 @@ import type { Clip } from "./types/timeline";
 import { clearWaveformCache } from "./features/timeline/Waveform";
 import type { AssetRun, AssetTrackKind } from "./features/assets/AssetTrack";
 import {
-  useAssetOverride, setAssetSyncContext, flushAssetOverrides,
+  useAssetOverride, useAssetOverrideRev, setAssetSyncContext, flushAssetOverrides,
+  deleteRunOrders, readRunOrders, pasteRunOrders,
 } from "./stores/assetOverrideStore";
 import type { RowBase } from "./stores/assetOverrideStore";
 // ---- Phase 3 重构：基础剪辑面板 ----
@@ -631,6 +633,14 @@ export default function App() {
   // ---- Phase 5：资产轨选中段（Inspector 显示影响范围）----
   const [assetRun, setAssetRun] = useState<
     (AssetRun & { rowName: string; kind: AssetTrackKind }) | null>(null);
+  /** Ctrl+C 复制下来的资产段：`{rowName, kind, orders}`。
+   *
+   *  ⚠️ 与 `tlStore().clipboard`（镜头剪贴板）**分开**。两者共用 Ctrl+C/V，
+   *  但内容与落点完全不同：镜头剪贴板粘出来的是新镜头，资产段粘出来的是
+   *  **台账里的一段注入**，一个镜头都不新增。合成一个剪贴板就会出现"复制了
+   *  资产段，Ctrl+V 却插入了一段视频"这种串台。 */
+  const [assetClip, setAssetClip] = useState<
+    { rowName: string; kind: AssetTrackKind; orders: number[]; stageId?: string } | null>(null);
 
   // ---- Phase 6：导出 / 任务中心 / 设置 ----
   const [exportOpen, setExportOpen] = useState(false);
@@ -1562,6 +1572,24 @@ export default function App() {
    *  同时支持多选：旧实现只取 clipIds[0]，框选了 10 个只处理 1 个。
    *  `silent` 供 Ctrl+X 用——那边已经报过"已剪切 N 个"，不再重复弹。 */
   const removeSelectedClips = (o?: { silent?: boolean; shotsOnly?: boolean }) => {
+    // ⚠️ 侧栏里选中了**资产段**时，Delete 删的是那个段，不是时间轴上的片子。
+    //
+    // 选中一个资产段会把 Inspector 切成资产视图（见下面的 `assetRun`），
+    // 时间轴上的选中集此时通常也是空的 —— 不先处理这一支，按 Delete 会得到
+    // "先选中时间轴上的片段"，而屏幕上明明选着东西。用户报的「快捷键删除」
+    // 就是这一条：资产段此前**根本没有**键盘路径，只能右键。
+    if (!o?.shotsOnly && assetRun) {
+      const n = deleteRunOrders(
+        projectId, assetRun.rowName, assetRun.from, assetRun.to,
+        shots, assetRun.kind === "location", assetRun.stageId);
+      if (n.length) {
+        setAssetRun(null);
+        say(`已删除「${assetRun.rowName}」#${assetRun.from}-#${assetRun.to} 注入段（Ctrl+Z 可撤销）`);
+      } else {
+        say(`「${assetRun.rowName}」这一段上本来就没有生效的镜头`);
+      }
+      return;
+    }
     const st = tlStore();
     const all = st.selection.clipIds
       .map((id) => st.findClip(id))
@@ -1936,6 +1964,23 @@ export default function App() {
     undo: () => { void doUndo(); },
     redo: () => { void doRedo(); },
     copy: () => {
+      // 侧栏里选着资产段时，Ctrl+C 复制的是**那一段注入**（不新增任何镜头）。
+      // 与镜头剪贴板互斥：一次只有一个"当前选中"的东西，命令按它分流。
+      if (assetRun) {
+        const orders = readRunOrders(
+          projectId, assetRun.rowName, assetRun.from, assetRun.to, shots);
+        if (!orders.length) { say(`「${assetRun.rowName}」这一段上没有可复制的镜头`); return; }
+        // ⚠️ `stageId` 要一起带走。台账按角色名记账，粘贴写下的
+        // `present:true` 若不注明是**哪套造型**要的，同角色的其它造型段也会
+        // 把它捡去画一块 —— 屏幕上就多出一块重叠的、外加一条「未设阶段」段。
+        setAssetClip({
+          rowName: assetRun.rowName, kind: assetRun.kind, orders,
+          stageId: assetRun.stageId,
+        });
+        say(`已复制「${assetRun.rowName}」#${orders[0]}-#${orders[orders.length - 1]} 共 ${orders.length} 镜`
+          + "（把播放头移到目标位置后 Ctrl+V）");
+        return;
+      }
       tlStore().copySelection();
       const n = tlStore().clipboard.length;
       say(n ? `已复制 ${n} 个片段（Ctrl+V 粘贴到播放头后）` : "先选中时间轴上的片段");
@@ -1946,7 +1991,37 @@ export default function App() {
     // AI 镜头：AI 镜头带着拆解/提示词/版本历史，复制它们语义含糊（副本要不要
     // 跟着重新生成？版本树怎么算？）。落成外部素材则含义明确——就是同一段
     // 画面再放一次，与剪映复制片段的效果一致。
-    paste: () => { void doPaste(); },
+    paste: () => {
+      // 资产段剪贴板优先：粘的是"注入"，落点是**播放头所在的那一镜**。
+      //
+      // 为什么落点是播放头而不是"紧跟原段之后"：粘贴的目标是"把同一套造型
+      // 用到后面某几镜上"，用户已经在时间轴上把播放头放好了。跟原段走的话
+      // 每次都得先粘再拖，还容易和原段自己被别的造型隔开的情形撞车。
+      if (assetClip) {
+        const cur = tlStore();
+        const ph = cur.playheadSec;
+        const hit = cur.allClips().find(
+          (c) => c.shotOrder != null && ph >= c.startSec && ph < c.startSec + c.durationSec);
+        const at = hit?.shotOrder;
+        if (at == null) { say("把播放头放到要粘贴的镜头上再 Ctrl+V"); return; }
+        // 落点上已生效的 order（含服务端底座）当作"被占住"：撞上就整个拒绝。
+        // 这里拿不到组件里按**造型**切好的行数据，所以宁可多拦 —— 见
+        // `pasteRunOrders` 的注释：拦不住的由服务端底座兜底，不会多出重叠块。
+        const base = new Set(readRunOrders(projectId, assetClip.rowName, -1e9, 1e9, shots));
+        const span = assetClip.orders[assetClip.orders.length - 1] - assetClip.orders[0];
+        const written = pasteRunOrders(
+          projectId, assetClip.rowName, assetClip.orders, at, shots, base,
+          assetClip.stageId);
+        if (!written.length) {
+          say(`「${assetClip.rowName}」#${at}-#${at + span} 上已经有效果了，换个位置再粘贴`);
+          return;
+        }
+        say(`已把「${assetClip.rowName}」注入粘到 #${written[0]}-#${written[written.length - 1]}`
+          + "（Ctrl+Z 可撤销）");
+        return;
+      }
+      void doPaste();
+    },
     cut: () => { void doCut(); },
     deleteSelected: () => removeSelectedClips(),
     splitAtPlayhead,
@@ -2105,19 +2180,33 @@ export default function App() {
    *  依赖里带 `detail`：`refreshDetail()` 之后镜头集合可能整批换（重新拆解），
    *  旧的 offsetMap 会把资产注进错误的镜头。
    */
+  const assetRev = useAssetOverrideRev();
   const assetDropCtx = useMemo<AssetDropCtx | undefined>(() => {
     if (!projectId) return undefined;
+    // 订阅台账版本（`assetRev` 在组件顶部由 `useAssetOverrideRev()` 取）：
+    // 拖卡片注入时 `stageIdAt` 要读台账认原作者，台账一变这个 ctx 就得重算，
+    // 否则拖回来的那格会拿旧表推断归属，落到错误的造型名下。
+    void assetRev;
     return {
+      // 造型底座 + 「这个角色自己的造型 id」：拖卡片注入时用来定
+      // "这次注入记在哪套造型名下"（见 stageIdAt），以及判"这一格画出来了吗"。
+      //
+      // ⚠️ 这一对**必须**从 dropContext 取，不能在这里手搓一份。
+      // 台子（dev/AssetTrackHarness.tsx）用的是同一个工厂 —— 它是唯一能自动
+      // 跑这条链的地方，两边口径一旦能各自漂移，"台子绿了"就推不出"真机对了"。
+      // 历史教训：`ownStageIds` 曾在两处各写一遍，靠注释「与 App.tsx 同款」同步。
+      ...assetDropStageFacts(stages),
       projectId,
       shots,
       offsetMap: buildOrderOffsetMap(shots),
       pxPerSec: useTimelineStore.getState().pxPerSec,
+      table: useAssetOverride.getState().table,
       onToast: say,
       onPushUndo: pushUndo,
       onChanged: () => void refreshDetail(),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, shots, detail]);
+  }, [projectId, shots, detail, stages, assetRev]);
 
   /**
    * 3.13：把「本地台账」接进 App 级上下文。
