@@ -203,13 +203,29 @@ def self_test() -> int:
     except SystemExit:
         ok(False, "★ 应当先因自相矛盾而 AssertionError")
 
+    # ⚠️ 这一段断言的是**部署机的文件系统**，不是映射本身 —— 与本函数
+    # 「纯函数、不联网、不写盘」的契约相抵。它在服务器上有意义（两个 appcast
+    # 目录确实该在），在别处必红：CI 是 windows-latest，`/root/filmweaver-data`
+    # 这种路径根本不存在（实测报 `\root\filmweaver-data\appcast`，连盘符都没有）。
+    #
+    # 判据用「两个目录都不在」而不是「随便哪个不在」：
+    #   · 都不在 → 这台机器不是部署机，跳过（CI、别人的开发机）
+    #   · 只有一个不在 → **仍然判失败**。那正是 guard 要拦的事故形态
+    #     （通道被拼错/漏建），在部署机上必须红。
+    #
+    # 真正的闸门不在这里：`publish-update.py` 每次发版都实调 guard()，
+    # 目录不存在时当场 SystemExit。跳过自检不等于跳过发版前的检查。
     print("\n⑥ 真实通道能通过 guard（两个目录都应已存在）")
-    for ch in (BETA, RELEASE):
-        try:
-            guard(ch)
-            ok(True, f"{ch.label} 通过")
-        except SystemExit as e:
-            ok(False, f"{ch.label} 未通过", str(e))
+    if not BETA.dir.is_dir() and not RELEASE.dir.is_dir():
+        print("   ⏭  跳过 —— 两条通道目录都不在，本机不是部署机"
+              "（发版时 publish-update.py 仍会实调 guard）")
+    else:
+        for ch in (BETA, RELEASE):
+            try:
+                guard(ch)
+                ok(True, f"{ch.label} 通过")
+            except SystemExit as e:
+                ok(False, f"{ch.label} 未通过", str(e))
 
     if failed:
         print(f"\n❌ {failed} 项不通过")
