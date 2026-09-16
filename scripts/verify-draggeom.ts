@@ -21,8 +21,9 @@ import {
 import {
   runGeometry, clampEdge, projectOrders, projectManualAdds,
   syncDiff, pruneTable, finalOps, appendOps,
+  snapEdge, freeSpan,
 } from "../src/features/assets/assetOverrides";
-import type { AssetOverrideOp } from "../src/features/assets/assetOverrides";
+import type { AssetOverrideOp, EdgeWindow } from "../src/features/assets/assetOverrides";
 
 let failed = 0;
 function check(name: string, actual: unknown, expected: unknown) {
@@ -281,6 +282,173 @@ console.log("⑭ finalOps：时间线取最终态（同一 order 多条只留最
   const f = finalOps(ops);
   check("后写覆盖先写（与数组顺序无关，只按 at）", f.get(1), { present: true, manual: false });
   check("另一条", f.get(2), { present: true, manual: true });
+}
+
+console.log("⑮ snapEdge：预览与提交**算同一个值**（缩一镜没反应的根治点）");
+{
+  // 20px/s、每镜 5s = 100px。一段 #1-#3（0..400px 起，右边缘在 300+100=400）。
+  const offsets = new Map([[1, 0], [2, 5], [3, 10], [4, 15], [5, 20], [6, 25]]);
+  const durOf = (_o: number) => 5;
+  const all: EdgeWindow = { lo: 1, hi: 6, ok: () => true };
+
+  // ⚠️ 判据一：拖动**任意**像素位置，左边缘只可能停在镜头**起点**（整数格），
+  //    且"预览 px"与"提交 order"是同一个决定 —— 老实现是两套（像素跟手 /
+  //    secToOrder 吸附），所以缩一镜宽之内看不到任何变化、越过之后又跳一格。
+  let allOnGrid = true;
+  let consistent = true;
+  const anchor = 400;   // 右边缘（另一端）
+  for (let px = 0; px <= 320; px += 7) {
+    const s = snapEdge(px, "from", offsets, 20, durOf, all, anchor, 50);
+    if (s.order == null) continue;
+    const startPx = (offsets.get(s.order) ?? 0) * 20;
+    if (s.px !== startPx) allOnGrid = false;
+    // 再喂一次同样的指针位置，结果必须一样（无隐藏状态）
+    const again = snapEdge(px, "from", offsets, 20, durOf, all, anchor, 50);
+    if (again.order !== s.order || again.px !== s.px) consistent = false;
+  }
+  check("左边缘永远落在镜头起点上（不再跟指针的原始像素）", allOnGrid, true);
+  check("同一指针位置重算结果相同（纯函数）", consistent, true);
+
+  // 判据二：**近了才吸附** —— 指针离哪个镜头起点近就落哪个，不再有"差半镜"
+  // 的模糊地带（老实现：拖 40px 预览动、提交吸附回原镜 → 视觉上没反应）。
+  check("指针在 #2 起点附近 → 落 #2", snapEdge(103, "from", offsets, 20, durOf, all, 400, 50).order, 2);
+  check("指针在 #2/#3 中间偏左 → 仍落 #2", snapEdge(140, "from", offsets, 20, durOf, all, 400, 50).order, 2);
+  check("指针越过中点 → 落 #3", snapEdge(160, "from", offsets, 20, durOf, all, 400, 50).order, 3);
+  check("落点 px 与 order 一致", snapEdge(160, "from", offsets, 20, durOf, all, 400, 50).px, 200);
+
+  // 判据三：**两端不许交叉**（继承 clampEdge 的不变量）。
+  // 注意判据是"≤ 上限的那一格"，不是"正好等于上限" —— 边缘本来就只落在镜头
+  // 边界上，上限是**连续** px 而落点是**离散**的，中间必然有一段够不着的余量。
+  const gA = snapEdge(900, "from", offsets, 20, durOf, all, 400, 50);
+  check("左边缘往右推过头 → 停在最后一个合法吸附点（#4 起点 300 ≤ 上限 350）", gA.px, 300);
+  check("且落点确实是镜头边界", gA.px % 100, 0);
+  const gB = snapEdge(-900, "to", offsets, 20, durOf, all, 0, 50);
+  check("右边缘往左推过头 → 停在第一个合法吸附点（#1 终点 100 ≥ 下限 50）", gB.px, 100);
+
+  // 判据四：右边缘贴的是"镜头起点 + 时长"，不是镜头起点
+  check("右边缘落在 #3 的终点（起点 10s + 5s = 15s → 300px）",
+        snapEdge(299, "to", offsets, 20, durOf, all, 0, 50).px, 300);
+}
+
+console.log("⑯ freeSpan + 窗口：**跨造型**的拉长必须被拦住（重叠块的根治点）");
+{
+  // 同一个角色「林晚」：造型A 覆盖 #1-#3，造型B 覆盖 #5-#7。
+  // #4 谁都没覆盖（换装之间的空地）。
+  const blocked = new Set([5, 6, 7]);          // 造型B 的镜头
+  // ⚠️ hasShot 必须是**有限**的：生产里它查的是镜头表（`orderToShot.has(o)`），
+  //    窗外一律 false。夹具若写成 `() => true`，freeSpan 的右侧循环会一路
+  //    涨到无穷 —— 脚本挂死，而不是报错。
+  const hasShot = (o: number) => o >= 1 && o <= 7;
+  check("造型A 的段能往右拉到 B 之前（含空地 #4）", freeSpan([1, 2, 3], blocked, hasShot), [1, 4]);
+  check("造型B 的段能往左拉到 A 之后", freeSpan([5, 6, 7], new Set([1, 2, 3]), hasShot), [4, 7]);
+  // 中间完全没有空地：一边贴死另一边
+  check("无空地 → 相切而不重叠", freeSpan([1, 2, 3], new Set([4, 5]), hasShot), [1, 3]);
+  // 没有镜头的地方不许去（镜头表兜底）
+  check("窗外没有镜头 → 不越界", freeSpan([1, 2, 3], new Set(), (o) => o >= 1 && o <= 5), [1, 5]);
+  check("左侧到底 → 停在第一个镜头（不假设 order 从 1 起）", freeSpan([3, 4, 5], new Set(), hasShot), [1, 7]);
+
+  // ⚠️ 判据：在窗口内，**任何**吸附结果都不得落在 blocked 里 ——
+  //    那正是"造型A 拉长 → 造型B 轨道上多出一块重叠的段"的机制。
+  const offsets = new Map([[1, 0], [2, 5], [3, 10], [4, 15], [5, 20], [6, 25], [7, 30]]);
+  const durOf = (_o: number) => 5;
+  const spanA = freeSpan([1, 2, 3], blocked, hasShot);
+  const winA: EdgeWindow = {
+    lo: spanA[0], hi: spanA[1],
+    ok: (o) => o >= spanA[0] && o <= spanA[1],
+  };
+  let leaked = -1;
+  for (let px = 0; px <= 700; px += 1) {
+    const s = snapEdge(px, "to", offsets, 20, durOf, winA, 0, 50);
+    if (s.order != null && blocked.has(s.order)) leaked = s.order;
+  }
+  check("拉长时一个造型的 order 都不会漏进另一个造型的区间", leaked, -1);
+  check("造型A 往右最多只能到空地那格", snapEdge(9999, "to", offsets, 20, durOf, winA, 0, 50).order, 4);
+}
+
+console.log("⑰ 拖动全流程重放：按真实臂长走一遍，看**最终生效范围**对不对");
+{
+  // 复刻 AssetTrack.beginEdgeDrag + applyEdge 的判定链（几何/窗口/夹取三处
+  // 都需要真数据一起跑才能发现问题）。用真实臂长：7 镜 × 5s × 20px/s。
+  const offsets = new Map([[1, 0], [2, 5], [3, 10], [4, 15], [5, 20], [6, 25], [7, 30]]);
+  const durOf = (_o: number) => 5;
+  const PX = 20;
+  const shotFlags = new Map<number, { is_special: boolean }>(
+    [1, 2, 3, 4, 5, 6, 7].map((o) => [o, { is_special: false }]));
+  const hasShot = (o: number) => shotFlags.has(o);
+
+  /** 一次拖动的完整重放：返回拖动结束时**生效范围**（末态，两元素数组）。 */
+  const replay = (from: number, to: number, blocked: Set<number>, edge: "from" | "to",
+                  pxList: number[]): [number, number] => {
+    const r: number[] = [];
+    for (let i = from; i <= to; i++) r.push(i);
+    const span = freeSpan(r, blocked, hasShot);
+    const g0 = runGeometry(from, to, offsets, PX, durOf);
+    const otherPx = edge === "from" ? g0.right : g0.left;
+    const minSpan = durOf(edge === "from" ? to : from) * PX;
+    const win: EdgeWindow = {
+      lo: span[0], hi: span[1],
+      ok: (o) => hasShot(o) && !shotFlags.get(o)!.is_special
+        && o >= span[0] && o <= span[1],
+    };
+    let nf = from, nt = to;
+    for (const px of pxList) {
+      const snap = snapEdge(px, edge, offsets, PX, durOf, win, otherPx, minSpan);
+      const raw = snap.order;
+      if (raw == null) continue;                     // 没有落点 → 手势不提交
+      // ↓↓↓ applyEdge 的兜底夹取（数据面第二道闸）
+      const ord = Math.min(Math.max(raw, span[0]), span[1]);
+      const anchor = edge === "from" ? to : from;
+      const f = edge === "from" ? Math.min(ord, anchor) : from;
+      const t = edge === "to" ? Math.max(ord, anchor) : to;
+      if (f === from && t === to) continue;          // 没变化 → 不写台账
+      nf = f; nt = t;
+    }
+    return [nf, nt];
+  };
+
+  // 场景一：**缩一镜就动一格**（用户报的"缩了没反应"）
+  // 段 #1-#3（0..300px），右边缘从 300px 往左拖。一镜 = 100px：
+  // 越过 #3 的中点（250px）就该落到 #2，而不是"拖完一镜才动一次"。
+  // ⚠️ 当前段自己那一格也是合法落点（`from` 贴它的起点、`to` 贴它的终点），
+  //    所以"缩到自己的起点"是能走到的 —— 这保证了缩回原状不卡手。
+  check("往左拖过 #2 中点 → 右边缘退到 #1 终点",
+        replay(1, 3, new Set([5, 6, 7]), "to", [140]), [1, 1]);
+  check("拖到 0px 以下 → 贴住最小跨度，不再退",
+        replay(1, 3, new Set([5, 6, 7]), "to", [100, 0, -500]), [1, 1]);
+  check("往右拖回 #3 终点 → 恢复原范围",
+        replay(1, 3, new Set([5, 6, 7]), "to", [299]), [1, 3]);
+  // 连拖两次：第一次只缩一镜（落 #2），第二次从**缩后的位置**再缩一镜（落 #1）。
+  // 这正是用户报的症状：以前第一次拖动"没反应"，第二次才跳到上次"本该到"的位置。
+  check("连拖两镜 → 落点逐镜推进，不跳格",
+        replay(1, 3, new Set([5, 6, 7]), "to", [240, 140]), [1, 1]);
+  check("而且第一拖就只缩一镜（不是停在原地）",
+        replay(1, 3, new Set([5, 6, 7]), "to", [240]), [1, 2]);
+
+
+  // 场景二：**拉长**。段 #1-#2，右边是造型B 的 #5-#7，#3/#4 是公共空地。
+  check("拉长一镜 → 只吃到空地 #3",
+        replay(1, 2, new Set([5, 6, 7]), "to", [345]), [1, 3]);
+  check("用力拉到底 → 也只到空地 #4，不越进造型B",
+        replay(1, 2, new Set([5, 6, 7]), "to", [9999]), [1, 4]);
+  // ⚠️ 关键判据：把指针**停在造型B 的格子上**（500/600/700px）也不许写出去 ——
+  //    这正是"拉长会多出一块重叠的段"的旧机制。
+  const leak = [500, 600, 700, 900].map((px) => replay(1, 2, new Set([5, 6, 7]), "to", [px]));
+  check("指针停在别的造型格子上 → 一步都不越界",
+        leak.every(([, nt]) => nt <= 4), true);
+
+  // 场景三：左边缘对称。段 [5,7] 往左是造型B 的 #1-#2 → 可及范围从 #3 起
+  // （#1/#2 是别人的，一步都不许踩）。所以：
+  check("左边缘往左拉长 → 停在造型B 之后的第一个镜头（#3）",
+        replay(5, 7, new Set([1, 2]), "from", [-9999]), [3, 7]);
+  check("左边缘往右缩一镜 → #6",
+        replay(5, 7, new Set([1, 2]), "from", [520]), [6, 7]);
+
+  // 场景四：**两端不许交叉**，且拖到极限要能到"只剩一镜"。
+  // 极限位置正好等于相邻那一镜的边界（minSpan = 整镜宽），所以够得着。
+  const bwd = replay(1, 3, new Set(), "to", [-9999]);
+  check("右边缘拖到最左 → 停在只剩一镜", bwd, [1, 1]);
+  const fwd = replay(1, 3, new Set(), "from", [9999]);
+  check("左边缘拖到最右 → 停在只剩一镜", fwd, [3, 3]);
 }
 
 console.log(failed ? `\n❌ ${failed} 项未通过` : "\n✅ 全部通过");
