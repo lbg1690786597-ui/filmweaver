@@ -29,10 +29,26 @@ if (IS_TAURI) {
   void hydrateOutbox();
 }
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>,
-);
+// 资产轨真机验证台（**仅 dev**）：`vite dev` 下访问 `?at-harness=1` 会挂载
+// `dev/AssetTrackHarness.tsx` —— 真的 AssetTrack + fixture，供 Playwright 用真
+// 指针事件驱动。用 `import.meta.env.DEV` 挡在构建之外，生产产物里连这段分支
+// 都不会存在（Vite 会把整块静态替换掉）。
+const root = ReactDOM.createRoot(document.getElementById("root")!);
+
+if (import.meta.env.DEV && new URLSearchParams(location.search).has("at-harness")) {
+  void import("./dev/AssetTrackHarness").then(({ default: Harness }) => {
+    root.render(
+      <React.StrictMode>
+        <Harness />
+      </React.StrictMode>,
+    );
+  });
+} else {
+  root.render(
+    <React.StrictMode>
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
+    </React.StrictMode>,
+  );
+}
