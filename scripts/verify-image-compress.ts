@@ -31,6 +31,9 @@ import {
   MAX_EDGE, SIZE_LIMIT, isCompressibleType, jpegName, needsCompress, targetSize,
 } from "../src/lib/imageCompress";
 
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接读会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
@@ -175,9 +178,22 @@ console.log("\n⑤ 上传链路：压了、清了描述、不锁窗");
 /* ================================================================== */
 console.log("\n⑥ 视觉反推：从上传链路里摘干净，只留手动按钮");
 {
-  const routes = read("../backend/app/routes_v2.py");
-  const vision = read("../backend/app/vision_desc.py");
+  // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+  const routes = readBackend("app/routes_v2.py");
+  const vision = readBackend("app/vision_desc.py");
+  const llm = readBackend("app/providers/llm.py");
   const tsx = read("src/components/AssetDialog.tsx");
+  if (routes === null || vision === null || llm === null) {
+    skipBackend("⑥ 视觉反推的后端侧（前端按钮仍在下面查）");
+    ok("前端有「AI 看图补写」按钮，且只转自己不锁弹窗",
+      /AI 看图补写/.test(tsx) && /descBusy/.test(tsx)
+      && !/setUploading\(true\)[\s\S]{0,200}describeImage/.test(tsx),
+      "它是可选的锦上添花，没理由让弹窗其它部分跟着不能动");
+    ok("按钮填进去的文字会被显式保存",
+      /await savePrompt\(r\.description\)/.test(tsx),
+      "程序填进输入框不会触发 blur——只 setPrompt 的话用户点完按钮以为存上了，"
+      + "关掉弹窗就没了");
+  } else {
 
   ok("后端换图/建资产的四条路径都不再调 vision_desc",
     !/refresh_if_auto/.test(routes)
@@ -209,10 +225,11 @@ console.log("\n⑥ 视觉反推：从上传链路里摘干净，只留手动按�
     + "关掉弹窗就没了");
 
   ok("图读不到时当场抛错，不把本地路径原样下发给网关",
-    /图片不存在或无法读取/.test(read("../backend/app/providers/llm.py")),
+    /图片不存在或无法读取/.test(llm),
     "旧写法是「解析得到文件就转 base64，否则原样发」。那个相对路径网关取不到，"
     + "实测两种结局：逐渠道超时重试拖到几分钟，或者模型照着系统提示词凭空**编**"
     + "一段造型描述回来——后者会被当成真描述落库，正是本次在修的外观漂移");
+  }
 }
 
 /* ================================================================== */
