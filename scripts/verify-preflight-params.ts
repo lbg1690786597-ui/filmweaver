@@ -34,6 +34,9 @@ import {
   ASPECTS, RES_TIERS, RESOLUTIONS, isResTier, resListOf, resOfTier, tierLabel,
 } from "../src/lib/resolutions";
 
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接读会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
@@ -188,9 +191,12 @@ console.log("\n④ api 层：传档位名，且「沿用」就是不传值");
 /* ================================================================== */
 console.log("\n⑤ 后端：项目档位对所有模式生效，本次覆写真能落到 Provider");
 {
-  const jobs = read("../backend/app/jobs.py");
+  // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+  const jobs = readBackend("app/jobs.py");
+  const ready = readBackend("app/readiness.py");
+  if (jobs === null || ready === null) skipBackend("⑤ 后端项目档位与本次覆写");
+  else {
   const jobsCode = noComments(jobs, "#");
-  const ready = read("../backend/app/readiness.py");
 
   ok("有独立的 _resolve_project_resolution（与视频模型同一套口径）",
     /def _resolve_project_resolution\(proj\)/.test(jobs),
@@ -228,6 +234,7 @@ console.log("\n⑤ 后端：项目档位对所有模式生效，本次覆写真�
     /"resolution": resolution,/.test(ready)
     && /_resolve_project_resolution\(proj\)/.test(ready),
     "前端要靠它显示「沿用项目设置（720p）」");
+  }
 }
 
 /* ================================================================== */
