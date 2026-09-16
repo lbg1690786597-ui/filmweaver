@@ -40,6 +40,8 @@ import {
   MIN_WINDOW_SEC, hasClipWindow, inPointOf, windowDurOf, outPointOf,
   minTrimSec, trimIn, outPatch, inPatch, canTrimIn, clearWindowPatch,
 } from "../src/features/timeline/trim";
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接 read 会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
@@ -106,16 +108,24 @@ ok("beginTrim 里没有 Math.round", !trimFn.includes("Math.round"),
 ok("拖动读数按 0.1 显示（不然 2.4 会显示成 2.4000000000000004）",
    tl.includes("previewDur.sec.toFixed(1)"));
 
-const py = read("../backend/app/routes_v2.py");
-const patchFn = py.match(/def patch_shot_timeline[\s\S]*?\n\nclass /)?.[0] ?? "";
-ok("patch_shot_timeline 被扫到", patchFn.length > 0);
-ok("后端按 2 位小数落库（不是 round 到整数）",
-   patchFn.includes("round(float(body.duration_sec), 2)"),
-   "少了那个 `, 2` 就是整数秒：前端拖到 2.4、松手刷新变 2，"
-   + "用户看到的是「我拖了它自己弹回去」，且没有任何测试会红");
-ok("上限比较用 float(ceil) 而不是 int(ceil)",
-   patchFn.includes("min(float(ceil)"),
-   "int(ceil) 会把 30.5 这类上限截成 30；更要紧的是它暗示这一行仍是整数世界");
+// 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+const py = readBackend("app/routes_v2.py");
+//: 空串 = 没读到后端。下面每一处用它的地方都先问 `py === null` 再断言，
+//: 不能靠"空串匹配不到"顺势判失败——那是把跳过伪装成不通过。
+let patchFn = "";
+if (py === null) {
+  skipBackend("后端小数秒落库（patch_shot_timeline）");
+} else {
+  patchFn = py.match(/def patch_shot_timeline[\s\S]*?\n\nclass /)?.[0] ?? "";
+  ok("patch_shot_timeline 被扫到", patchFn.length > 0);
+  ok("后端按 2 位小数落库（不是 round 到整数）",
+     patchFn.includes("round(float(body.duration_sec), 2)"),
+     "少了那个 `, 2` 就是整数秒：前端拖到 2.4、松手刷新变 2，"
+     + "用户看到的是「我拖了它自己弹回去」，且没有任何测试会红");
+  ok("上限比较用 float(ceil) 而不是 int(ceil)",
+     patchFn.includes("min(float(ceil)"),
+     "int(ceil) 会把 30.5 这类上限截成 30；更要紧的是它暗示这一行仍是整数世界");
+}
 
 const cp = read("src/features/inspector/ClipProperties.tsx");
 ok("Inspector 时长输入框 step 用 TRIM_STEP_SEC（与时间轴同源）",
@@ -222,6 +232,8 @@ ok("空白串也算未出片", !canTrimIn({ video_url: "   " }));
 /* ================================================================== */
 console.log("\n⑦ 不变式与清窗口（静态）：这几处漏一个就是静默损坏");
 
+if (py === null) skipBackend("⑦ 后端不变式（patch_shot_timeline 窗口分支）");
+else {
 ok("后端窗口分支回写 duration_sec（不变式的第三个维持者）",
    patchFn.includes("shot.duration_sec = shot.clip_dur_sec"),
    "少了这一行 → 时间轴按 duration_sec 排版、导出按 clip_dur_sec 取片，"
@@ -240,31 +252,36 @@ ok("半个窗口（只有入点、没有长度）会被补齐",
 ok("PATCH 响应带回 clip_in_sec / clip_dur_sec",
    patchFn.includes("\"clip_in_sec\"") && patchFn.includes("\"clip_dur_sec\""),
    "连续拖左边缘时前端要从服务端的入点续算，不回传就只能拿本地猜的值");
+}
 
 // 窗口坐标是**相对当前 video_url** 的。换了素材还留着旧窗口 →
 // `-ss 2.4 -t 3` 取到的是另一段内容甚至空白，导出黑帧且无任何报错。
 // 三个安装点：生成落回、切版本、dev 手动出片。漏一个就是一类静默损坏。
 {
-  const backend = ["../backend/app/jobs.py", "../backend/app/routes_v2.py"]
-    .map((f) => read(f)).join("\n");
-  const sites = backend.split("\n")
-    .map((l, i) => ({ l, i }))
-    .filter((x) => /\.video_url = /.test(x.l));
-  const lines = backend.split("\n");
-  check("shot.video_url 的安装点共 3 处（新增了要一并接上清窗口）", sites.length, 3);
-  const missed = sites.filter(
-    (x) => !lines.slice(x.i, x.i + 6).some((l) => l.includes("reset_clip_window")));
-  ok("每个安装点后面都跟着 reset_clip_window", missed.length === 0,
-     missed.map((x) => `第 ${x.i + 1} 行附近：${x.l.trim()}`).join(" / ")
-     + " —— 不清窗口 = 导出静默黑帧");
+  const jobsPy = readBackend("app/jobs.py");
+  const dbpy = readBackend("app/db.py");
+  if (jobsPy === null || py === null || dbpy === null) {
+    skipBackend("清窗口安装点（video_url → reset_clip_window）");
+  } else {
+    const backend = [jobsPy, py].join("\n");
+    const sites = backend.split("\n")
+      .map((l, i) => ({ l, i }))
+      .filter((x) => /\.video_url = /.test(x.l));
+    const lines = backend.split("\n");
+    check("shot.video_url 的安装点共 3 处（新增了要一并接上清窗口）", sites.length, 3);
+    const missed = sites.filter(
+      (x) => !lines.slice(x.i, x.i + 6).some((l) => l.includes("reset_clip_window")));
+    ok("每个安装点后面都跟着 reset_clip_window", missed.length === 0,
+       missed.map((x) => `第 ${x.i + 1} 行附近：${x.l.trim()}`).join(" / ")
+       + " —— 不清窗口 = 导出静默黑帧");
+    ok("reset_clip_window 只清窗口、不动 duration_sec",
+       /def reset_clip_window[\s\S]*?return had/.test(dbpy)
+       && !/def reset_clip_window[\s\S]*?shot\.duration_sec/.test(dbpy),
+       "顺手清掉 duration_sec 会让镜头在时间轴上塌成 0 宽");
+    ok("切版本把「窗口已重置」回传前端（不能悄悄丢用户的修剪）",
+       py.includes("clip_window_cleared"));
+  }
 }
-const dbpy = read("../backend/app/db.py");
-ok("reset_clip_window 只清窗口、不动 duration_sec",
-   /def reset_clip_window[\s\S]*?return had/.test(dbpy)
-   && !/def reset_clip_window[\s\S]*?shot\.duration_sec/.test(dbpy),
-   "顺手清掉 duration_sec 会让镜头在时间轴上塌成 0 宽");
-ok("切版本把「窗口已重置」回传前端（不能悄悄丢用户的修剪）",
-   py.includes("clip_window_cleared"));
 
 console.log("\n  前端：口径与门禁");
 const adp = read("src/adapters/shotToClip.ts");
