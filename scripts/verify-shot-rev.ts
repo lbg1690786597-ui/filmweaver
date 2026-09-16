@@ -35,6 +35,9 @@ import { fileURLToPath } from "node:url";
 import { createRevRegistry } from "../src/lib/shotRev";
 import { createStagedWriter } from "../src/lib/stagedWrite";
 
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接读会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 let failed = 0;
@@ -331,7 +334,10 @@ console.log("\n⑥ 静态守卫：前后端两侧都真的在做这件事");
 
 {
   // 假服务端与真服务端的规则必须是同一条
-  const be = readFileSync(join(ROOT, "..", "backend/app/routes_v2.py"), "utf8");
+  // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+  const be = readBackend("app/routes_v2.py");
+  if (be === null) skipBackend("后端 transform_rev 与 409 冲突");
+  else {
   ok("后端有 transform_rev()", /def transform_rev\(raw: str \| None\) -> str:/.test(be));
   ok("后端把 rev 下发在 /detail 里", /"transform_rev": transform_rev\(s\.transform_meta\)/.test(be));
   ok("后端 PATCH 响应回新 rev", /"transform_rev": transform_rev\(shot\.transform_meta\)\}/.test(be));
@@ -344,6 +350,7 @@ console.log("\n⑥ 静态守卫：前后端两侧都真的在做这件事");
   const iDur = be.indexOf("if body.duration_sec is not None:", be.indexOf("def patch_shot_timeline"));
   ok("后端把校验放在所有改动之前（拒绝是整笔拒绝）", iChk > 0 && iDur > iChk,
      `校验在 ${iChk}，第一处改动在 ${iDur}`);
+  }
 }
 
 /* ------------------------------------------------------------------ */
