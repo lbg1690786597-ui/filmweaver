@@ -27,6 +27,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接读会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
 import {
   isUsable,
   describeShot,
@@ -89,9 +91,12 @@ ok(
 
 console.log("\n② 源码守卫：后端确实在写 shots.status，即两套状态各写各的表");
 
-const jobsSrc = readFileSync(join(REPO, "backend", "app", "jobs.py"), "utf8");
-const dbSrc = readFileSync(join(REPO, "backend", "app", "db.py"), "utf8");
-
+// 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+// 与下面 ③ 段「找不到 dev 库就跳过」同一口径：读不到对面 = 跳过，不是通过、也不是崩。
+const jobsSrc = readBackend("app/jobs.py");
+const dbSrc = readBackend("app/db.py");
+if (jobsSrc === null || dbSrc === null) skipBackend("② 后端状态写入点");
+else {
 ok("后端 Shot.status 存在", /class Shot\b/.test(dbSrc) && /status/.test(dbSrc));
 ok("后端 Job.status 存在", /class Job\b/.test(dbSrc));
 ok(
@@ -110,6 +115,7 @@ for (const s of IN_FLIGHT_SHOT_STATUSES) {
     jobsSrc.includes(`"${s}"`),
     `${s} 已不在后端源码里，应从 IN_FLIGHT_SHOT_STATUSES 移除`,
   );
+}
 }
 
 // 前端**唯一**的状态标签定义处必须与这边一致
