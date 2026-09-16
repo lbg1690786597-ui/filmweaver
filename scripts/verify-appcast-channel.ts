@@ -23,7 +23,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -40,9 +40,14 @@ const ok = (cond: boolean, msg: string, hint = "") => {
 console.log("① appcast_channel.py 自检");
 let selfTestOut = "";
 let selfTestOk = false;
+//: ⚠️ **必须**给 PYTHONIOENCODING：CI 是 windows-latest，python 的 stdout 默认跟
+//: 控制台代码页（cp1252/936），`appcast_channel.py` 一打印 `①` 就
+//: `UnicodeEncodeError: 'charmap' codec can't encode character '\u2460'`，
+//: 自检非零退出 → 本条判失败。Linux 上默认已是 UTF-8，所以只有 CI 会红。
+const PY_UTF8 = { ...process.env, PYTHONIOENCODING: "utf-8" };
 try {
   selfTestOut = execFileSync("python3", ["scripts/appcast_channel.py", "--self-test"],
-    { cwd: ROOT, encoding: "utf8" });
+    { cwd: ROOT, encoding: "utf8", env: PY_UTF8 });
   selfTestOk = true;
 } catch (e) {
   selfTestOut = String((e as { stdout?: string }).stdout ?? e);
@@ -58,7 +63,7 @@ try {
     "import json,sys; sys.path.insert(0,'scripts'); import appcast_channel as a; "
     + "f=lambda c:{'beta':c.beta,'dir':str(c.dir),'base_url':c.base_url,"
     + "'stem_prefix':c.stem_prefix}; print(json.dumps([f(a.BETA),f(a.RELEASE)]))"],
-    { cwd: ROOT, encoding: "utf8" });
+    { cwd: ROOT, encoding: "utf8", env: PY_UTF8 });
   [BETA, RELEASE] = JSON.parse(dump) as [Ch, Ch];
 } catch (e) {
   console.log(`  ❌ 无法读出通道常量: ${e}`);
@@ -120,6 +125,13 @@ ok(RELEASE.stem_prefix === "FilmWeaver",
 console.log("\n④ 发布脚本里不得再出现硬编码的通道常量");
 const HARD = /filmweaver(-prod)?-data\/appcast|\/fwp?\/media\/appcast/;
 for (const f of ["sync_appcast.py", "scripts/publish-update.py"]) {
+  //: `sync_appcast.py` 在 release.py 的 EXCLUDE 里 —— 它是本地一次性工具，
+  //: **从不进公开仓**。CI 上直接 read 就是 ENOENT，把整条发版链路钉死。
+  //: 缺文件 = 跳过（那份代码不在这个仓里，没什么可断言的），不是失败。
+  if (!existsSync(join(ROOT, f))) {
+    console.log(`   ⏭  跳过 ${f} —— 本仓没有它（公开仓不含本地一次性脚本）`);
+    continue;
+  }
   const lines = read(f).split("\n");
   // 注释/文档字符串里提到路径是**好事**（解释为什么），只禁止**代码**里再出现。
   const hits = lines
