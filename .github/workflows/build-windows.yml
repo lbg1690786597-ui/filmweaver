@@ -106,6 +106,23 @@ jobs:
       - name: 字幕对齐与样式验证
         run: npm run verify:subtitles
 
+      # ---- 编辑侧 UI 逻辑验证（44 个脚本，纯 tsx、无 ffmpeg / 无 DOM 依赖）----
+      # ⚠️ 这一步在 2026-09-12 之前**不存在**，而 `verify:all` 里链了 82 个脚本——
+      # 也就是说**79 个脚本在 CI 里从不执行**，只在本地手工跑 `verify:all` 时才跑。
+      # 红绿全靠"人记得手工跑"，等于没有把关。
+      #
+      # 2026-09-12 建的 docs/PLAN-第二轮收敛-键对齐与守卫.md 里，P0.2 就是补这一步。
+      # 其中 `verify-architecture.ts` 是**增长闸门**：它钉住 App.tsx / api.ts /
+      # routes_v2.py / jobs.py 的非空行数，以及"同一件事只许有一份"的计数。
+      # 之所以需要它，是因为上一轮架构收敛（PLAN-编辑核心架构收敛.md A–E 全 ✅）
+      # 做完之后每个规模指标**都涨了**——没有闸门的收敛一定输。
+      #
+      # 为什么选 verify:ui 而不是 verify:all：render / export / agent 需要
+      # FFmpeg、素材目录、真实 API KEY，在 CI 上跑不了或不稳定。
+      # verify:ui 这 44 个全是纯函数与源码扫描，秒级完成，适合每次构建把关。
+      - name: 编辑侧 UI 逻辑验证
+        run: npm run verify:ui
+
       # ---- hook 顺序守卫（纯源码扫描，毫秒级）----
       # 0.9.1 的 beta 就是**打开即黑屏**：`assetDropCtx` 那个 useMemo 写在五段
       # 顶层早退之后，于是 App 的 hook 数随屏幕而变（登录页 181 / 编辑器 182），
