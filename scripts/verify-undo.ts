@@ -282,12 +282,20 @@ ok("五个资产轨入口一个不少",
   // 3.13 起记账点从 `p.onPushUndo({…})` 换成了 store 的 `recordWithUndo(…, ops, affected)`：
   // 调整只写本地台账，撤销也是往台账里记一条**反向 op**，不再有"撤销时补发请求"那一步。
   // 判据随之改成数 `recordWithUndo(` —— 同样是**锚在入口**上（标签就在它里面），
-  // 新增一处/删掉一处照样能抓。指针通道的落点（`injectAssetIntoShot`）现在
-  // **只**在 injectAsset.ts 里记一次账（它把两处 `onPushUndo` 合并成了同一个实现），
-  // 所以 AssetTrack 侧数 4 个 + injectAsset 侧 1 个，合起来仍是 5 个入口。
-  ((asset.match(/recordWithUndo\(/g) ?? []).length === 4
-   && (injectAsset.match(/recordWithUndo\(/g) ?? []).length === 1),
-  "AssetTrack 4 个（拖边缘 / 平移 / 删除段 / 卡片落轨）+ injectAsset 1 个（镜头轨落点，两通道共用）；"
+  // 新增一处/删掉一处照样能抓。
+  //
+  // ⚠️ 3.14 起"卡片落轨"这一处于**不再**在 AssetTrack 里单独记账：HTML5 通道的
+  // 落点改成直接调 `injectAssetIntoShot`（它内部记一次账），于是这条链从
+  // "AssetTrack 4 + injectAsset 1" 变成 "AssetTrack 3 + injectAsset 1"。
+  // **数量变了，守的东西没变** —— 入口仍是 5 个（拖边缘 / 平移 / 删除段 /
+  // 卡片落轨 / 镜头轨落点），只是最后两个现在共用同一份实现。
+  // 改的理由不是"数不上了"，是那三份注入实现漂移出了用户实测的 bug：HTML5 通道
+  // 一直在无条件弹「已把「×」注入镜头 #N」，而落点那一格本来就已经生效、
+  // 轨道上一格没变 —— 用户看到的是一句为没发生的变化背书的话。
+  ((asset.match(/recordWithUndo\(/g) ?? []).length === 3
+   && (injectAsset.match(/recordWithUndo\(/g) ?? []).length === 1
+   && /injectAssetIntoShot\(\{/.test(asset)),
+  "AssetTrack 3 个（拖边缘 / 平移 / 删除段）+ injectAsset 1 个（落轨与镜头轨落点共用）；"
   + "数少了说明真丢了一个入口 —— 别的都对，就那一个手势不能撤销");
 
 /* ================================================================== *
