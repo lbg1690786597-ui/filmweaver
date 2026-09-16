@@ -26,6 +26,9 @@ import {
   clampCandidateCount, defaultCandidateCount,
 } from "../src/features/assets/candidatePlan";
 
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接读会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
@@ -89,9 +92,10 @@ const srcFiles = ["src/components/AssetDialog.tsx", "src/api.ts"];
 for (const f of srcFiles) {
   ok(!/api\.stageCandidates/.test(read(f)), `${f} 里没有 api.stageCandidates 的调用`);
 }
-const routes = readFileSync(
-  join(ROOT, "..", "backend/app/routes_v2.py"), "utf8");
-ok(/已被取代，新代码不要用/.test(routes),
+// 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+const routes = readBackend("app/routes_v2.py");
+if (routes === null) skipBackend("后端旧同步路由的弃用标注");
+else ok(/已被取代，新代码不要用/.test(routes),
   "★ 后端那条同步路由仍在（旧客户端要用），但 docstring 已标明弃用与保留理由",
   "删路由会让已安装的旧 Beta 资产弹窗当场报错；不标注则会被当成现役入口");
 
