@@ -24,6 +24,8 @@
 import type { AssetDragData, ShotInfo } from "../../api";
 import type { CommandDraft } from "../../lib/command";
 import { injectAssetIntoShot, replaceRunImage } from "./injectAsset";
+import { opsOf } from "./assetOverrides";
+import type { AssetOverrideTable, StageBasis } from "./assetOverrides";
 
 export type AssetDropTarget =
   /** 落在某个资产段上：换参考图 */
@@ -104,6 +106,16 @@ export function secAtX(el: HTMLElement, clientX: number, pxPerSec: number): numb
 export interface AssetDropCtx {
   projectId: string;
   shots: ShotInfo[];
+  /**
+   * 人物的造型底座 —— 注入时用来定"这次注入记在哪套造型名下"（见 `stageIdAt`）。
+   * 不给的话人物轨的注入会退化成"无主的加法"，只能画到兜底段上。
+   */
+  stages?: readonly StageBasis[];
+  /** 某个角色**自己的**造型 id（见 `InjectArgs.ownStageIds`）。落库前的
+   *  「这一格画出来了吗」判据要用它把别家造型筛掉。 */
+  ownStageIds?: (rowName: string) => ReadonlySet<string>;
+  /** 本地台账（行名 → ops）。`stageIdAt` 用它认出"先缩掉、再拖回来"那一格的原作者。 */
+  table?: AssetOverrideTable;
   /** order → 绝对起始秒 */
   offsetMap: Map<number, number>;
   pxPerSec: number;
@@ -187,6 +199,15 @@ export async function commitAssetDrop(
     projectId: ctx.projectId, name,
     isLocation: target.kind === "lane" ? target.isLocation : d.kind === "location",
     shot, order: shot.order,
+    // 落在行/镜头轨上只有 x 坐标 —— 归属交给 `injectAssetIntoShot` 内部的
+    // `stageIdAt` 按底座推（"落在资产段上"那一支在上面就 return 了）。
+    stages: ctx.stages,
+    // ⚠️ `ctx.stages` 是**整条轨所有角色**的造型。不告诉注入这条"哪些是这一行
+    // 自己的"，投影判据就会把"这个角色还没有造型行"误当成"有造型但没画出这一
+    // 格"，于是往公共空地上拖卡片会弹「没能画上去」（组件其实已经画了
+    // 「未设阶段」那一段）。
+    ownStageIds: ctx.ownStageIds?.(name),
+    ops: ctx.table ? opsOf(ctx.table, name) : undefined,
     onToast: ctx.onToast, onChanged: ctx.onChanged,
   });
   return true;
