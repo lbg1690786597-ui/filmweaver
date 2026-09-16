@@ -47,6 +47,9 @@ import type { RenderOutput } from "../src/render/model";
 // 只当类型用：`src/api.ts` 顶上读 `import.meta.env`，值导入会让本脚本在 node 下炸。
 import type { ShotInfo, AudioClipInfo } from "../src/api";
 
+//: 读 backend/ 一律走这里 —— 公开仓（CI）没有 backend/，直接 read 会 ENOENT 崩掉整条发版链路
+import { readBackend, skipBackend } from "./backendSrc";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 
@@ -320,17 +323,22 @@ ok("删除是「重建」式撤销，且 redo 删的是**新** id",
 ok("重建后补发窗口 PATCH 的失败不上抛（段已经回来了，不该整条撤销判失败）",
    /clipDurSec: old\.clip_dur_sec,[\s\S]{0,120}?\} catch \{/.test(app));
 
-const py = read("../backend/app/routes_v2.py");
-ok("后端收 clear_clip", py.includes("clear_clip"));
-ok("后端把两列写回 NULL 而不是 0",
-   /clear_clip[\s\S]{0,400}?clip_in_sec = None[\s\S]{0,120}?clip_dur_sec = None/.test(py));
-ok("窗口长度有成对夹持（入点变了但长度没变时，也要重新夹一次）",
-   /room = max\(0\.1, src - float\(a\.clip_in_sec or 0\.0\)\)/.test(py));
-// TTS 重合成出来的是**另一段音频**，旧窗口的坐标对它没有意义 ——
-// 不清的话新旁白会被截回旧长度，且全程零报错。与 3.1 的「换素材必须清窗口」同源。
-const jobs = read("../backend/app/jobs.py");
-ok("TTS 写回时清掉修剪窗口",
-   /status="done",\s*\n?\s*clip_in_sec=None, clip_dur_sec=None/.test(jobs));
+// 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
+const py = readBackend("app/routes_v2.py");
+const jobs = readBackend("app/jobs.py");
+if (py === null || jobs === null) {
+  skipBackend("后端清窗口（clear_clip / TTS 写回）");
+} else {
+  ok("后端收 clear_clip", py.includes("clear_clip"));
+  ok("后端把两列写回 NULL 而不是 0",
+     /clear_clip[\s\S]{0,400}?clip_in_sec = None[\s\S]{0,120}?clip_dur_sec = None/.test(py));
+  ok("窗口长度有成对夹持（入点变了但长度没变时，也要重新夹一次）",
+     /room = max\(0\.1, src - float\(a\.clip_in_sec or 0\.0\)\)/.test(py));
+  // TTS 重合成出来的是**另一段音频**，旧窗口的坐标对它没有意义 ——
+  // 不清的话新旁白会被截回旧长度，且全程零报错。与 3.1 的「换素材必须清窗口」同源。
+  ok("TTS 写回时清掉修剪窗口",
+     /status="done",\s*\n?\s*clip_in_sec=None, clip_dur_sec=None/.test(jobs));
+}
 
 /* ================================================================== */
 console.log("\n⑨ 导出侧：修剪窗口真的传到了成片");
