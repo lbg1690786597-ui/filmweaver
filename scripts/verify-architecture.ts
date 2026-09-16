@@ -44,6 +44,8 @@
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+//: 缺 backend/ 时的统一跳过口径（公开仓只含 desktop/）
+import { skipBackend } from "./backendSrc";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DESKTOP = join(HERE, "..");
@@ -133,6 +135,13 @@ console.log("\n① 尺寸预算（只许降不许升）");
   const toLower: string[] = [];
   for (const b of BUDGETS) {
     if (!existsSync(b.path)) {
+      // 后端预算在公开仓（CI）里必然读不到：release.py 只推 desktop/。
+      // 判失败会把发版链路整条钉死（2026-09-16 v0.9.5-beta 就是这么挂的），
+      // 所以**缺后端 = 跳过**，前端那三条预算照常拦。详见 backendSrc.ts。
+      if (b.path.includes("backend")) {
+        skipBackend(`预算 ${b.label}`);
+        continue;
+      }
       console.log(`   ❌ ${b.label} 不存在：${relative(REPO, b.path)}`);
       failed++;
       continue;
