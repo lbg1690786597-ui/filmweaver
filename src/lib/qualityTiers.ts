@@ -37,6 +37,10 @@ export const tierModel = (t: QualityTier): string => TIERS[t].modelId;
 /** model id → 友好名（版本列表/检查器展示用） */
 export function modelLabel(modelId: string | null | undefined): string {
   const m = (modelId ?? "").toLowerCase();
+  // ⚠️ lowcost 必须排在 seedance-2.5 之前：它含 "seedance-lowcost-2.5"，
+  // 不先判就会显示成官方 "Seedance 2.5"——两者是不同的通道、不同的单价，
+  // 显示混淆会让人以为跑的是官方通道（用户明确要求二者分开）。
+  if (m.includes("lowcost")) return "低价 Seedance 2.5";
   if (m.includes("seedance-2.5")) return "Seedance 2.5";
   if (m.includes("seedance-2.0-mini")) return "Seedance mini";
   if (m.includes("seedance-2.0")) return "Seedance 2.0";
@@ -49,6 +53,9 @@ export function modelLabel(modelId: string | null | undefined): string {
 /** 该 model 属于哪一档（版本列表打 ⚡/◆ 标） */
 export function tierOf(modelId: string | null | undefined): QualityTier {
   const m = (modelId ?? "").toLowerCase();
+  // 低价通道也是 2.5 档（单镜 30s），但它只是"出片能力同档"，
+  // 不是精品档的默认选择——TIERS.final 仍指官方 seedance-2.0，不动。
+  if (m.includes("lowcost")) return "final";
   if (m.includes("seedance-2.5")) return "final";
   if (m.includes("seedance-2.0") && !m.includes("mini")) return "final";
   if (m.includes("veo-3-1") && !m.includes("fast")) return "final";
