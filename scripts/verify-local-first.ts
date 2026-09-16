@@ -173,6 +173,29 @@ console.log("⑤ 资产卡跨轨落下：两条拖放通道都要做身份检查
     "统一落点 commitAssetDrop 经由 injectAssetIntoShot 走特殊镜闸门");
   ok(/a\.shot\.is_special/.test(readFileSync(resolve(DESKTOP, "src/features/assets/injectAsset.ts"), "utf8")),
     "闸门本体 injectAssetIntoShot 确实拦了特殊镜");
+  // 注入之后这一段归**哪套造型**：注入类写入必须盖章（`stageId`），否则投影层
+  // 当它是"无主的加法"，任何造型都不认领，用户亲手从资产窗拖进来的卡会显示成
+  // 一条系统口气的兜底段。用户原话：「人工注入这个问题很大，因为用户从资产窗把
+  // 资产拖到轨道上也会显示人工注入」。
+  const injSrc = readFileSync(resolve(DESKTOP, "src/features/assets/injectAsset.ts"), "utf8");
+  ok(/stageIdAt\(/.test(injSrc), "注入写入会推断造型归属（stageIdAt）");
+  ok(/manual:\s*true,\s*stageId|present:\s*true,\s*manual:\s*true,\s*stageId/.test(injSrc),
+    "注入写下的 op 真的带上了 stageId（不是推断完就丢掉）");
+  const dropSrc = readFileSync(resolve(DESKTOP, "src/features/assets/useAssetDrop.ts"), "utf8");
+  ok(/stages:\s*ctx\.stages/.test(dropSrc),
+    "统一落点通道把造型底座交给注入函数（不然推不出归属）");
+  // ⚠️ 3.14 起 HTML5 落点**不再自己推归属**，而是把这一行的造型交给
+  // `injectAssetIntoShot`（判定只写一处）。所以这里改钉"它确实把造型交出去
+  // 了"，而不是"AssetTrack.tsx 里有 stageIdAt"—— 后者守的是实现细节，
+  // 前者才是那个不变量：别让落轨这条链退化成"不盖章的加法"。
+  ok(/injectAssetIntoShot\(\{/.test(readFileSync(
+    resolve(DESKTOP, "src/features/assets/AssetTrack.tsx"), "utf8")),
+    "HTML5 落点把注入交给 injectAssetIntoShot（归属由它推）");
+  // 撤销面：`inverseOps` 必须把章一起搬过去，否则 Ctrl+Z 撤销一次注入会让逆操作
+  // 变成无主的加法，凭空冒出一条兜底段。
+  ok(/present:\s*!o\.present,\s*manual:\s*o\.manual,\s*stageId:\s*o\.stageId/.test(
+    readFileSync(resolve(DESKTOP, "src/stores/assetOverrideStore.ts"), "utf8")),
+    "撤销的逆操作保留 stageId（撤销注入不冒兜底段）");
 }
 
 /* ---------------------------------------------------------------- ⑥ 几何单一真源 */
@@ -185,9 +208,115 @@ console.log("⑥ 段几何只有一个来源（runGeometry），不许读回 DOM
   ok(hits.length === 0, "AssetTrack 不再 parseFloat 读回 style.left/width（越拖越偏的来源）",
     hits.map((h) => `第 ${h.n} 行`).join(", "));
   ok(/runGeometry\(/.test(src), "渲染与手势共用 runGeometry");
-  ok(/clampEdge\(/.test(src), "边缘拖动受 clampEdge 约束（两端不许交叉）");
+  // ⚠️ 3.14 起手势不再直接调 `clampEdge`：它把"边缘在哪"和"能否写进去"合成
+  //    一个像素值，于是**预览跟着指针走、提交才吸附成镜头**，两者必然差半格
+  //    （用户报的"缩一镜没反应"。见 `snapEdge` 注释）。现在同一个 `snapEdge`
+  //    既产预览 px 又产提交 order，两端不交叉是它内部 `limit` 保证的。
+  //    所以这里断言的是"手势走的是 snapEdge"，而不是某个具体函数名。
+  ok(/snapEdge\(/.test(src), "边缘拖动经 snapEdge 定落点（预览与提交同一个值）");
+  ok(!/clampEdge\(/.test(src), "不再有第二套像素夹取（两套即两种落点）");
   // 手势阈值：0 阈值 = 点一下也走提交，正是"点一下就缩到最短"的一半成因
   ok(!/thresholdPx:\s*0\b/.test(src), "没有把 thresholdPx 设成 0 的手势");
+  // ⚠️ 只钉住 `thresholdPx` 不够 —— 它只管 `onFrame`，而 `onUp` 会为最后一个
+  // pending 事件补跑一次 `onFrame`、并且**无条件**调 `onCommit`。老写法就在
+  // `onCommit` 里直接拿 `lastPx` 提交，于是"点一下"照样改数据、缩到最短。
+  // 两个手势的 `onCommit` 都必须先看"到底动过没有"。
+  // 从 `onCommit` 处一直取到本次回调结束：闸门可能压在一段解释性注释后面。
+  const commits = [...src.matchAll(/onCommit:\s*\([^)]*\)\s*=>\s*\{([\s\S]*?)\n\s{4,8}\},/g)];
+  ok(commits.length >= 2, "两个拖拽手势都写了 onCommit", `实际 ${commits.length} 处`);
+  ok(
+    commits.every(([, body]) => /!moved|!g\.moved/.test(body)),
+    "每个 onCommit 都以 moved 为闸（纯点击不提交）",
+    commits.map(([, b], i) => (/!moved|!g\.moved/.test(b) ? null : `第 ${i + 1} 处`))
+      .filter(Boolean).join(", "),
+  );
+  ok(
+    /if \(!g\.moved\) return;/.test(src),
+    "onFrame 也忽略未越阈值的帧（否则补跑那一帧会写出预览）",
+  );
+}
+
+/* ------------------------------------------------ ⑥.5 段的可及范围按造型算 */
+
+// ⚠️ 账本 `table` 以**角色名**为键，画面却按**每个造型**过滤（后端 `list_stages`
+// 用 `in_range` 逐阶段切）。把一个造型的段拉进另一个造型的区间，写下的 op 会被
+// 那条段捡走 → 同一角色的轨道上多出一块**重叠**的段；谁都没接住时还会合成一段
+// `local:…` 的「未设阶段」段（旧名「人工注入」）。用户报的"拉长会多出一块、还重叠"就是这个。
+//
+// 判据：每段都带一个可及范围，且 `applyEdge` 落到它里面。
+//
+// ⚠️ 字段名从 `span` 改成了 `reach`，算法也从裸 `freeSpan` 换成
+// `reachSpan(freeSpan(...))` —— `freeSpan` 只从**当前** from..to 往外扫，
+// 缩短之后当前范围变小、可及范围跟着收，段就再也拉不回原长（"缩了就回不去"）。
+// `reachSpan` 从底座往外扫到别的造型/没有镜头为止，拖动全程冻结不动。
+// 这里只钉不变量，不钉某个具体函数名的写法。
+console.log("⑥.5 边缘拖动只在'这一段自己的可及范围'内（跨造型重叠块的根治点）");
+{
+  const src = readFileSync(resolve(DESKTOP, "src/features/assets/AssetTrack.tsx"), "utf8");
+  const reaches = [...src.matchAll(/reach:\s*reachSpan\(/g)].length;
+  const runs = [...src.matchAll(/\bfrom:\s*\w+\[0\],\s*to:\s*\w+\[/g)].length;
+  ok(reaches >= 4, "四处段（角色/场景 × 渲染/合成）都算了 reach", `实际 ${reaches} 处`);
+  ok(runs === reaches, "算了 reach 的段数 = 渲染的段数（没有哪类段漏了）", `段 ${runs} 处 / reach ${reaches} 处`);
+  ok(
+    /Math\.min\(Math\.max\(newOrder,\s*run\.reach\[0\]\),\s*run\.reach\[1\]\)/.test(src),
+    "applyEdge 兜底夹到 reach（窗口外的程序化调用也拦住）",
+  );
+  const win = src.match(/const win:\s*EdgeWindow\s*=\s*\{([\s\S]*?)\n\s{4}\};/);
+  ok(!!win, "手势窗口 win 由 reach 派生");
+  ok(
+    !!win && /lo:\s*run\.reach\[0\]/.test(win[1]) && /hi:\s*run\.reach\[1\]/.test(win[1]),
+    "win 的上下界就是 reach",
+    win ? win[1].trim() : "",
+  );
+}
+
+/* ---------------------------------------------------- ⑦ 预览收尾必须恢复快照 */
+
+// ⚠️ 上面⑥的 `moved` 闸门只拦住了**提交**（不给账本写数据），拦不住
+// `onSettle → pv.reset()` —— 收尾永远会跑。老写法把 `el.style.width` 清成空串，
+// 赌"React 随后会用新值重写一次"。可纯点击根本没有数据变化：React 的 diff 认为
+// `width` 这个 prop 没变，**跳过**重写，元素就永远停在空串上 —— 内联宽度一没，
+// `.fw-at-run` 退化成按内容自适应，"点一下资产块立刻缩到最短"，且只有刷新页面
+// （整棵树重建）才恢复。这正是用户在 3.13 之后仍然报的那个现象。
+//
+// 修法又改过一次，判据跟着改：**预览根本不该碰 `el.style.width`**。
+// 那个属性是 React 亲自写的，而 React 更新内联样式时只跟**自己上一次**的 style
+// 对象比（react-dom 的 `diffProperties`），**从不读 DOM**。所以"预览期绕过它写、
+// 收尾时还回去"这条路本身就有漏洞：还回去的值与 React 的记录一旦不等，之后每次
+// 渲染都判"这个 prop 没变"而永久跳过写入 —— 拖完提交了 DOM 却停在旧宽度。
+// 现在预览走一个 React 不认识的名字 `--fw-pv-w`，CSS 侧
+// `width: var(--fw-pv-w, <React 写的内联值>)` 读它，`reset()` 摘掉它，
+// React 的内联值立刻重新生效。两边各写各的，不存在"谁的记录更新"。
+//
+// 判据：`stylePreview` 只用 `setProperty/removeProperty` 操作 `--fw-pv-w`，
+// 且**全程不给 `el.style.width` 赋值**（写空串与写快照一样危险）。
+console.log("⑦ 拖动预览收尾要恢复接管时的内联值，不许清成空串");
+{
+  const src = readFileSync(resolve(DESKTOP, "src/features/timeline/gesture.ts"), "utf8");
+  const m = src.match(/export function stylePreview\([\s\S]*?\n\}/);
+  ok(!!m, "找得到 stylePreview 本体");
+  const body = m ? m[0] : "";
+  ok(
+    /setProperty\(\s*["'`]--fw-pv-w["'`]/.test(body),
+    "宽度预览走自定义属性 --fw-pv-w（不碰 React 管的 style.width）",
+  );
+  ok(
+    !/el\.style\.width\s*=/.test(body),
+    "全程没有给 el.style.width 赋值（写快照或写空串都会与 React 的记录脱钩）",
+    body.split("\n").filter((l) => /style\.width/.test(l)).join(" / "),
+  );
+  const reset = body.match(/reset\(\)\s*\{([\s\S]*?)\n\s{4}\}/);
+  ok(!!reset, "找得到 reset() 实现");
+  ok(
+    !!reset && /removeProperty\(\s*["'`]--fw-pv-w["'`]/.test(reset[1]),
+    "reset() 摘掉 --fw-pv-w，让 React 的内联宽度重新生效",
+    reset ? reset[1].trim() : "",
+  );
+  ok(
+    !!reset && /el\.style\.transform\s*=\s*restTransform/.test(reset[1]),
+    "reset() 把 transform 还原成接管时的快照（它与 React 写的是同一个值，可以直接写）",
+    reset ? reset[1].trim() : "",
+  );
 }
 
 console.log(`\n${fail ? "❌" : "✅"} ${pass} 项通过，${fail} 项未通过`);
