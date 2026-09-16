@@ -104,6 +104,19 @@ for (const f of cssFiles) {
   const clean = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   for (const m of clean.matchAll(/(--[\w-]+)\s*:/g)) definedVars.add(m[1]);
 }
+// 还有一类定义**不在 CSS 里**：拖动预览期由 JS 直接写在元素上的自定义属性
+// （`el.style.setProperty("--fw-pv-w", …)`，见 features/timeline/gesture.ts）。
+// 它们故意没有静态声明 —— 宽度预览不能走 React 认得的 `style.width`
+// （React 的 diffProperties 只跟自己上一次的 style 比、从不读 DOM，绕过它写过
+// 一次就会永久脱钩，表现为"点一下资产块立刻缩到最短"）。CSS 侧只以
+// `width: var(--fw-pv-w, <React 写的内联值>)` 读它，fallback 才是常态。
+// 所以把 JS 里的 setProperty 也算作一处定义：既不用维护豁免名单，
+// 又保留了"名字写错就报错"的能力（两边都得写对同一个名字才算数）。
+for (const f of tsxFiles) {
+  const src = readFileSync(f, "utf8");
+  for (const m of src.matchAll(/setProperty\(\s*["'`](--[\w-]+)["'`]/g)) definedVars.add(m[1]);
+}
+
 const usedVars = new Map<string, string>();
 for (const f of cssFiles) {
   const clean = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
