@@ -159,6 +159,42 @@ export default function AssetDialog(p: Props) {
   const busyUpload = uploading || picking;
 
   /**
+   * 垫图（显式参考图）。与 `keepFace` 那条**不是**一回事：
+   *   · keepFace     = 用该角色别的定妆图保脸，由后端 `character_base_ref` 自动挑
+   *   · 垫图 refUrls = 用户指哪张就用哪张，出图照着它的构图/风格/材质走
+   * 两者可以同时给（后端 `ImageProvider.generate(ref_urls=...)` 支持多张参考图）。
+   *
+   * 为什么是**弹窗内**状态而不是落库：垫图是"这一批候选想照谁做"的一次性意图，
+   * 不是资产的属性。落库的话下一次生图会莫名其妙继续沿用，而用户早已忘了。
+   */
+  const [refs, setRefs] = useState<string[]>([]);
+  const [refBusy, setRefBusy] = useState(false);
+  const refFileRef = useRef<HTMLInputElement | null>(null);
+  const MAX_REFS = 3;
+
+  /** 上传一张垫图并立刻进候选区。压缩口径与资产图一致
+   *  （`compressImage`：超 2MB 或长边超 2048 才压）。 */
+  const doAddRef = async (f: File) => {
+    setPicking(false);
+    setRefBusy(true);
+    try {
+      const small = await compressImage(f);
+      const r = await api.uploadMedia(small.file, p.projectId);
+      setRefs((prev) => [...prev, r.url].slice(0, MAX_REFS));
+      p.onToast("✅ 已加入垫图，出图会参考它");
+    } catch (e) {
+      p.onToast(`垫图上传失败：${String(e).slice(0, 160)}`);
+    } finally { setRefBusy(false); }
+  };
+
+  /** 把当前资产图本身加进垫图：最常见的诉求就是"在这张的基础上改"
+   *  （换个表情/换个机位），而它已经在屏幕上，不该逼用户再上传一次。 */
+  const addCurAsRef = () => {
+    if (!curImg) { p.onToast("当前还没有资产图可垫"); return; }
+    setRefs((prev) => prev.includes(curImg) ? prev : [...prev, curImg].slice(0, MAX_REFS));
+  };
+
+  /**
    * 只在**选文件**期间挡住关闭。
    *
    * 2026-09-10 修正：这里原本连 `uploading` 一起挡，用户反馈"上传时整个页面被
@@ -646,6 +682,12 @@ export default function AssetDialog(p: Props) {
         // 角色资产：喂该角色已有的定妆图做参考，换造型不换脸。
         // 排除正在重生成的这一张（拿它自己当参考等于原地复制一版）
         useCharRef: useRef, excludeUrl: curImg,
+        // 垫图：显式给的参考图在后端优先级最高（先于上面的自动挑脸）。
+        // ⚠️ 但 `excludeUrl` 对**显式 ref_urls 不生效**——后端只拿它过滤
+        // `character_base_ref` 的自动挑选。所以用户若把当前资产图垫进来又
+        // 想重生成，那张图会原样参与参考，出图容易与现图几乎一样（原地复制）。
+        // 这里不做拦截：用户手动垫自己那张是明确表达"照这张改"，拦掉反而费解。
+        refUrls: refs,
       });
       setCands([]);            // 旧候选让位给这一批
       setCandBusy(true);
@@ -748,6 +790,10 @@ export default function AssetDialog(p: Props) {
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void doUploadImage(f); else setPicking(false); e.target.value = ""; }} />
             <input ref={voiceFileRef} type="file" accept=".mp3,.wav,.aac,.m4a,.mp4,.mov" hidden
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void doUploadVoice(f); else setPicking(false); e.target.value = ""; }} />
+            {/* 垫图上传。必须在没有聚焦约束的地方也能触发；`openPicker` 负责
+                在系统选择框期间挡住关闭（input 一卸载，change 就没有接收方）。 */}
+            <input ref={refFileRef} type="file" accept=".png,.jpg,.jpeg,.webp" hidden
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void doAddRef(f); else setPicking(false); e.target.value = ""; }} />
             {voicePicking && (
               <VoicePicker
                 charName={t.name}
@@ -1110,6 +1156,40 @@ export default function AssetDialog(p: Props) {
             <span style={{ fontSize: "calc(12px * var(--fs-scale, 1))" }}>参考这张已有定妆图（换造型不换脸）</span>
           </label>
         )}
+
+        {/* ── 垫图 ──
+            与上面那个勾选框的分工写在 state 注释里：那个是"保脸"，这个是"照这张来"。
+            入口放在生成按钮**正上方**——它是这一批生成的一个参数，不是资产的属性，
+            所以既不能在顶上当资产图，也不能藏在折叠区里。 */}
+        <div className="adlg-refs">
+          <div className="adlg-refs-head">
+            <span>垫图（可选，最多 {MAX_REFS} 张）</span>
+            <span className="muted">出图会照着这些参考图的构图与风格走，可与上面那张定妆图叠加</span>
+          </div>
+          <div className="adlg-refs-row">
+            {refs.map((u) => (
+              <div className="adlg-ref" key={u}>
+                <img className="zoomable" src={api.mediaUrl(u)} alt="垫图"
+                  title="点击看大图" onClick={() => setZoom(u)} />
+                <button className="adlg-ref-x" title="移出垫图"
+                  onClick={() => setRefs((prev) => prev.filter((x) => x !== u))}>×</button>
+              </div>
+            ))}
+            {refs.length < MAX_REFS && (
+              <>
+                <button className="adlg-ref-add" disabled={refBusy || busyUpload}
+                  title="上传一张图作为垫图"
+                  onClick={() => openPicker(refFileRef, "垫图")}>
+                  {refBusy ? "⏳" : "＋ 上传"}
+                </button>
+                {curImg && !refs.includes(curImg) && (
+                  <button className="adlg-ref-add" title="把当前资产图垫进去（在这张的基础上改）"
+                    onClick={addCurAsRef}>＋ 当前图</button>
+                )}
+              </>
+            )}
+          </div>
+        </div>
 
         <button className="btn primary" disabled={genBusy || candBusy} onClick={doGen}>
           {candidateButtonLabel({
