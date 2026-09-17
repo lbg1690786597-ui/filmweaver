@@ -223,7 +223,7 @@ console.log("\n[6] 全部调用点都还在「账本」里 —— 没有凭空�
 
 {
   const all = codeLines(appPath).filter(({ t }) => /\brefreshDetail\s*\(/.test(t));
-  const known = 28;   // §12.2 实点：①12 + ②2 + ③5 + 首载 1 + 挂载回调 2 + 其余 6
+  const known = 29;   // §12.2 实点：①12 + ②2 + ④6 + 首载 1 + 挂载回调 2 + 其余 6
   ok(all.length === known,
     `App.tsx 的真调用数是 ${known}（实测 ${all.length}）`,
     all.length > known
