@@ -172,13 +172,6 @@ const MIGRATED: {
     note: "画幅 / 项目名 / 集标题（`shots` 例外：App 传的是暂存合成版）",
   },
   {
-    file: "components/FineCut.tsx",
-    forbiddenProps: ["baseAspect"],
-    storeReads: ["s.detail"],
-    ownsShots: true,
-    note: "画幅 + 镜头列表（`shots` 已自取，但 App 仍传暂存合成版，故不禁）",
-  },
-  {
     file: "components/PreflightDialog.tsx",
     forbiddenProps: ["hasScript", "productionMode", "narrationVoiceUrl"],
     storeReads: ["s.detail"],
@@ -194,7 +187,7 @@ const MIGRATED: {
  */
 const APP_ALLOWED: { prop: string; component: string; why: string }[] = [
   {
-    prop: "shots", component: "Timeline / Inspector / FineCut 之外",
+    prop: "shots", component: "Timeline / Inspector 之外",
     why: "App 传的是 stagedTransform.applyPending(…) 合成过的镜头（含未落盘的暂存变换），store 里没有那份数据 —— 迁了会丢暂存态。",
   },
 ];
