@@ -242,6 +242,30 @@
   text-overflow: ellipsis;
 }
 
+/* 去字幕块：蓝色窄条。
+   颜色与预览上的 DesubOverlay 蓝框**同一个色相**（oklch 255）——
+   用户在画面里框的那个框和轨道上出现的这个块必须一眼能对上，
+   否则"我刚才标的是哪一条"要靠时间去推。 */
+.fw-clip.desub {
+  background: oklch(62% 0.19 255 / 0.3);
+  border-color: oklch(72% 0.17 255 / 0.7);
+}
+.fw-clip.desub:hover:not(.locked) { border-color: oklch(78% 0.17 255); }
+/* 已擦除：褪成灰虚线。它不再计费、不再提交、两个手柄也不渲染，
+   视觉上必须和"待处理"彻底分开，否则用户会反复点"开始去字幕"。 */
+.fw-clip.desub.applied {
+  background: color-mix(in oklch, var(--c-raised) 80%, transparent);
+  border-style: dashed;
+  border-color: var(--c-border);
+  opacity: 0.7;
+}
+.fw-clip-subtext.desub {
+  gap: 3px;
+  color: oklch(88% 0.05 255);
+}
+.fw-clip.desub.applied .fw-clip-subtext.desub { color: var(--c-muted); }
+.fw-clip-desub-ok { flex: none; color: var(--c-success); }
+
 /* spin keyframe（从 tokens.css 里复用）*/
 @keyframes fw-spin { to { transform: rotate(360deg); } }
 .fw-spin { animation: fw-spin 0.8s linear infinite; }
