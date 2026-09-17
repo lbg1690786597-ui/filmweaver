@@ -9,7 +9,7 @@
 import { RefObject, useEffect, useRef, useState } from "react";
 import {
   SkipBack, Play, Pause, Rewind, Crosshair, Maximize2, Repeat,
-  Scissors, Blend, Volume2, VolumeX,
+  Scissors, Blend, Eraser, Volume2, VolumeX,
 } from "lucide-react";
 import { fmtSec } from "../../types/timeline";
 import "./Player.css";
@@ -23,6 +23,7 @@ import { styleToCss } from "../../lib/subtitleStyle";
 import type { SubtitleStyleLike } from "../../lib/subtitleStyle";
 import CropZoomOverlay from "./CropZoomOverlay";
 import MosaicOverlay from "./MosaicOverlay";
+import DesubOverlay from "./DesubOverlay";
 import SeamTransition from "./SeamTransition";
 import { transitionDef } from "../effects/transitionCatalog";
 import type { TransitionDef } from "../effects/transitionCatalog";
@@ -73,9 +74,9 @@ export interface PlayerProps {
   subtitleStyle?: SubtitleStyleLike | null;
 
   // ---- V2.3 画布交互覆盖层 ----
-  /** 当前激活的覆盖层模式：null=不激活, "cropzoom"=取景框, "mosaic"=马赛克 */
-  overlayMode?: "cropzoom" | "mosaic" | null;
-  onSetOverlayMode?: (mode: "cropzoom" | "mosaic" | null) => void;
+  /** 当前激活的覆盖层模式：null=不激活, "cropzoom"=取景框, "mosaic"=马赛克, "desub"=去字幕 */
+  overlayMode?: "cropzoom" | "mosaic" | "desub" | null;
+  onSetOverlayMode?: (mode: "cropzoom" | "mosaic" | "desub" | null) => void;
   onPatchTransform?: (
     tm: TransformMeta | Record<string, never>, opts?: TransformPatchOpts,
   ) => void;
@@ -287,6 +288,12 @@ export default function Player(p: PlayerProps) {
   // 关键帧存的输出秒 —— 面板那边（Inspector）用的是同一个函数，不能各算各的。
   const mosaicTSec = outputSec(t ?? Math.max(0, cur - winIn), p.transform?.speed);
 
+  // 去字幕覆盖层要知道"当前片段有多长"——新建标记时终点直接取片段末（见
+  // DesubOverlay 文件头）。有取片窗口时就是窗口长度，再经同一个 outputSec
+  // 换成输出秒，与 mosaicTSec 同基准；两者不同基准的话，一个 2 倍速的镜头
+  // 会标出一条长度对不上的区间。
+  const shotOutDurSec = outputSec(Math.max(0, winOut - winIn), p.transform?.speed);
+
   return (
     <>
       <div className="fw-pl-stage">
@@ -401,6 +408,23 @@ export default function Player(p: PlayerProps) {
               </div>
             )}
 
+            {/* 去字幕覆盖层（激活 desub 模式或当前时刻有标记时显示）。
+                与马赛克钉在同一个 vrect、同一个 zIndex —— 两者互斥，
+                overlayMode 是单值，不会同时激活。 */}
+            {vrect && p.onPatchTransform && (
+              <div style={{ position: "absolute", left: vrect.left, top: vrect.top, zIndex: 3 }}>
+                <DesubOverlay
+                  vrect={vrect}
+                  transform={p.transform ?? null}
+                  onPatchTransform={p.onPatchTransform}
+                  active={overlayMode === "desub"}
+                  tSec={mosaicTSec}
+                  shotDurSec={shotOutDurSec}
+                  onToast={p.onToast}
+                />
+              </div>
+            )}
+
             {/* 3.9 转场预览层：钉在 <video> 的 offset 盒上（与字幕/取景框/
                 马赛克同一个 vrect），否则画面是 contain 缩放过的、转场会
                 盖到黑边上去。 */}
@@ -499,6 +523,12 @@ export default function Player(p: PlayerProps) {
             title="马赛克：在画面上拖拽绘制遮罩区域"
             onClick={() => p.onSetOverlayMode?.(overlayMode === "mosaic" ? null : "mosaic")}>
             <Blend size={14} />
+          </button>
+          <button
+            className={`fw-pl-btn${overlayMode === "desub" ? " active" : ""}`}
+            title="去字幕：框出视频模型烧进画面的字幕，时间段自动取「当前帧前 1 秒 → 片段末」"
+            onClick={() => p.onSetOverlayMode?.(overlayMode === "desub" ? null : "desub")}>
+            <Eraser size={14} />
           </button>
         </>}
 
