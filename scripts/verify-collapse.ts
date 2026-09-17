@@ -351,9 +351,12 @@ ok("标记画在接缝**左侧**（画右侧会压住后继镜头的左缘 trim 
 ok("贴着时间轴开头时退化为从 0 往右排开，仍各占各的格子",
    /Math\.max\(c\.collapsedIndex! \* COLLAPSED_PX,/.test(cv),
    "钳到 0 的话，开头连续几个停用镜头又叠回同一个像素");
+// 判据是「两个手柄的条件都以 `!collapsed` 打头」，不是后面还挂了几项 ——
+// 去字幕块给右手柄补了「已擦除不给拖」的门禁，那是并列的另一件事，
+// 把正则写死成整行会让每次加门禁都误报一次。
 ok("折叠标记不渲染两个 trim 手柄（14px 里铺满手柄就没有可点的中间区域了）",
    /\{!collapsed && !p\.trackLocked && p\.onBeginTrimIn/.test(cv)
-     && /\{!collapsed && !p\.trackLocked && \(/.test(cv));
+     && (cv.match(/\{!collapsed && !p\.trackLocked\b/g) ?? []).length >= 2);
 ok("折叠标记仍然保留 EyeOff 角标（它是「这是什么」的唯一线索）",
    /\{c\.disabled && <span className="fw-clip-badge dim"/.test(cv));
 ok("折叠标记不发缩略图请求（为一个不参与导出的镜头白下一张图）",
