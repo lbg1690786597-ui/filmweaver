@@ -101,7 +101,7 @@ const BUDGETS: Budget[] = [
   {
     label: "App.tsx",
     path: join(SRC, "App.tsx"),
-    max: 2205,
+    max: 2193,
     why: "36 个「---- 层 ----」块、18 useState、14 useEffect。本轮用『只许减』慢慢挤，不重写。",
   },
   {
@@ -125,8 +125,8 @@ const BUDGETS: Budget[] = [
   {
     label: "jobs.py",
     path: join(REPO, "backend/app/jobs.py"),
-    max: 4154,
-    why: "62 个顶层函数。P2.2 解循环后，绕循环的局部 import 与重复常量应下线。",
+    max: 3838,
+    why: "62 个顶层函数。P2.2 解循环后，绕循环的局部 import 与重复常量应下线。ASR 字幕已搬去 subtitle_jobs.py、去字幕在 desub_jobs.py，这里只留注册。",
   },
 ];
 
