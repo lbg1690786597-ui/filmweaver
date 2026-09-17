@@ -1,0 +1,186 @@
+/* DesubPanel.css — 去字幕面板
+   配色与预览上的蓝框、时间轴上的蓝块同一个色相（oklch 255），
+   三个视图看的是同一份数据，颜色不统一用户得靠推理才能把它们对上。 */
+
+.fw-dsp {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.fw-dsp-intro {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--c-muted);
+}
+.fw-dsp-intro b { color: var(--c-text); font-weight: 600; }
+/* 行内的橡皮擦图标要与文字基线对齐，否则那一行会被顶高一截 */
+.fw-dsp-intro svg { vertical-align: -1px; margin: 0 1px; }
+
+/* ---- 两个动作按钮 ---- */
+.fw-dsp-act {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-raised);
+  color: var(--c-text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.fw-dsp-act:hover:not(:disabled) { border-color: var(--c-accent); background: var(--c-hover); }
+.fw-dsp-act.primary:not(:disabled) {
+  background: oklch(62% 0.19 255 / 0.9);
+  border-color: transparent;
+  color: #fff;
+}
+/* 禁用态在这里有两种含义：任务正在跑（等一会儿就能点）、或没有待处理的标记。
+   两种都靠 title 说清楚，样式上只要"现在点不了"这一个信号。 */
+.fw-dsp-act:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* 转圈：只给这一个图标转，别整个按钮动 —— 按钮上的文字还要读。 */
+.fw-dsp-spin { animation: fw-dsp-rot 1s linear infinite; flex: none; }
+@keyframes fw-dsp-rot { to { transform: rotate(360deg); } }
+/* 用户主动按了按钮才会看到这条，所以它有资格占一整行显眼位置 */
+.fw-dsp-err {
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid color-mix(in oklch, var(--c-danger) 45%, transparent);
+  background: color-mix(in oklch, var(--c-danger) 12%, transparent);
+  color: var(--c-danger);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+/* ---- 计费预估 ---- */
+.fw-dsp-bill {
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid oklch(72% 0.17 255 / 0.4);
+  background: oklch(62% 0.19 255 / 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fw-dsp-bill-main { font-size: var(--fs-sm); color: var(--c-text-hi); }
+.fw-dsp-bill-main b {
+  font-size: var(--fs-md);
+  color: oklch(78% 0.17 255);
+  font-variant-numeric: tabular-nums;
+}
+.fw-dsp-bill-sub { font-size: var(--fs-xs); color: var(--c-muted); }
+.fw-dsp-note {
+  display: flex;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  color: var(--c-muted);
+}
+.fw-dsp-note svg { flex: none; margin-top: 2px; }
+.fw-dsp-note b { color: var(--c-text); font-weight: 600; }
+
+/* ---- 清单 ---- */
+.fw-dsp-list { display: flex; flex-direction: column; gap: 3px; }
+
+.fw-dsp-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: var(--r-md);
+  border: 1px solid transparent;
+  background: var(--c-raised);
+  cursor: pointer;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.fw-dsp-row:hover { background: var(--c-hover); }
+.fw-dsp-row.sel { border-color: oklch(72% 0.17 255); }
+/* 已擦除：与轨道块上的 .applied 同一个语气 —— 它不再计费、不再提交 */
+.fw-dsp-row.done { opacity: 0.65; }
+
+.fw-dsp-row-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fw-dsp-shot {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--c-active);
+  color: var(--c-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.fw-dsp-text {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--c-text-hi);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fw-dsp-ok { flex: none; color: var(--c-success); }
+
+.fw-dsp-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-xs);
+  color: var(--c-muted);
+  font-variant-numeric: tabular-nums;
+}
+.fw-dsp-range { flex: none; }
+/* 这一条要付多少秒 —— 面板里唯一按"钱"高亮的数字 */
+.fw-dsp-dur {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: oklch(62% 0.19 255 / 0.25);
+  color: oklch(85% 0.08 255);
+}
+
+.fw-dsp-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+/* 行内操作常显（半透明），不做 hover 才出现 ——
+   藏在 hover 里的按钮在用户眼里等于没有这个功能。 */
+.fw-dsp-icon:hover { background: var(--c-active); color: var(--c-text-hi); }
+.fw-dsp-icon.danger:hover { color: var(--c-danger); }
+.fw-dsp-icon:first-of-type { margin-left: auto; }
+
+.fw-dsp-empty {
+  padding: 12px 10px;
+  border-radius: var(--r-md);
+  border: 1px dashed var(--c-border);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--c-muted);
+}
+.fw-dsp-empty b { color: var(--c-text); font-weight: 600; }
+
+.fw-dsp-foot {
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  color: var(--c-muted);
+}
+.fw-dsp-foot b { color: var(--c-text); font-weight: 600; }
