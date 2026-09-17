@@ -24,6 +24,10 @@ const GROUPS: Array<{ name: string; keys: string[] }> = [
   { name: "调色", keys: ["exposure", "contrast", "saturation", "temperature", "tint", "highlights", "shadows", "sharpen", "lut"] },
   { name: "特效", keys: ["blur", "vignette", "grain", "glitch", "shake", "zoomPulse", "flash", "glow"] },
   { name: "马赛克", keys: ["mosaics"] },
+  // 去字幕标记与马赛克同为"画面上的一组区域"，但单列一组：它是这一组里唯一
+  // **会花钱**的（第三方 API 按处理时长计费），撤销时把「我刚标了三段要擦」
+  // 显示成「马赛克」会让用户以为自己退错了步。
+  { name: "去字幕", keys: ["desub"] },
   { name: "音频", keys: ["volume", "muted", "fadeIn", "fadeOut"] },
   { name: "变速", keys: ["speed"] },
   { name: "不透明度", keys: ["opacity"] },
