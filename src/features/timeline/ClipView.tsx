@@ -12,7 +12,7 @@
  */
 
 import { memo } from "react";
-import { AlertTriangle, RefreshCw, EyeOff, Loader2, Film, Scissors, Square } from "lucide-react";
+import { AlertTriangle, RefreshCw, EyeOff, Loader2, Film, Scissors, Square, Check } from "lucide-react";
 import type { Clip } from "../../types/timeline";
 import { api } from "../../api";
 import Waveform from "./Waveform";
@@ -60,8 +60,9 @@ interface Props {
   /** 单镜时长上限（秒），仅用于 trim 手柄的提示文案。
    *  写死 15 会在 seedance-2.5（30s）项目上骗人。 */
   maxDurSec?: number;
-  /** 渲染形态：视频轨挂缩略图，音频轨画波形，字幕轨显示文字 */
-  variant?: "video" | "audio" | "subtitle";
+  /** 渲染形态：视频轨挂缩略图，音频轨画波形，字幕轨显示文字，
+   *  去字幕轨显示识别到的文字（蓝色窄块，已擦除的褪灰加 ✓） */
+  variant?: "video" | "audio" | "subtitle" | "desub";
   /** 所在轨道高度（波形按它画） */
   height?: number;
   /** 修剪中的宽度预览：非 null 时用它覆盖真实时长。
@@ -123,6 +124,11 @@ function ClipViewInner(p: Props) {
     c.blackout ? "blackout" : "",
     collapsed ? "collapsed" : "",
     c.isSpecial ? "special" : "",
+    // 去字幕块自带一套配色（蓝），与马赛克/取景框在预览上的蓝框呼应 ——
+    // 用户在画面上看到的框和轨道上看到的块必须是同一个颜色，否则得靠推理
+    // 才能把两者对上。已擦除的（status=done）再褪一层，见 .fw-clip.desub.applied。
+    p.variant === "desub" ? "desub" : "",
+    p.variant === "desub" && c.status === "done" ? "applied" : "",
     p.dragging ? "dragging" : "",
     p.dropTarget ? "drop-target" : "",
     p.trackLocked ? "locked" : "",
@@ -166,7 +172,13 @@ function ClipViewInner(p: Props) {
         // 折叠标记里放不下任何文字，所有信息只能靠 title。要说清三件事：
         // 它是谁、为什么这么窄、怎么恢复——否则用户只看到一条不明所以的竖条。
         ? `${c.label} 已停用：不占时间轴、不参与导出。右键可重新启用`
-        : `${c.label}${c.scriptRef ? ` · ${c.scriptRef.slice(0, 40)}` : ""} · ${dur.toFixed(1)}s`}>
+        : p.variant === "desub"
+          // 去字幕块的 title 要把「按时长计费」这件事摆出来：块越长越贵，
+          // 而这是用户拖两端时唯一的成本反馈。
+          ? (c.status === "done"
+            ? `${c.label} · ${dur.toFixed(1)}s · 已擦除（结果已存为新版本，如需重做请先删除这个标记）`
+            : `${c.label} · ${dur.toFixed(1)}s 将被送去擦字幕（按时长计费）。拖两端调整区间，右键可删除`)
+          : `${c.label}${c.scriptRef ? ` · ${c.scriptRef.slice(0, 40)}` : ""} · ${dur.toFixed(1)}s`}>
 
       {/* 折叠标记只画角标：14px 宽里塞缩略图既看不清，还要为一个"不参与导出的
           镜头"白发一次网络请求。 */}
@@ -176,6 +188,13 @@ function ClipViewInner(p: Props) {
         </div>
       ) : p.variant === "subtitle" ? (
         <div className="fw-clip-subtext" title={c.label}>{c.label}</div>
+      ) : p.variant === "desub" ? (
+        // 去字幕块没有缩略图可挂（它不是素材，是一段"待处理区间"），
+        // 有价值的只有模型读到的那行字 —— 用户就是靠它判断"这确实是台词"。
+        <div className="fw-clip-subtext desub" title={c.label}>
+          {c.status === "done" && <Check size={9} className="fw-clip-desub-ok" />}
+          {c.label}
+        </div>
       ) : c.thumbUrl ? (
         <img className="fw-clip-thumb" src={api.mediaUrl(c.thumbUrl)}
           alt="" loading="lazy" draggable={false} />
@@ -187,7 +206,9 @@ function ClipViewInner(p: Props) {
         </div>
       ))}
 
-      {!compact && p.variant !== "subtitle" && (
+      {/* 字幕/去字幕这两种窄轨（30px / 28px）里，文字已经在内容区画过一遍了，
+          再叠一行 label + 时长只会把 28px 的块糊成一团。 */}
+      {!compact && p.variant !== "subtitle" && p.variant !== "desub" && (
         <div className="fw-clip-info">
           <span className="fw-clip-label">{c.label}</span>
           <span className="fw-clip-dur">{dur.toFixed(1)}s</span>
@@ -239,15 +260,22 @@ function ClipViewInner(p: Props) {
           6.9 音频：同理要有 url（还在合成的旁白掐不了开头）。
           6.9 字幕：**恒有** —— 字幕没有素材，拖左边缘是"晚点出现、短一点"，
           不依赖任何文件。照搬 canTrimIn 会因为它没有 mediaUrl 而永远不渲染，
-          那就成了"能拖右边不能拖左边"的莫名其妙。 */}
+          那就成了"能拖右边不能拖左边"的莫名其妙。
+          去字幕：同理恒有 —— 它也没有素材，拖左边缘是"从更晚开始擦"。
+          已擦除的块（status=done）两个手柄都不渲染：那一版已经出片了，
+          再改区间改不了任何东西，只会让用户以为自己在调一件已经发生的事。 */}
       {!collapsed && !p.trackLocked && p.onBeginTrimIn
-        && (c.entity === "subtitle" || canTrimIn({ video_url: c.mediaUrl ?? null })) && (
+        && !(p.variant === "desub" && c.status === "done")
+        && (c.entity === "desub"
+          || c.entity === "subtitle" || canTrimIn({ video_url: c.mediaUrl ?? null })) && (
         <div className="fw-clip-trim-in"
           title={c.entity === "shot"
             ? `拖动裁掉素材开头（已裁掉 ${(c.clipInSec ?? 0).toFixed(1)}s，每格 0.1s）`
             : c.entity === "audio"
               ? `拖动裁掉开头（已裁掉 ${(c.clipInSec ?? 0).toFixed(1)}s；这一段会晚一点开始放）`
-              : "拖动让字幕晚点出现（同时缩短显示时长）"}
+              : c.entity === "desub"
+                ? "拖动让擦除从更晚开始（每格 0.1s；区间越短越省钱）"
+                : "拖动让字幕晚点出现（同时缩短显示时长）"}
           /* 3.12：`pointerdown` 而不是 `mousedown` —— 手势层走 pointer 通道，
              见 gesture.ts 头注释。`stopPropagation` 必须留着：不拦的话，按下
              手柄会同时触发片段本体的 `onPointerDownBody`，一次按下开两套拖拽。 */
@@ -261,13 +289,16 @@ function ClipViewInner(p: Props) {
           且拖了没反应——文案再骗一次就是两重误导。
           7.2：折叠标记整格只有 14px，两个手柄一铺就没有可点的中间区域了，
           而"点得中"正是折叠要买的东西；何况停用镜头修剪时长毫无意义。 */}
-      {!collapsed && !p.trackLocked && (
+      {!collapsed && !p.trackLocked
+        && !(p.variant === "desub" && c.status === "done") && (
         <div className="fw-clip-trim"
           title={c.entity === "shot"
             ? `拖动调整时长（${MIN_TRIM_SEC}–${p.maxDurSec ?? "?"}s，每格 0.1s）`
             : c.entity === "audio"
               ? `拖动裁掉结尾（最长 ${(c.sourceDurSec ?? dur).toFixed(1)}s，就是素材总长；每格 0.1s）`
-              : "拖动调整字幕显示时长（每格 0.1s）"}
+              : c.entity === "desub"
+                ? "拖动让擦除提前结束（每格 0.1s；区间越短越省钱）"
+                : "拖动调整字幕显示时长（每格 0.1s）"}
           onPointerDown={(e) => { e.stopPropagation(); p.onBeginTrim(e); }} />
       )}
     </div>
