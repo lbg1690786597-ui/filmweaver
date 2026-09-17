@@ -37,6 +37,9 @@
 }
 .fw-vl-tier.final { color: var(--c-warning); }
 .fw-vl-tier.preview { color: var(--c-accent); }
+/* 派生版本（去字幕产物 / 补录的原片）：刻意比两个生成档**弱**一级 ——
+   它不是一次生成结果，不该在版本列表里和模型产出抢注意力。 */
+.fw-vl-tier.derived { color: var(--c-muted); }
 
 .fw-vl-no {
   font-weight: 600;
