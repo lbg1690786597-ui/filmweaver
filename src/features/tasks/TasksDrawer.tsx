@@ -41,6 +41,9 @@ const KIND_LABEL: Record<string, string> = {
   asset_candidates: "资产候选图",
   one_click_film: "一键成片",
   auto_subtitles: "自动字幕（语音识别）",
+  desub_scan: "识别烧录字幕",
+  desub_apply: "去字幕（擦除）",
+  upscale: "高清放大",
   replace: "替换素材",
 };
 
