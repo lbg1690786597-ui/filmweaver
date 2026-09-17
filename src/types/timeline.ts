@@ -13,6 +13,7 @@ export type TrackKind =
   | "video"        // 主视频轨（AI 镜头 + 外部素材，当前唯一真源）
   | "overlay"      // 叠加层（Phase 3 预留）
   | "subtitle"     // 字幕（Phase 3）
+  | "desub"        // 去字幕标记（哪一段时间要送去擦掉烧录字幕）
   | "voice"        // 旁白/TTS
   | "audio"        // 音效（Phase 3 预留）
   | "music"        // 配乐（Phase 3 预留）
@@ -38,8 +39,14 @@ export type PromptState = "draft" | "aligned" | "sent" | "manual";
  * 必填能让 tsc 把每一处都问一遍。可选字段则会让漏写的那处静默落进
  * 某个 `?? "shot"` 兜底分支 —— 字幕被当成镜头去 PATCH `/v2/shots/`，
  * 报 404 或者更糟：改到一个 id 恰好撞上的镜头。
+ *
+ * `desub`（去字幕标记）是第四种，但它的写通路**不是**独立端点：它存在
+ * `shot.transform_meta.desub` 里，走 transform PATCH。所以它不进
+ * `clipEdit.ts` 的分派表（那张表是"实体 → 端点"），拖拽 handler 单独写在
+ * `Timeline.tsx` 里；`canDrag()` 也不放行它（整块横move 对它没有意义 ——
+ * 去字幕块不能跨镜，它永远属于它所在的那个镜头）。
  */
-export type ClipEntity = "shot" | "audio" | "subtitle";
+export type ClipEntity = "shot" | "audio" | "subtitle" | "desub";
 
 export interface Clip {
   id: string;
