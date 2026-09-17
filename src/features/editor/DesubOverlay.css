@@ -1,0 +1,130 @@
+/* DesubOverlay.css — 预览窗口内的「去字幕」标注层
+ *
+ * 配色定成蓝：画面上同时可能有马赛克（白/红控制点）与取景框，三者必须一眼分得开，
+ * 且用户点名要「蓝色半透明框」。全部用 oklch，与项目其余部分一致。
+ * 字号一律带 `--fs-scale` 乘子（界面字号缩放，见 PLAN-阶段软删与界面字号）。 */
+
+.fw-dso {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  /* 与 MosaicOverlay 同层：两者互斥（overlayMode 单值），不会互相遮挡 */
+  z-index: 11;
+  overflow: visible;
+}
+.fw-dso.active { pointer-events: all; }
+
+/* ---- 区域：蓝色半透明填充 + 实线蓝边 ---- */
+.fw-dso-region {
+  position: absolute;
+  overflow: visible;
+  background: oklch(62% 0.19 255 / 0.28);
+  border: 1.5px solid oklch(72% 0.17 255);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.35);
+}
+.fw-dso.active .fw-dso-region { cursor: move; }
+
+.fw-dso-region.selected {
+  border-color: oklch(85% 0.14 255);
+  background: oklch(62% 0.19 255 / 0.36);
+  box-shadow: 0 0 0 1px oklch(0% 0 0 / 0.45), 0 0 10px oklch(62% 0.19 255 / 0.5);
+}
+
+/* 已擦除：褪成灰，且不再给控制点 —— 文件已经换过了，改框没有意义 */
+.fw-dso-region.done {
+  background: oklch(60% 0 0 / 0.2);
+  border-color: oklch(70% 0 0 / 0.7);
+  border-style: dashed;
+}
+
+/* ---- 标签 ----
+ * 挂在框**上沿外侧**：字幕框通常很扁（高度只有画面的 5–8%），
+ * 标签放框内会把要看的字幕本身盖掉，等于让用户没法核对。 */
+.fw-dso-tag {
+  position: absolute;
+  bottom: 100%;
+  left: -1px;
+  margin-bottom: 3px;
+  max-width: 260px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: oklch(45% 0.15 255 / 0.9);
+  color: oklch(100% 0 0);
+  font-size: calc(10.5px * var(--fs-scale, 1));
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.fw-dso-region.done .fw-dso-tag { background: oklch(45% 0 0 / 0.85); }
+
+/* ---- 控制点（8 个，位置与 MosaicOverlay 逐像素一致，手感才统一）---- */
+.fw-dso-handle {
+  position: absolute;
+  background: oklch(100% 0 0);
+  border: 1.5px solid oklch(45% 0.13 255);
+  border-radius: 2px;
+  pointer-events: all;
+  box-shadow: 0 1px 3px oklch(0% 0 0 / 0.4);
+  transition: transform 80ms;
+  z-index: 2;
+}
+.fw-dso-handle:hover { transform: scale(1.25); }
+
+.fw-dso-h-nw { top: -5px;    left: -5px;   cursor: nwse-resize; }
+.fw-dso-h-ne { top: -5px;    right: -5px;  cursor: nesw-resize; }
+.fw-dso-h-sw { bottom: -5px; left: -5px;   cursor: nesw-resize; }
+.fw-dso-h-se { bottom: -5px; right: -5px;  cursor: nwse-resize; }
+.fw-dso-h-n  { top: -5px;    left: 50%; margin-left: -4.5px; cursor: ns-resize; }
+.fw-dso-h-s  { bottom: -5px; left: 50%; margin-left: -4.5px; cursor: ns-resize; }
+.fw-dso-h-w  { left: -5px;   top: 50%;  margin-top: -4.5px;  cursor: ew-resize; }
+.fw-dso-h-e  { right: -5px;  top: 50%;  margin-top: -4.5px;  cursor: ew-resize; }
+
+/* ---- 删除 ---- */
+.fw-dso-del {
+  position: absolute;
+  top: -24px; right: -6px;
+  width: 19px; height: 19px;
+  border-radius: 50%;
+  background: oklch(58% 0.21 22);
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: all;
+  z-index: 3;
+  box-shadow: 0 1px 4px oklch(0% 0 0 / 0.45);
+  transition: background 80ms, transform 80ms;
+}
+.fw-dso-del:hover { background: oklch(50% 0.24 22); transform: scale(1.15); }
+
+/* ---- 拉框中 ---- */
+.fw-dso-drawing {
+  position: absolute;
+  border: 2px dashed oklch(80% 0.15 255);
+  background: oklch(62% 0.19 255 / 0.18);
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+/* ---- 提示 ----
+ * 与马赛克同一处（左上角、6 秒淡出）：居中会正好盖住画面主体 —— 而这个功能
+ * 恰恰要用户盯着画面里的字幕看，挡住就没法用了。 */
+.fw-dso-hint {
+  position: absolute;
+  top: 10px;
+  left: 8px;
+  font-size: calc(11.5px * var(--fs-scale, 1));
+  color: oklch(100% 0 0 / 0.62);
+  text-shadow: 0 1px 3px oklch(0% 0 0 / 0.9), 0 0 8px oklch(0% 0 0 / 0.7);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: fw-dso-hint-fade 6s ease-out forwards;
+}
+
+@keyframes fw-dso-hint-fade {
+  0%, 55% { opacity: 1; }
+  100%    { opacity: 0; }
+}
