@@ -431,13 +431,16 @@ ok("selection.ts 是纯函数模块：不 import 任何 store / React",
 console.log("\n⑥' 6.9：音频/字幕进了选中集之后，Delete / Ctrl+X / D 各有交代");
 
 const tlStoreSrc = read("src/stores/timelineStore.ts");
+// `removeSelectedClips` 的分派表已从 App.tsx 搬到这里（App 只剩一个工厂调用）。
+// 断言跟着实现走，不是放宽：要钉的仍是「音频/字幕真的被删了、而且是串行删」。
+const rmSel = read("src/features/timeline/removeSelected.ts");
 
 ok("Delete：removeSelectedClips 真的删音频/字幕（不是过滤掉了事）",
-  /const others = o\?\.shotsOnly \? \[\]/.test(app)
-  && /for \(const c of others\) await deleteTimelineClip\(c\);/.test(app),
+  /const others = o\?\.shotsOnly \? \[\]/.test(rmSel)
+  && /for \(const c of others\) await d\.deleteTimelineClip\(c\);/.test(rmSel),
   "过滤掉的话，选中一段音频按 Delete 会是彻底的静默——正是 3.5 修掉的形态");
 ok("Delete：音频/字幕逐条串行删，各占一条撤销记录",
-  /for \(const c of others\) await deleteTimelineClip\(c\);/.test(app),
+  /for \(const c of others\) await d\.deleteTimelineClip\(c\);/.test(rmSel),
   "并行发的话撤销栈顺序跟着网络先后走，Ctrl+Z 撤回来的顺序不确定");
 ok("复制：copySelection 只收镜头（音频粘不成镜头）",
   /selection\.clipIds\.includes\(c\.id\) && c\.entity === "shot"/.test(tlStoreSrc),
