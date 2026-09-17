@@ -18,12 +18,13 @@ import {
   ChevronDown, ChevronRight, Play, AlertTriangle, CircleDollarSign,
 } from "lucide-react";
 import type { ShotInfo, JobPhase } from "../../api";
+import PromptReviewDialog from "../../components/PromptReviewDialog";
+import { useProjectStore } from "../../stores/projectStore";
 import { TIERS } from "../../lib/qualityTiers";
 import "./VideoPanel.css";
 
 import type { QualityTier as Tier } from "../../lib/qualityTiers";
 import { productionModeLabel } from "../../lib/modelLabels";
-import { useProjectStore } from "../../stores/projectStore";
 
 interface Props {
   shots: ShotInfo[];
@@ -58,6 +59,20 @@ export default function VideoPanel(p: Props) {
   // B2：生成模式只用于「高级」里那行只读展示，从 store 自取即可。
   // 显式传入（含 null）以传入为准，便于脱离 App 单独挂载。
   const modeFromStore = useProjectStore((s) => s.detail?.production_mode ?? null);
+
+  const pid = useProjectStore((s) => s.projectId);
+
+  /** 出片前终审。三个出片入口（批量待出片 / 参考资产变了的重生成 / 渠道故障重试）
+   *  全都经过它——这三次点击的差别只是"选哪些镜头"，而"即将下发的提示词长什么样"
+   *  这个风险三次完全一样。
+   *
+   *  为什么单镜不走这里：项目已按导入拆解、Inspector 里本来就有提示词编辑框
+   *  （就在"重新生成"按钮正上方）。一条也弹窗属于纯骚扰。 */
+  const [reviewIds, setReviewIds] = useState<string[] | null>(null);
+  const askGenerate = (ids: string[]) => {
+    if (ids.length <= 1) { p.onGenerate(ids); return; }
+    setReviewIds(ids);
+  };
   const productionMode = p.productionMode !== undefined ? p.productionMode : modeFromStore;
 
   const stat = useMemo(() => {
@@ -177,7 +192,7 @@ export default function VideoPanel(p: Props) {
           : "所有镜头已出片"}
         badge={stat.pending > 0 ? String(stat.pending) : undefined}
         disabled={p.generating || !pendingIds.length}
-        onClick={() => p.onGenerate(pendingIds)} />
+        onClick={() => askGenerate(pendingIds)} />
 
       {/* ---- 需要关注的镜头 ---- */}
       {(stat.failed > 0 || stat.stale > 0) && (
@@ -188,7 +203,7 @@ export default function VideoPanel(p: Props) {
               <AlertTriangle size={12} />
               <span>{stat.stale} 个已出片镜头的参考资产被改过，建议重新生成</span>
               <button disabled={p.generating}
-                onClick={() => p.onGenerate(
+                onClick={() => askGenerate(
                   p.shots.filter((s) => s.refs_stale && s.video_url).map((s) => s.id))}>
                 重生成
               </button>
@@ -213,7 +228,7 @@ export default function VideoPanel(p: Props) {
                   <AlertTriangle size={12} />
                   <span>{retryableShots.length} 个镜头因渠道故障失败</span>
                   <button disabled={p.generating}
-                    onClick={() => p.onGenerate(retryableShots.map((s) => s.id))}>
+                    onClick={() => askGenerate(retryableShots.map((s) => s.id))}>
                     重试这些
                   </button>
                 </div>
@@ -252,6 +267,19 @@ export default function VideoPanel(p: Props) {
             项目级默认在新建项目时选择。
           </div>
         </div>
+      )}
+
+      {reviewIds && (
+        <PromptReviewDialog projectId={pid ?? ""} onToast={p.onToast}
+          shots={reviewIds
+            .map((id) => p.shots.find((s) => s.id === id))
+            .filter((s): s is ShotInfo => !!s)}
+          onClose={() => setReviewIds(null)}
+          onConfirm={() => {
+            const ids = reviewIds;
+            setReviewIds(null);   // 先关窗：提交是异步的，留着会让人以为还在等
+            p.onGenerate(ids);
+          }} />
       )}
     </div>
   );
