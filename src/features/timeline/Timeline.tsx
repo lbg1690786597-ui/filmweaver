@@ -39,10 +39,9 @@ import {
   inPointOf, outPointOf, canTrimIn,
   MIN_CLIP_SEC, MAX_CLIP_SEC_FALLBACK,
 } from "./trim";
-import type { ClipWindowSource } from "./trim";
 import {
-  canDrag, canDeleteFromTimeline, clampDuration, clearTrimPatch, durationBounds,
-  hasTrim, trimInDeltaBounds, trimInPatch, trimOutPatch,
+  canDrag, clampDuration, durationBounds, winOf,
+  trimInDeltaBounds, trimInPatch, trimOutPatch,
 } from "./clipEdit";
 import type { ClipEditPatch } from "./clipEdit";
 import { followScroll, FOLLOW_SUSPEND_MS } from "./playhead";
@@ -53,6 +52,8 @@ import { startDrag } from "./pointerDrag";
 // `mousedown` + `window.mousemove` + 每次 move 一次 setState 手抄十遍的写法，
 // 见 gesture.ts 头注释。
 import { beginGesture, clipEl, stylePreview } from "./gesture";
+import { makeDesubGestures } from "./desubGesture";
+import { desubMenuItems, otherMenuItems } from "./clipMenus";
 import { buildSlots } from "./dragGeom";
 import { planRecut, dragCutA, dragCutB } from "./recutPlan";
 import { isTextInput } from "../../commands";
@@ -73,7 +74,7 @@ import {
   ChevronsLeft, ChevronsRight, Magnet,
   Trash2, EyeOff, Eye, Copy, Scissors as ScissorsIcon,
   RefreshCw, History, Gem, Layers, VolumeX, CopyPlus, Crosshair,
-  Shuffle, AlertTriangle, X, RotateCcw, Square, Slice,
+  Shuffle, AlertTriangle, X, Square, Slice,
 } from "lucide-react";
 import "./Timeline.css";
 
@@ -154,6 +155,12 @@ interface Props {
   onMoveClip: (clip: Clip, targetSec: number) => void;
   /** 6.9：从时间轴直接删掉音频/字幕片段（镜头不走这里，见 canDeleteFromTimeline） */
   onDeleteClip: (clip: Clip) => void;
+  /** 去字幕块落库（`t0/t1` 是**镜头输出秒**）。它**不走** `onEditClip`，
+   *  理由见 desubGesture.ts 的头注释。 */
+  onEditDesub?: (shotId: string, regionId: string,
+                 range: { t0: number; t1: number }) => Promise<void>;
+  /** 删一个去字幕标记。删标记**不会**撤销已经擦过的画面。 */
+  onDeleteDesub?: (shotId: string, regionId: string) => void;
   onPatchTransform: (shotId: string, patch: Record<string, unknown>) => void;
   /** TB-01：在镜内 atSec 秒分割（时间轴 Ctrl+B / 右键 / Alt+点击） */
   onSplit: (shotId: string, atSec: number) => void;
@@ -490,16 +497,7 @@ export default function Timeline(p: Props) {
   // ---- trim drag ----
   // 注意：onUp 是在 mousedown 那一帧创建的闭包，读不到后续 setState 的新值。
   // 因此拖动结果走 ref（latest 值），state 只负责触发重渲画预览。
-
-  /** Clip → 取片窗口视图（trim.ts 的入参形状）。
-   *  它读的是 adapter 从后端原样带过来的 clip_in_sec / clip_dur_sec，
-   *  不是重新推算的——推算会在"窗口存不存在"这件事上猜错。 */
-  const winOf = (clip: Clip): ClipWindowSource => ({
-    duration_sec: clip.durationSec,
-    clip_in_sec: clip.clipInSec ?? null,
-    clip_dur_sec: clip.clipDurSec ?? null,
-    video_url: clip.mediaUrl ?? null,
-  });
+  // Clip → 取片窗口视图的 `winOf` 在 clipEdit.ts（纯函数，与那边的规则同住）。
 
   // ---- 6.9 音频/字幕的拖 · 修剪 ----
   //
@@ -609,6 +607,12 @@ export default function Timeline(p: Props) {
     });
   }, [pxPerSec, p]);
 
+  // 去字幕块的三个手势在 desubGesture.ts（纯几何逻辑，见那边的头注释）。
+  // 不 memo：缓存会让手势闭包拿到旧的 shots 去算镜头边界。
+  const desubG = makeDesubGestures({
+    shots: p.shots, pxPerSec, onEditDesub: p.onEditDesub, setPreviewDur,
+  });
+
   const beginTrim = useCallback((e: React.PointerEvent, clip: Clip) => {
     // 7.2：折叠标记（停用镜头）不参与修剪 —— 它的 durationSec 已经是 0，
     // 让它进来只会拿 0 当起点算出一堆负数。ClipView 也不给它渲染手柄，
@@ -617,6 +621,7 @@ export default function Timeline(p: Props) {
     // 6.9：音频/字幕走各自的时长上下限（`clipEdit.ts`），**不能**共用下面
     // 镜头那套 MIN_CLIP_SEC/maxClipSec —— 那是"AI 一次能生成多长"的业务约束，
     // 拿它去卡一段 3 分钟的背景音乐就会夹成 15 秒（本条目被推迟时记下的原坑）。
+    if (clip.entity === "desub") { desubG.beginTrim(e, clip); return; }
     if (clip.entity !== "shot") { beginTrimNonShot(e, clip); return; }
     if (!clip.shotId) return;
     e.preventDefault(); e.stopPropagation();
@@ -652,7 +657,7 @@ export default function Timeline(p: Props) {
       },
       onSettle: () => { pv.reset(); setPreviewDur(null); },
     });
-  }, [pxPerSec, p, beginTrimNonShot]);
+  }, [pxPerSec, p, beginTrimNonShot, desubG]);
 
   /** 3.1：拖**左边缘**修剪入点（出点钉死，掐掉素材开头的一段）。
    *
@@ -668,6 +673,7 @@ export default function Timeline(p: Props) {
     if (clip.collapsedIndex !== undefined) return;
     // 6.9：音频/字幕拖左边缘是**左边缘真的右移**（晚点开始放），
     // 与镜头"原地变窄、后面整体前移"是相反的两件事，故完全分开处理。
+    if (clip.entity === "desub") { desubG.beginTrimIn(e, clip); return; }
     if (clip.entity !== "shot") { beginTrimInNonShot(e, clip); return; }
     if (!clip.shotId) return;
     const win = winOf(clip);
@@ -698,7 +704,7 @@ export default function Timeline(p: Props) {
       },
       onSettle: () => { pv.reset(); setPreviewDur(null); },
     });
-  }, [pxPerSec, p, beginTrimInNonShot]);
+  }, [pxPerSec, p, beginTrimInNonShot, desubG]);
 
   // ---- move drag（改镜头顺序，3.11 P1：指针状态机）----
   //
@@ -774,6 +780,7 @@ export default function Timeline(p: Props) {
   const beginMove = useCallback((e: React.PointerEvent, clip: Clip) => {
     // 6.9：音频/字幕是**按绝对时间自由拖**（改锚点），不是换 order。
     // 与叠加层同构，但落点要换算成「第几镜 + 镜内偏移」，见 onMoveClip。
+    if (clip.entity === "desub") { desubG.beginMove(e, clip); return; }
     if (clip.entity !== "shot") { beginMoveNonShot(e, clip); return; }
     if (!clip.shotId) return;
 
@@ -825,7 +832,7 @@ export default function Timeline(p: Props) {
     // 3.12：入口只剩 `pointerdown` 一处（ClipView 的 `onPointerDownBody`），
     // 这里不再需要 `as PointerEvent` 收窄。
     startClipDrag(e.nativeEvent, clip, startOrder);
-  }, [pxPerSec, p, startClipDrag]);
+  }, [pxPerSec, p, startClipDrag, beginMoveNonShot, desubG]);
 
   // ---- 框选（3.8：跨轨）----
   // 轨道空白处拖出一个**时间 × 轨道**的矩形，落在里面的可操作 clip 全部选中。
@@ -959,42 +966,18 @@ export default function Timeline(p: Props) {
 
   // ---- context menu items ----
 
-  /**
-   * 音频/字幕段的右键菜单（6.9）。
-   *
-   * ⚠️ **不能**共用下面那份镜头菜单。那 11 项里有 10 项的 `disabled` 判据是
-   * `!clip.shotId` —— 音频段一律没有 shotId，于是右键出来的是一整屏灰掉的
-   * 「重新生成 / 精品升级 / 版本历史 / 移到叠加层 / 停用镜头…」。
-   * 这比没有菜单更糟：它把"这里能做的事"整个藏在了一堆做不了的事后面，
-   * 用户还要逐条试才知道哪条能点。这里只列真的能做的三件事。
-   *
-   * 「复制」也不在其中：粘贴只会插镜头（`App.tsx` doPaste），
-   * 音频复制了粘不回来，理由与 `selection.ts` 文件头 6.9 一节同源。
-   */
-  const otherMenuItems = (clip: Clip): MenuItem[] => {
-    const name = clip.entity === "audio" ? "音频" : "字幕";
-    return [
-      { id: "playhead", label: "播放头移到此处", icon: <Crosshair size={12} />,
-        onClick: () => store.setPlayheadSec(clip.startSec) },
-      // 只有音频有窗口可还原。字幕的 duration 就是时长，没有"原长"这回事。
-      { id: "untrim", label: "还原修剪（用回整段素材）", icon: <RotateCcw size={12} />,
-        disabled: !hasTrim(clip),
-        onClick: async () => {
-          const patch = clearTrimPatch(clip);
-          if (patch) await p.onEditClip(patch);
-        } },
-      { id: "sep1", label: "", separator: true },
-      // 说「可撤销」是因为它真的可撤销（App.deleteTimelineClip 会重建），
-      // 与镜头那条「删除（不可撤销）」是两回事，不能照抄措辞。
-      { id: "delete", label: `从时间轴移除${name}段（可撤销）`,
-        icon: <Trash2 size={12} />, danger: true,
-        disabled: !canDeleteFromTimeline(clip),
-        onClick: () => p.onDeleteClip(clip) },
-    ];
-  };
-
+  // 音频/字幕段与去字幕标记的两份菜单在 clipMenus.tsx（纯数据构造，
+  // 为什么各自一份、为什么不共用镜头那 11 项，都写在那边的注释里）。
   const clipMenuItems = (clip: Clip): MenuItem[] => {
-    if (clip.entity !== "shot") return otherMenuItems(clip);
+    if (clip.entity === "desub") return desubMenuItems(clip, {
+      shots: p.shots, onSelectShot: p.onSelectShot,
+      onDeleteDesub: p.onDeleteDesub,
+      setPlayheadSec: store.setPlayheadSec,
+    });
+    if (clip.entity !== "shot") return otherMenuItems(clip, {
+      setPlayheadSec: store.setPlayheadSec,
+      onEditClip: p.onEditClip, onDeleteClip: p.onDeleteClip,
+    });
     const shot = p.shots.find((s) => s.id === clip.shotId);
     const isOverlay = (shot?.track_index ?? 0) > 0;
     // 3.11 R3：这一段是不是某次「划出待重生成区间」留下的中间段？
@@ -1482,8 +1465,9 @@ export default function Timeline(p: Props) {
                       <ClipView key={clip.id} clip={clip} pxPerSec={pxPerSec}
                         variant={
                           track.kind === "subtitle" ? "subtitle"
-                            : (track.kind === "voice" || track.kind === "audio"
-                               || track.kind === "music") ? "audio" : "video"}
+                            : track.kind === "desub" ? "desub"
+                              : (track.kind === "voice" || track.kind === "audio"
+                                 || track.kind === "music") ? "audio" : "video"}
                         height={trackH}
                         selected={store.isClipSelected(clip.id)}
                         maxDurSec={maxClipSec ?? MAX_CLIP_SEC_FALLBACK}
@@ -1495,6 +1479,12 @@ export default function Timeline(p: Props) {
                           // Alt+点击（没有拖动）= 点哪切哪。
                           // 用点击位置换算成镜内偏移，不是用播放头 ——
                           // 用户点的位置就是他想切的位置。
+                          //
+                          // ⚠️ 去字幕块要挡住：它是**第一个既非镜头、又带
+                          // shotId 的实体**，`!clip.shotId` 这道旧闸拦不住它，
+                          // 而 `atSec - clip.startSec` 算出来的是"块内偏移"，
+                          // 拿去当镜内秒会在离镜头开头几秒的地方乱切一刀。
+                          if (clip.entity !== "shot") return;
                           if (!clip.shotId || track.locked) return;
                           const at = atSec - clip.startSec;
                           // 太靠边的切点会切出 0 长度片段，后端也会拒绝
