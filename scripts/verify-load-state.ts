@@ -16,7 +16,9 @@
  *
  * 所以这里查三类东西，其中只有第 ③ 类是静态检查抓不到的：
  *
- *   ① **静态**：九处必须都登记 noteFailed；`get()` 必须抛带状态码的错误
+ *   ① **静态**：这八处必须都登记 noteFailed；`get()` 必须抛带状态码的错误
+ *      （2.4 当初改的是九处，第九处是「精编」里的导出用 SRT；精编于
+ *      2026-09-17 整个下线，那一处随组件一起没了，不是被改回静默。）
  *      （这是全部分类文案的地基 —— 一旦有人改回 `throw new Error(String(status))`，
  *      404 会被说成"加载失败：404"，所有分类静默退化，但脚本全绿）。
  *   ② **纯函数**：分类与汇总的措辞。它们决定用户会不会去做那个危险动作。
@@ -207,7 +209,7 @@ ok("clearAll 后新项目的首次失败仍会提示",
 S().__reset();
 
 /* ================================================================== */
-console.log("\n④ 九处读路径：静默 catch 不许回来");
+console.log("\n④ 八处读路径：静默 catch 不许回来");
 
 /** [文件, 资源 key, 该处失败时屏幕上会撒的谎] */
 const SITES: [string, LoadKey, string][] = [
@@ -219,7 +221,6 @@ const SITES: [string, LoadKey, string][] = [
   ["src/features/audio/AudioPanel.tsx", "audioLib", "音效库显示空 → 重传已有音效"],
   ["src/features/tasks/TasksDrawer.tsx", "jobs", "「还没有任务记录」→ 以为没发起，再点一次一键成片"],
   ["src/components/ShotsPanel.tsx", "versions", "版本条不显示 = 只有一版 → 一遍遍重生成找回旧画面"],
-  ["src/components/FineCut.tsx", "exportSrt", "「字幕（0 条）」→ 导出一条字幕都没有的成片"],
 ];
 
 for (const [file, key, harm] of SITES) {
@@ -288,11 +289,10 @@ ok("切项目清空读失败条目", reset.includes("clearAll()"),
 
 // 新增的 className 必须有 CSS（css-coverage 只查 fw-/sp- 前缀，finecut- 不在其列，手动钉一下）
 const styles = read("src/styles.css");
-ok(".finecut-srtfail 有样式定义", styles.includes(".finecut-srtfail"));
 ok(".sp-ver-fail 有样式定义", styles.includes(".sp-ver-fail"));
 
 /* ================================================================== */
 console.log(failed === 0
-  ? "\n✅ 读路径全部通过：九处失败都会说出来、说得准、能重试，且不会刷屏"
+  ? "\n✅ 读路径全部通过：八处失败都会说出来、说得准、能重试，且不会刷屏"
   : `\n❌ ${failed} 项失败`);
 process.exit(failed === 0 ? 0 : 1);
