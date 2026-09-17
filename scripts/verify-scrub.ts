@@ -269,7 +269,10 @@ const src = (rel: string) => readFileSync(join(ROOT, rel), "utf8");
   }
   ok(`全部 ${total} 处 <video> 都声明了 preload="metadata"`,
      missing.length === 0, missing.join(", "));
-  ok("确实扫到了 <video>（正则失配会让本项假绿）", total >= 4);
+  // 哨兵：防的是「正则改坏了、一个都没扫到、于是上面那条空集判真」。
+  // 阈值 2026-09-17 从 4 降到 3 —— 精编（components/FineCut.tsx）连同它那个
+  // 连续预览用的 <video> 一并下线了，不是有人把 preload 扫漏了。
+  ok("确实扫到了 <video>（正则失配会让本项假绿）", total >= 3);
 }
 
 /* App：拖动中的帧不许换源 */
