@@ -47,6 +47,23 @@
 
 import type { Clip, ClipEntity } from "../../types/timeline";
 import { MIN_CLIP_SEC, MIN_WINDOW_SEC, MAX_CLIP_SEC_FALLBACK } from "./trim";
+import type { ClipWindowSource } from "./trim";
+
+/** Clip → 取片窗口视图（`trim.ts` 的入参形状）。
+ *
+ *  它读的是 adapter 从后端原样带过来的 `clip_in_sec` / `clip_dur_sec`，
+ *  **不是**重新推算的 —— 推算会在"窗口存不存在"这件事上猜错
+ *  （`clip_dur_sec === duration_sec` 既可能是"整段使用"，也可能是
+ *  "窗口恰好等于全长"，而 `hasClipWindow` 的答案对这两种情况不同）。
+ */
+export function winOf(clip: Clip): ClipWindowSource {
+  return {
+    duration_sec: clip.durationSec,
+    clip_in_sec: clip.clipInSec ?? null,
+    clip_dur_sec: clip.clipDurSec ?? null,
+    video_url: clip.mediaUrl ?? null,
+  };
+}
 
 /** 一次编辑要写回后端的东西。按实体分派到三个不同的端点，见 `App.tsx`。 */
 export interface ClipEditPatch {
