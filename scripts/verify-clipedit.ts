@@ -285,16 +285,20 @@ ok("左边缘的可拖范围来自 trimInDeltaBounds（含负余量），不是�
    tl.includes("trimInDeltaBounds(clip)")
      && /Math\.max\(db\.min, Math\.min\(db\.max, [^)]+\)\)/.test(tl),
    "写死 Math.max(0, …) 的话，剪掉的开头在 UI 上永远拖不回来");
+// 音频/字幕与去字幕的两份右键菜单已从 Timeline.tsx 搬到 clipMenus.tsx。
+// 下面四条跟着实现走：分流仍钉在 Timeline（它是唯一的调用点），
+// 菜单内容钉在新文件。要守的东西一条没少。
+const menus = read("src/features/timeline/clipMenus.tsx");
 ok("非镜头段不共用镜头的右键菜单",
-   /clip\.entity !== "shot"\) return otherMenuItems\(clip\)/.test(tl),
+   /clip\.entity !== "shot"\) return otherMenuItems\(clip, \{/.test(tl),
    "镜头菜单 11 项里有 10 项的判据是 !clip.shotId —— 音频右键会得到一整屏灰项");
 ok("非镜头菜单里有「从时间轴移除」且接的是 onDeleteClip",
-   /otherMenuItems[\s\S]{0,1400}?onDeleteClip\(clip\)/.test(tl),
+   /otherMenuItems[\s\S]{0,1400}?onDeleteClip\(clip\)/.test(menus),
    "onDeleteClip 声明了却没有调用点 = 这条通路只是看起来做完了");
 ok("移除的措辞说「可撤销」（它真的可撤销，与镜头那条「不可撤销」不是一回事）",
-   /从时间轴移除\$\{name\}段（可撤销）/.test(tl));
+   /从时间轴移除\$\{name\}段（可撤销）/.test(menus));
 ok("「还原修剪」走 clearTrimPatch，且没窗口时是灰的",
-   tl.includes("clearTrimPatch(clip)") && tl.includes("disabled: !hasTrim(clip)"));
+   menus.includes("clearTrimPatch(clip)") && menus.includes("disabled: !hasTrim(clip)"));
 // Timeline 只负责"鼠标位置 → 秒"。撤销一律在 App 入栈，两边都推的话
 // 一次拖动进两条栈，Ctrl+Z 要按两下才回到原状（P2-2 记过这个坑）。
 ok("三个 NonShot 处理器都不自己 pushUndo",
@@ -305,6 +309,15 @@ ok("左手柄：字幕不受 canTrimIn 门禁（它没有 mediaUrl，照搬就�
    /c\.entity === "subtitle" \|\| canTrimIn\(\{ video_url: c\.mediaUrl/.test(cv));
 ok("左手柄：镜头仍要求已出片（3.1 的判据没有被放宽）",
    cv.includes("canTrimIn({ video_url: c.mediaUrl"));
+// 去字幕块与字幕同理：它也没有素材文件，照搬 canTrimIn 就永远不渲染左手柄。
+// 而左手柄恰恰是这个功能**最该给的**那一个——第三方按处理时长计费，
+// 「从更晚开始擦」是唯一能省钱的操作。
+ok("左手柄：去字幕块也绕开 canTrimIn 门禁",
+   /c\.entity === "desub"[\s\S]{0,120}?canTrimIn\(\{ video_url: c\.mediaUrl/.test(cv));
+// 已擦除的块（appliedVersion 有值 → status=done）两个手柄都不渲染。
+// 那一版已经出片了，改区间改不了任何已发生的事，留着手柄等于骗用户。
+ok("已擦除的去字幕块不渲染 trim 手柄",
+   (cv.match(/!\(p\.variant === "desub" && c\.status === "done"\)/g) ?? []).length >= 2);
 ok("右手柄提示按实体分（对 3 分钟 BGM 说「1–15s」是纯粹的谎话）",
    /fw-clip-trim"[\s\S]{0,400}?c\.entity === "shot"[\s\S]{0,200}?c\.entity === "audio"/.test(cv));
 ok("音频的右手柄提示报的是素材总长，不是镜头生成上限",
