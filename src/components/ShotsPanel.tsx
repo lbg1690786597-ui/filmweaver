@@ -7,6 +7,7 @@ import {
   useLoadState, describeLoadError, LOAD_LABELS,
 } from "../stores/loadStateStore";
 import PreflightDialog from "./PreflightDialog";
+import PromptReviewDialog from "./PromptReviewDialog";
 
 interface Props {
   projectId: string;
@@ -382,6 +383,20 @@ export default function ShotsPanel(p: Props) {
   const onSwitchVersion = useCallback(
     (s: ShotInfo, v: number) => latest.current.onSwitchVersion(s, v), []);
   const onGenerate = useCallback((ids: string[]) => latest.current.onGenerate(ids), []);
+
+  /** 出片前终审（多镜批量才有；单镜直通——Inspector 就在旁边，改词入口本来就有）。
+   *
+   *  为什么这套 UI 长在面板里而不是 App.tsx：App.tsx 的尺寸预算已经顶到上限
+   *  （scripts/verify-architecture.ts 的 BUDGETS，只许减不许加），而这两个面板
+   *  本来就是批量出片按钮的所在地——把终审挂在这里，改动不出面板边界。
+   *
+   *  时序：先「生产检查」（缺首帧/定妆图/音色）再终审。理由是先排除"根本跑不了"，
+   *  再看文本——反过来会让用户改完一屏词才发现缺首帧。 */
+  const [reviewIds, setReviewIds] = useState<string[] | null>(null);
+  const askGenerate = (ids: string[]) => {
+    if (ids.length <= 1) { onGenerate(ids); return; }
+    setReviewIds(ids);
+  };
   const onReprompt = useCallback((ids: string[]) => latest.current.onReprompt(ids), []);
 
   // 分集分组：1424 镜时这是每次渲染一遍的 Map 重建。shots 引用稳住之后
@@ -526,17 +541,28 @@ export default function ShotsPanel(p: Props) {
 
         {multiSel.size > 0 && (
           <button className="btn tiny" style={{ alignSelf: "flex-start" }}
-            onClick={() => { p.onGenerate([...multiSel]); setMultiSel(new Set()); }}>
+            onClick={() => { askGenerate([...multiSel]); setMultiSel(new Set()); }}>
             ↻ 生成选中的 {multiSel.size} 镜
           </button>
         )}
       </div>
 
+      {reviewIds && (
+        <PromptReviewDialog projectId={p.projectId} onToast={p.onToast}
+          shots={reviewIds.map((id) => p.shots.find((s) => s.id === id))
+            .filter((s): s is ShotInfo => !!s)}
+          onClose={() => setReviewIds(null)}
+          onConfirm={() => {
+            const ids = reviewIds;
+            setReviewIds(null);   // 先关窗：出片提交是异步的，留着会让人以为还在等
+            onGenerate(ids);
+          }} />
+      )}
       {preflight && (
         <PreflightDialog projectId={p.projectId} mode={preflight}
           onToast={p.onToast}
           onClose={() => setPreflight(null)}
-          onProceed={() => { setPreflight(null); p.onGenerate(pendingIds); }}
+          onProceed={() => { setPreflight(null); askGenerate(pendingIds); }}
           onGenFrames={(ids) => { setPreflight(null); p.onFirstFrames(ids); }}
           onFillAssets={() => { setPreflight(null); p.onPipeline({ genAssets: true, stopAfter: "assets" }); }}
           onCostumeScan={p.onCostumeScan} />
