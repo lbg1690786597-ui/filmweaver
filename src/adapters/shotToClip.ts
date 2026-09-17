@@ -14,6 +14,7 @@ import type {
 import type { Clip, Track, Timeline, AssetSegment } from "../types/timeline";
 import { audioTrackKindOf } from "../render/trackFlags";
 import { audioPlaySec } from "../lib/audioClip";
+import { shotSecOf } from "../lib/keyframeEdit";
 
 /** 未指定时长时的兜底（后端 duration_sec 可能为 null） */
 const DEFAULT_SHOT_SEC = 5;
@@ -359,6 +360,48 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     overlayTracks.push(t);
   }
 
+  // ---- 去字幕轨：标记「哪一段时间要送去擦掉烧录字幕」----
+  // 数据存在各镜 `transform_meta.desub` 里（零迁移），这里只做视图投影。
+  //
+  // ⚠️ `desub.t0/t1` 是**输出秒**（与马赛克关键帧 tSec 同基准，已过 speed 换算），
+  // 而本文件全程用**源秒**（`shotDuration` 取的是取片窗口长度，完全不理 speed）。
+  // 所以必须经 `shotSecOf` 换回源秒再加 base —— 少这一步，变速镜头上块的
+  // 起点和宽度都是错的，而且错得很隐蔽（speed=1 的项目上完全正常）。
+  const desubTrack = emptyTrack("track-desub", "desub", "去字幕", 28);
+  for (const s of mainShots) {
+    const regions = s.transform_meta?.desub;
+    if (!regions?.length) continue;
+    const base = offsetMap.get(s.order) ?? 0;
+    const speed = s.transform_meta?.speed;
+    const shotDur = shotDuration(s);
+    for (const r of regions) {
+      // 夹进本镜区间：脏数据（比如改过取片窗口之后残留的旧区间）不能把块
+      // 画到别的镜头头上去 —— 那会让用户以为自己标错了镜。
+      const a = Math.max(0, Math.min(shotDur, shotSecOf(r.t0, speed)));
+      const b = Math.max(a, Math.min(shotDur, shotSecOf(r.t1, speed)));
+      if (b - a <= 0.01) continue;
+      desubTrack.clips.push({
+        id: r.id,
+        trackId: desubTrack.id,
+        entity: "desub",
+        startSec: base + a,
+        durationSec: b - a,
+        shotId: s.id,
+        shotOrder: s.order,
+        episode: s.episode,
+        // 模型读到的文字就是最好的标签 —— 用户核对「这是台词还是剧情」
+        // 靠的就是它。手工框的没有文字，退回一个中性说明。
+        label: r.text?.slice(0, 24) || (r.src === "manual" ? "手工标记" : "字幕"),
+        disabled: false,
+        isSpecial: false,
+        // 已擦除的块画成 done，ClipView 据此画 ✓ 并褪色；没擦的是"待处理"。
+        status: r.appliedVersion != null ? "done" : "pending",
+        refsStale: false,
+        characters: [],
+      });
+    }
+  }
+
   // ---- 字幕轨（TB-02：锚定镜头 + 镜内偏移 → 绝对秒）----
   const subtitleTrack = emptyTrack("track-subtitle", "subtitle", "字幕", 30);
   for (const sub of input.subtitleClips ?? []) {
@@ -400,6 +443,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     charTrack, locTrack, refTrack,
     ...overlayTracks,
     videoTrack,
+    desubTrack,
     subtitleTrack,
     voiceTrack, audioTrack, musicTrack,
   ];
