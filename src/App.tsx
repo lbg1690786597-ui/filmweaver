@@ -18,7 +18,6 @@ import type { AssetDropCtx } from "./features/assets/useAssetDrop";
 import { assetDropStageFacts } from "./features/assets/dropContext";
 import ProjectList from "./components/ProjectList";
 import ShotAdvanced from "./components/ShotAdvanced";
-import FineCut from "./components/FineCut";
 import LoginPage from "./components/LoginPage";
 import PreflightDialog from "./components/PreflightDialog";
 import { useToast } from "./hooks/useToast";
@@ -71,7 +70,7 @@ import { clearWaveformCache } from "./features/timeline/Waveform";
 import type { AssetRun, AssetTrackKind } from "./features/assets/AssetTrack";
 import {
   useAssetOverride, useAssetOverrideRev, setAssetSyncContext, flushAssetOverrides,
-  deleteRunOrders, readRunOrders, pasteRunOrders,
+  readRunOrders, pasteRunOrders,
 } from "./stores/assetOverrideStore";
 import type { RowBase } from "./stores/assetOverrideStore";
 // ---- Phase 3 重构：基础剪辑面板 ----
@@ -79,6 +78,9 @@ import MediaPanel from "./features/media/MediaPanel";
 import AudioPanel from "./features/audio/AudioPanel";
 import TextPanel from "./features/subtitles/TextPanel";
 import EffectsPanel from "./features/effects/EffectsPanel";
+import DesubPanel from "./features/desub/DesubPanel";
+import { makeDesubEditors } from "./features/desub/desubEdit";
+import { makeRemoveSelected } from "./features/timeline/removeSelected";
 // ---- Phase 4 重构：FilmWeaver AI 模块 ----
 import ScriptPanel from "./features/script/ScriptPanel";
 import VideoPanel from "./features/generation/VideoPanel";
@@ -495,7 +497,6 @@ export default function App() {
   const { stages, deletedStages, locations, drafting, refreshStages, doStagesDraft,
           clearStages } = useStages(projectId, say);
   const [advancedShot, setAdvancedShot] = useState<ShotInfo | null>(null);
-  const [fineCutOpen, setFineCutOpen] = useState(false);
   /**
    * 3.11 R1：检查器要"揭示"的节（`"versions"` = 版本区）。
    *
@@ -1561,76 +1562,19 @@ export default function App() {
     }
   };
 
-  /** 剪映里 Delete 是"把选中的片段从轨道上拿掉"。本软件两类片段的
-   *  "拿掉"含义不同，但**都必须有反馈**——旧实现遇到 AI 镜头直接
-   *  `return`，按下去毫无动静，用户以为快捷键坏了。
-   *
-   *    · 外部素材 → 真删（不可撤销，所以问一句）
-   *    · AI 镜头  → 停用（保留在轨但不参与导出，等价于"拿掉"，且可撤销）
-   *    · 音频/字幕段（6.9 起可被选中）→ 真删，可撤销（重建）
-   *
-   *  同时支持多选：旧实现只取 clipIds[0]，框选了 10 个只处理 1 个。
-   *  `silent` 供 Ctrl+X 用——那边已经报过"已剪切 N 个"，不再重复弹。 */
-  const removeSelectedClips = (o?: { silent?: boolean; shotsOnly?: boolean }) => {
-    // ⚠️ 侧栏里选中了**资产段**时，Delete 删的是那个段，不是时间轴上的片子。
-    //
-    // 选中一个资产段会把 Inspector 切成资产视图（见下面的 `assetRun`），
-    // 时间轴上的选中集此时通常也是空的 —— 不先处理这一支，按 Delete 会得到
-    // "先选中时间轴上的片段"，而屏幕上明明选着东西。用户报的「快捷键删除」
-    // 就是这一条：资产段此前**根本没有**键盘路径，只能右键。
-    if (!o?.shotsOnly && assetRun) {
-      const n = deleteRunOrders(
-        projectId, assetRun.rowName, assetRun.from, assetRun.to,
-        shots, assetRun.kind === "location", assetRun.stageId);
-      if (n.length) {
-        setAssetRun(null);
-        say(`已删除「${assetRun.rowName}」#${assetRun.from}-#${assetRun.to} 注入段（Ctrl+Z 可撤销）`);
-      } else {
-        say(`「${assetRun.rowName}」这一段上本来就没有生效的镜头`);
-      }
-      return;
-    }
-    const st = tlStore();
-    const all = st.selection.clipIds
-      .map((id) => st.findClip(id))
-      .filter((c): c is NonNullable<typeof c> => !!c);
-    if (!all.length) { say("先选中时间轴上的片段"); return; }
-
-    // 6.9：选中集里现在可能有音频/字幕段（`selection.ts` 放开了判据）。
-    // 它们既不是"外部素材真删"也不是"AI 镜头停用"，是第三种删法 ——
-    // 各自的 DELETE 端点，可撤销（重建）。分开处理，不混进下面两类。
-    const others = o?.shotsOnly ? []
-      : all.filter((c) => c.entity === "audio" || c.entity === "subtitle");
-    const clips = all.filter((c) => c.entity === "shot" && !!c.shotId);
-    if (!clips.length && !others.length) { say("先选中时间轴上的片段"); return; }
-
-    const specials = clips.filter((c) => c.isSpecial);
-    const aiShots = clips.filter((c) => !c.isSpecial && !c.disabled);
-
-    if (specials.length) {
-      const names = specials.map((c) => c.label).join("、");
-      if (!window.confirm(
-        `确定从镜头轨移除 ${specials.length} 个外部素材吗？\n\n${names}\n\n`
-        + "可以按 Ctrl+Z 撤销，取片范围、画面调整、叠加层位置都会一并还原；"
-        + "但一个素材算一次撤销，撤 N 个要按 N 次。")) return;
-      void (async () => {
-        for (const c of specials) await deleteSpecialShot(c.shotId!);
-      })();
-    }
-
-    if (others.length) {
-      // 逐条串行删：每条各自入一条撤销记录（与外部素材同款），
-      // 并行发的话撤销栈顺序会跟着网络先后走，Ctrl+Z 撤回来的顺序就不确定了。
-      void (async () => {
-        for (const c of others) await deleteTimelineClip(c);
-      })();
-    }
-
-    for (const c of aiShots) void patchTimeline(c.shotId!, { disabled: true });
-    if (aiShots.length && !o?.silent) {
-      say(`AI 镜头不能删除，已停用 ${aiShots.length} 个（不参与导出，Ctrl+Z 可撤销）`);
-    }
-  };
+  /** 剪映里 Delete 是"把选中的片段从轨道上拿掉"。四类选中物的"拿掉"含义各不
+   *  相同（资产段真删 / 外部素材真删 / AI 镜头停用 / 音频·字幕·去字幕标记各自的
+   *  删法），分派表在 features/timeline/removeSelected.ts —— 那边的头注释记着
+   *  每一支挡住的是哪个坑。`silent` 供 Ctrl+X 用（那边已经报过"已剪切 N 个"）。 */
+  const removeSelectedClips = makeRemoveSelected({
+    projectId, assetRun, setAssetRun, say,
+    deleteSpecialShot, deleteTimelineClip, patchTimeline,
+    // 这两项包一层而不是直接传值/传属性：`shots` 与 `desubEd` 都在本行下面
+    // 才声明，直接读会在这一帧撞上未初始化的 const（TDZ）。箭头函数推迟到
+    // 按下 Delete 那一刻才求值，那时它们早就有了。
+    getShots: () => shots,
+    removeDesubs: (t) => desubEd.removeMany(t),
+  });
 
   /** `[` / `]` 与时间轴工具条上对应的两个按钮：以播放头为界选中一侧。
    *
@@ -2107,7 +2051,6 @@ export default function App() {
     clearPlayer();          // 预览/播放头/选中镜头
     clearShuttle();         // 3.3：快进/快退倍速与定时器不能跟着切到新项目
     setAdvancedShot(null);
-    setFineCutOpen(false);
     clearClips();           // 素材池内存态
     clearStages();          // 人物/场景轨
     clearBreakdown();       // 拆解 job 轮询
@@ -2551,6 +2494,25 @@ export default function App() {
     } catch (e) { say(String(e)); }
   };
 
+  /** 高清放大：对**当前采用的**那一版片段整批跑超分（RunningHub，按机时计费）。
+   *  「当前」的判据在后端——它遍历 `shot.video_url`（恒等于 adopted_version 那一版），
+   *  所以重新生成后被换下的旧版本天然不参与，前端不必再筛一遍。
+   *  提交前**复述数字**：产物落新 ShotVersion、原片随时可切回，所以"放大得不好看"
+   *  是可逆的，"已经付过的机时"不是——二次确认挡的是后者。 */
+  const doUpscale = async () => {
+    if (!projectId) return;
+    const n = shots.filter((s) => s.video_url).length;
+    if (!n || !window.confirm(
+      `将对当前 ${n} 个片段跑高清放大（服务方按机时计费）。\n\n`
+      + "结果存为新版本，原片保留，可在右侧版本区随时切回；\n"
+      + "重新生成后被换下的旧版本不参与。")) return;
+    try {
+      const job = await api.submitUpscale(projectId);
+      trackJob(job, "upscale");
+      say(`✨ 已提交 ${n} 个片段的高清放大`);
+    } catch (e) { say(String(e)); }
+  };
+
   /** TB-05 生成变体：同提示词换一个随机 seed 再出一版，落成新的 shot_version，
    *  用户可在 Inspector 版本列表里对比、择优采用。 */
   /** 修正镜头拆解结果。后端会置 stale，提示已出片内容已过期。
@@ -2654,6 +2616,14 @@ export default function App() {
   ) => {
     stagedTransform.patch(shotId, tm, opts);
   };
+
+  /** 去字幕标记的四个写入口。实现在 features/desub/desubEdit.ts ——
+   *  它们是纯编辑逻辑（读 shots → 算新 transform_meta → 交给 commitTransform），
+   *  为什么不走 clipEdit.ts 的分派表、为什么必须按镜分组只发一次 PATCH，
+   *  都写在那个文件的头注释里。 */
+  const desubEd = makeDesubEditors({
+    shots, commitTransform, say, setSelectedShotId, movePlayheadTo,
+  });
 
   /** TB-01 镜头分割：把某镜在 atSec 秒处切成两段（不重新转码，只记取片窗口）。 */
   const doSplit = async (shotId: string, atSec: number) => {
@@ -2767,8 +2737,9 @@ export default function App() {
           onProduce={() => setPreflight(true)}
           jobCount={jobList.length}
           onOpenTasks={() => setTasksOpen(true)}
-          fineCutEnabled={shots.some((s) => s.video_url)}
-          onFineCut={() => setFineCutOpen(true)}
+          upscaleEnabled={shots.some((s) => s.video_url)}
+          upscaling={jobList.some((j) => j.kind === "upscale")}
+          onUpscale={() => { void doUpscale(); }}
           exporting={localProgress !== null}
           exportProgress={localProgress?.pct ?? 0}
           onExport={() => { void flushAssets(); setExportOpen(true); }}
@@ -2847,6 +2818,16 @@ export default function App() {
                 transform={selectedShot?.transform_meta ?? null}
                 onPatchTransform={(tm, o2) => { if (selectedShot) doPatchTransform(selectedShot.id, tm, o2); }}
                 onToast={say} />
+            ),
+            /* 去字幕：总览 + 结账台。识别与擦除两个后端任务都从这里提交，
+               手工标记那条路径同样落在 transform_meta 里，两者共用同一份清单。 */
+            desub: (
+              <DesubPanel
+                shots={shots}
+                projectId={projectId}
+                onLocate={desubEd.locate}
+                onDelete={desubEd.deleteOne}
+                onRefresh={() => refreshDetail()} />
             ),
             /* Phase 6：AI 任务 —— 与右上角任务中心抽屉共用同一组件，
                不做第二套 UI（同一份数据两种呈现最容易走样） */
@@ -3046,6 +3027,11 @@ export default function App() {
           onEditClip={editClip}
           onMoveClip={moveClip}
           onDeleteClip={(c) => { void deleteTimelineClip(c); }}
+          /* 去字幕块：第四条写通路，**不走 clipEdit.ts**。那三条是按实体分派到
+             三个后端端点的，而去字幕标记只是 transform_meta 里的一个数组，
+             写回靠 commitTransform（带乐观锁与撤销栈）。 */
+          onEditDesub={desubEd.editRange}
+          onDeleteDesub={desubEd.deleteOne}
           onDeleteShot={deleteSpecialShot}
           onRemoveSelected={() => removeSelectedClips()}
           onSelectSide={selectSide}
@@ -3144,11 +3130,6 @@ export default function App() {
             <ShotAdvanced shot={advancedShot}
               onClose={() => setAdvancedShot(null)}
               onSaved={() => refreshDetail()} onToast={say} />
-          )}
-          {fineCutOpen && detail && (
-            <FineCut projectId={projectId}
-              onClose={() => setFineCutOpen(false)}
-              onRegenerate={doGenerate} onToast={say} />
           )}
 
           {/* Phase 6：导出对话框（只有本机 ffmpeg 一条通道，云端合成已下线） */}
