@@ -35,6 +35,7 @@ export type LeftPanelTab =
   | "transition"
   | "effect"
   | "filter"
+  | "desub"
   | "ai-script"
   | "ai-shots"
   | "ai-video"
