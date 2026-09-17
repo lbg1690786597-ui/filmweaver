@@ -20,6 +20,7 @@ const TITLES: Record<LeftPanelTab, string> = {
   transition: "转场",
   effect: "特效",
   filter: "滤镜 / 调节",
+  desub: "去字幕",
   "ai-script": "剧本",
   "ai-shots": "AI 分镜",
   "ai-video": "AI 视频",
