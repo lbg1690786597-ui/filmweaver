@@ -4,14 +4,22 @@
  * 三段式：
  *   左  返回 / 项目名 / 保存状态 / 撤销 / 重做
  *   中  AI 生产（主操作，含进度）/ 任务状态徽章
- *   右  比例 / 精编 / 导出 / 主题 / 用户 / 更新
+ *   右  比例 / 高清放大 / 导出 / 主题 / 用户 / 更新
  *
  * 刻意不在顶栏堆 AI 功能按钮（PLAN §4 明确要求）：一键成片之外的生产动作
  * 全部收进左侧「AI 生视频」面板，顶栏只留一个「AI 生产」主入口 + 任务态。
+ *
+ * ## 「精编」去哪了
+ *
+ * 顶栏原本这个位置是「精编」，开的是 `components/FineCut.tsx`（R2 时期与生产
+ * 看板分离的那套视图：裁剪 / 字幕 / 退回旧版本 / 经典导出）。它的四件事**在
+ * 编辑器里已经各有归宿**——退版本走右侧版本区、字幕走字幕轨、裁剪走取景框、
+ * 导出走导出对话框——留着只是让同一件事有两个入口、两套状态。
+ * 2026-09-17 整个下线（组件一并删除，不留不可达的死代码），位置让给高清放大。
  */
 
 import {
-  ChevronLeft, Undo2, Redo2, Download, Scissors, Moon, Sun,
+  ChevronLeft, Undo2, Redo2, Download, Sparkles, Moon, Sun,
   User as UserIcon, RefreshCw, Settings, Loader2,
 } from "lucide-react";
 import { IS_TAURI } from "../export/ExportDialog";
@@ -52,9 +60,12 @@ export interface TopBarProps {
   jobCount: number;
   onOpenTasks: () => void;
 
-  // 精编 / 导出
-  fineCutEnabled: boolean;
-  onFineCut: () => void;
+  // 高清放大 / 导出
+  /** 有成片才谈得上放大（与原精编按钮同一判据：至少一镜有 video_url）。 */
+  upscaleEnabled: boolean;
+  /** 已有放大任务在跑：禁用按钮，避免同一批片段被提交两遍（机时翻倍）。 */
+  upscaling: boolean;
+  onUpscale: () => void;
   /** 本机渲染进行中（云端合成已下线，导出只有本机一条路） */
   exporting: boolean;
   exportProgress: number;
@@ -155,9 +166,12 @@ export default function TopBar(p: TopBarProps) {
           {baseAspect ?? "-"} · {productionModeLabel(productionMode)}
         </span>
 
-        <button className="fw-tb-btn" disabled={!p.fineCutEnabled}
-          title="精编：裁剪、字幕、退回旧版本、导出成片" onClick={p.onFineCut}>
-          <Scissors size={14} /> 精编
+        <button className="fw-tb-btn" disabled={!p.upscaleEnabled || p.upscaling}
+          title="高清放大：对当前所有片段跑超分，结果存为新版本，原片保留"
+          onClick={p.onUpscale}>
+          {p.upscaling
+            ? <><Loader2 size={14} className="fw-spin" /> 放大中</>
+            : <><Sparkles size={14} /> 高清放大</>}
         </button>
 
         <button className="fw-tb-primary sm" disabled={p.exporting} onClick={p.onExport}>
