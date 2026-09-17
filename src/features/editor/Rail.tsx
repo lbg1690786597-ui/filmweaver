@@ -8,7 +8,7 @@
  */
 
 import {
-  Film, Music, Type, Shuffle, Sparkles, SlidersHorizontal,
+  Film, Music, Type, Shuffle, Sparkles, SlidersHorizontal, Eraser,
   ScrollText, Clapperboard, Video, Image, Mic, ListTodo,
 } from "lucide-react";
 import { useEditorStore, LeftPanelTab } from "../../stores/editorStore";
@@ -28,6 +28,9 @@ const EDIT_ITEMS: RailItem[] = [
   { tab: "transition", label: "转场", Icon: Shuffle },
   { tab: "effect", label: "特效", Icon: Sparkles },
   { tab: "filter", label: "调节", Icon: SlidersHorizontal },
+  // 去字幕修的是**视频模型烧进画面的原生字幕**，不是织影自己的字幕轨 ——
+  // 所以它归剪辑组（修素材），不归"文本"（做字幕）。
+  { tab: "desub", label: "去字幕", Icon: Eraser },
 ];
 
 const AI_ITEMS: RailItem[] = [
