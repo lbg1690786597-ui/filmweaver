@@ -29,7 +29,7 @@ import { create } from "zustand";
 import type { MosaicShape, MosaicStyle } from "../render/model";
 
 /** 画面覆盖层模式：null = 不激活 */
-export type OverlayMode = "cropzoom" | "mosaic" | null;
+export type OverlayMode = "cropzoom" | "mosaic" | "desub" | null;
 
 /**
  * 马赛克绘制工具 —— 就是 MosaicParams.shape，UI 侧的叫法不同而已。
@@ -72,6 +72,15 @@ interface CanvasToolState {
   cropRatio: number | null;
   setCropRatio: (r: number | null) => void;
 
+  // ---- 去字幕 ----
+  /**
+   * 当前选中的去字幕块 **id**。
+   * 与马赛克用下标不同 —— 去字幕块会按时间排序/合并，下标会漂，
+   * 选中态跟着跳到别的块上就是个说不清的 bug。
+   */
+  desubSel: string | null;
+  setDesubSel: (id: string | null) => void;
+
   /** 切项目 / 关项目时清场（由 App.resetWorkspace 调用） */
   resetCanvasTools: () => void;
 }
@@ -85,6 +94,7 @@ const INITIAL = {
   brushSize: 0.1,
   cropTool: "frame" as CropTool,
   cropRatio: null as number | null,
+  desubSel: null as string | null,
 };
 
 export const useCanvasToolStore = create<CanvasToolState>((set) => ({
@@ -93,7 +103,7 @@ export const useCanvasToolStore = create<CanvasToolState>((set) => ({
   setOverlayMode: (m) =>
     // 切换/关闭覆盖层时把选中态一并清掉：留着的话再次进入马赛克模式，
     // 画面上会凭空出现一个选中框和设置气泡，指向用户早就忘了的那个区域。
-    set({ overlayMode: m, mosaicSel: null }),
+    set({ overlayMode: m, mosaicSel: null, desubSel: null }),
 
   setMosaicTool: (t) => set({ mosaicTool: t }),
   setMosaicSel: (i) => set({ mosaicSel: i }),
@@ -103,6 +113,8 @@ export const useCanvasToolStore = create<CanvasToolState>((set) => ({
 
   setCropTool: (t) => set({ cropTool: t }),
   setCropRatio: (r) => set({ cropRatio: r }),
+
+  setDesubSel: (id) => set({ desubSel: id }),
 
   resetCanvasTools: () => set({ ...INITIAL }),
 }));
