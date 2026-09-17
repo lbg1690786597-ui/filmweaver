@@ -2,6 +2,16 @@
  *
  * 流程：素材缓存(fs) → 逐段归一化(可选 -ss/-t 裁剪) → concat → 可选烧字幕 → 另存。
  * ffmpeg 走 Tauri sidecar（binaries/ffmpeg），仅 Windows 打包分发。
+ *
+ * ## ⚠️ 现状：本文件已无运行时调用者（2026-09-17）
+ *
+ * 唯一的调用者是「精编」里的经典导出（`components/FineCut.tsx`），该组件随顶栏
+ * 入口换成「高清放大」一并删除。现在的导出全部走 `render/renderer.ts` 那条链。
+ *
+ * 之所以**没有跟着一起删**：`scripts/accept-batch4.ts` 还在拿它做 R5 命名规则的
+ * 第二条链路断言（「`cacheClip` 已是 `ensureCached` 的薄壳」——证明两条链共用同一个
+ * 命名函数，而不是各写一份 basename 逻辑）。删掉会让那条断言失去对照组，
+ * 属于另一件事的范围。要清理请连同 accept-batch4 的那两条断言一起处理。
  */
 import { Command } from "@tauri-apps/plugin-shell";
 import { appDataDir, join } from "@tauri-apps/api/path";
