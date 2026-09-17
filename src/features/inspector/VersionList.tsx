@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Check, Play, Loader2, Gem, Zap } from "lucide-react";
+import { Check, Play, Loader2, Gem, Zap, Film } from "lucide-react";
 import { api } from "../../api";
 import type { ShotInfo } from "../../api";
 import "./VersionList.css";
@@ -24,9 +24,17 @@ interface Version {
   created_at: string | null;
 }
 
-/** 模型 → 质量档（用户只看到「快速验证 / 精品」，不看 model id） */
-function quality(modelId: string | null): { tier: "preview" | "final"; label: string } {
+/** 模型 → 质量档（用户只看到「快速验证 / 精品」，不看 model id）
+ *
+ *  第三档 `derived` 是**派生版本**：不是某个模型生成出来的，而是在已有成片上
+ *  加工/补录的。去字幕的产物画质只取决于原片和那一次重编码，拿「快速验证 /
+ *  精品」去标它是在答非所问 —— 那两档说的是"用哪个模型生成的"。 */
+function quality(modelId: string | null): {
+  tier: "preview" | "final" | "derived"; label: string;
+} {
   const m = (modelId ?? "").toLowerCase();
+  if (m === "desub") return { tier: "derived", label: "去字幕处理" };
+  if (m === "original") return { tier: "derived", label: "去字幕前的原片" };
   if (m.includes("seedance-2.0") && !m.includes("mini")) return { tier: "final", label: "精品" };
   if (m.includes("veo-3-1") && !m.includes("fast")) return { tier: "final", label: "精品" };
   return { tier: "preview", label: "快速验证" };
@@ -35,6 +43,10 @@ function quality(modelId: string | null): { tier: "preview" | "final"; label: st
 /** 模型 id → 友好名（对不上时退回原 id，至少不显示空白） */
 function modelName(modelId: string | null): string {
   const m = (modelId ?? "").toLowerCase();
+  // 这两个不是模型，是去字幕这条路径落下的两种版本；不映射的话版本区会
+  // 直接把内部 id「desub」摊给用户看。
+  if (m === "desub") return "已去字幕";
+  if (m === "original") return "原片";
   if (m.includes("seedance-2.0-mini")) return "Seedance mini";
   if (m.includes("seedance-2.0")) return "Seedance 2.0";
   if (m.includes("minimax-h3")) return "海螺 H3";
@@ -89,7 +101,9 @@ export default function VersionList({ shot, onSwitchVersion, onToast }: Props) {
         return (
           <div key={v.version_no} className={`fw-vl-row ${current ? "current" : ""}`}>
             <span className={`fw-vl-tier ${q.tier}`} title={q.label}>
-              {q.tier === "final" ? <Gem size={10} /> : <Zap size={10} />}
+              {q.tier === "final" ? <Gem size={10} />
+                : q.tier === "derived" ? <Film size={10} />
+                : <Zap size={10} />}
             </span>
             <span className="fw-vl-no">V{v.version_no}</span>
             <span className="fw-vl-model" title={v.model_id ?? ""}>{modelName(v.model_id)}</span>
