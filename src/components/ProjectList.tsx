@@ -98,7 +98,8 @@ const PRODUCTION_MODES = [
 /** 画风的展示图标。**只有图标是前端的**——key/label/说明/是否可用全部来自后端
  *  `style_preset.py`（唯一事实来源）。这里硬编码词表就会与后端漂移。 */
 const STYLE_ICONS: Record<string, string> = {
-  urban: "🏙", period: "🏯", anime_3d: "🧊", thick_paint: "🖌", guoman: "🎋",
+  urban: "🏙", period: "🏯", guofeng_3d: "🏮",
+  anime_3d: "🧊", thick_paint: "🖌", guoman: "🎋",
 };
 
 /** 各选项的默认值（新建项目时的起手式，不是"预设"——用户可自由改任意一项）。 */
