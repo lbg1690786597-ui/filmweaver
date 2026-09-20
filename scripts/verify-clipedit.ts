@@ -337,7 +337,15 @@ ok("重建后补发窗口 PATCH 的失败不上抛（段已经回来了，不该
    /clipDurSec: old\.clip_dur_sec,[\s\S]{0,120}?\} catch \{/.test(app));
 
 // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
-const py = readBackend("app/routes_v2.py");
+// ⚠️ 这些实现按业务域搬过家：`patch_audio_clip` 现在在 routers/audio.py
+// （2026-09-18 拆分，见 docs/PLAN-路由按域拆分.md）。**不要写死单个路径** ——
+// 写死的话，下次再搬一次，readBackend 会返回 null 而整段静默跳过，
+// 那正是这条守卫要防的东西。改为按位置探测 + 把所有候选拼起来查。
+const audioSrc = [
+  readBackend("app/routers/audio.py"),
+  readBackend("app/routes_v2.py"),
+].filter((x): x is string => x !== null).join("\n");
+const py = audioSrc || null;
 const jobs = readBackend("app/jobs.py");
 if (py === null || jobs === null) {
   skipBackend("后端清窗口（clear_clip / TTS 写回）");
