@@ -109,7 +109,14 @@ ok("拖动读数按 0.1 显示（不然 2.4 会显示成 2.4000000000000004）",
    tl.includes("previewDur.sec.toFixed(1)"));
 
 // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
-const py = readBackend("app/routes_v2.py");
+// ⚠️ 这些实现按业务域搬过家：镜头编辑现在在 routers/shots.py
+// （2026-09-18 拆分，见 docs/PLAN-路由按域拆分.md）。不写死单路径 ——
+// readBackend 读不到会返回 null，而下面每处都 `py === null` 后 skipBackend，
+// 于是整段静默跳过（backendSrc.ts 文件头反复强调的失效方式）。
+const py = [
+  readBackend("app/routers/shots.py"),
+  readBackend("app/routes_v2.py"),
+].filter((x): x is string => x !== null).join("\n") || null;
 //: 空串 = 没读到后端。下面每一处用它的地方都先问 `py === null` 再断言，
 //: 不能靠"空串匹配不到"顺势判失败——那是把跳过伪装成不通过。
 let patchFn = "";
