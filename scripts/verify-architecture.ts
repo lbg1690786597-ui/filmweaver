@@ -119,14 +119,14 @@ const BUDGETS: Budget[] = [
   {
     label: "routes_v2.py",
     path: join(REPO, "backend/app/routes_v2.py"),
-    max: 5657,
-    why: "108 条路由。本方案 P2.3 定『只加不拆』：新路由进 routers/ 子模块，这里只许减。",
+    max: 591,
+    why: "按业务域的**分批搬迁**进行中。2026-09-18 **九个域已全部搬出**：transitions / agent / voice / subtitle / audio / project / assets / look / stage_scene / shots。本文件现在只剩「工具域 + providers/jobs/events/detail」这点装配代码，并把时长锚点地基下沉到 shot_timing.py，实测 581 + 10 = 591（原 5657）。每搬走一个域都要再往下调一次 —— 不调的话还债腾出的空间会被下一次加功能吃掉。",
   },
   {
     label: "jobs.py",
     path: join(REPO, "backend/app/jobs.py"),
-    max: 3838,
-    why: "62 个顶层函数。P2.2 解循环后，绕循环的局部 import 与重复常量应下线。ASR 字幕已搬去 subtitle_jobs.py、去字幕在 desub_jobs.py，这里只留注册。",
+    max: 3830,
+    why: "62 个顶层函数。ASR 字幕已搬去 subtitle_jobs.py、去字幕在 desub_jobs.py。提示词措辞已搬去 prompt_texts.py（2026-09-18：4 人降级段 + _scene_run_ctx 的全部文本层，逐字节等价的纯搬迁），故 3838 → 3830。",
   },
 ];
 
