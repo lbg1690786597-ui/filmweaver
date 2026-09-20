@@ -5,10 +5,16 @@
  * 未知 id 原样返回（新接模型忘了登记时不至于显示空白）。
  */
 
-/** 视频模型 id → 展示名 */
+/** 视频模型 id → 展示名。
+ *
+ * ⚠️ 这张表是**历史显示**用的，与"模型可选"是两件事：
+ * `veo-3-1-fast` / `veo-3-1` 已于 2026-09-19 从注册表与可选清单里删除
+ * （新项目选不到它们了），但**标签必须留着** —— dev 库里已有 8 个用 veo
+ * 出的历史镜头版本，删掉标签它们在版本列表里会显示成裸 id `veo-3-1-fast`。
+ * 删模型 ≠ 删历史。 */
 export const VIDEO_MODEL_LABELS: Record<string, string> = {
-  "veo-3-1-fast": "Veo 快速",
-  "veo-3-1": "Veo 质量",
+  "veo-3-1-fast": "Veo 快速（已下线）",
+  "veo-3-1": "Veo 质量（已下线）",
   "minimax-h3-ref2v": "海螺 H3",
   "seedance-2.5": "Seedance 2.5",
   "seedance-2.0": "Seedance 2.0",
