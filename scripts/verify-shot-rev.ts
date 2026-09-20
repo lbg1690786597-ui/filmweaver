@@ -335,7 +335,12 @@ console.log("\n⑥ 静态守卫：前后端两侧都真的在做这件事");
 {
   // 假服务端与真服务端的规则必须是同一条
   // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
-  const be = readBackend("app/routes_v2.py");
+  // ⚠️ 按域搬过家：镜头编辑现在在 routers/shots.py（2026-09-18 拆分）。
+  // 不写死单路径 —— 读不到会 null → 整段静默跳过。
+  const be = [
+    readBackend("app/routers/shots.py"),
+    readBackend("app/routes_v2.py"),
+  ].filter((x): x is string => x !== null).join("\n") || null;
   if (be === null) skipBackend("后端 transform_rev 与 409 冲突");
   else {
   ok("后端有 transform_rev()", /def transform_rev\(raw: str \| None\) -> str:/.test(be));
