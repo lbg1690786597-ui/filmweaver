@@ -108,7 +108,11 @@ ok(!/api\.submitShotsByIds|api\.submitShots\b/.test(dialog),
 
 console.log("\n[3] 手改必须双写 profile_override（只写 gen_prompt 会被 AI 顶掉）");
 {
-  const routes = readBackend("app/routes_v2.py");
+  // ⚠️ 按域搬到 routers/shots.py（2026-09-18 拆分）。不写死单路径。
+  const routes = [
+    readBackend("app/routers/shots.py"),
+    readBackend("app/routes_v2.py"),
+  ].filter((x): x is string => x !== null).join("\n") || null;
   if (!routes) {
     skipBackend("PATCH /shots/{id}/prompt 双写 override");
   } else {
@@ -167,7 +171,14 @@ console.log("\n[5] 资产图垫图：显式参考图优先于定妆图自动挑�
     "可把「当前图」一键当作垫图（照这张的构图/风格再来一张）");
 }
 {
-  const routes = readBackend("app/routes_v2.py");
+  // ⚠️ 按业务域搬过家：资产出图现在在 routers/assets.py（2026-09-18 拆分）。
+  // 不写死单路径 —— 写死的话下次再搬一次，readBackend 返回 null 会让整段
+  // 静默跳过（backendSrc.ts 文件头反复强调的失效方式）。候选拼起来查。
+  const routes = [
+    readBackend("app/routers/assets.py"),
+    readBackend("app/routers/shots.py"),
+    readBackend("app/routes_v2.py"),
+  ].filter((x): x is string => x !== null).join("\n") || null;
   const jobs = readBackend("app/jobs.py");
   const image = readBackend("app/providers/image.py");
   if (!routes || !jobs || !image) {
