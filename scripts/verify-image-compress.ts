@@ -179,7 +179,15 @@ console.log("\n⑤ 上传链路：压了、清了描述、不锁窗");
 console.log("\n⑥ 视觉反推：从上传链路里摘干净，只留手动按钮");
 {
   // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
-  const routes = readBackend("app/routes_v2.py");
+  // ⚠️ 这些实现按业务域搬过家：资产 CRUD / describe-image 现在在
+  // routers/assets.py（2026-09-18 拆分，见 docs/PLAN-路由按域拆分.md）。
+  // **不要写死单个路径** —— 写死的话下次再搬一次，readBackend 会返回 null
+  // 而整段静默跳过（这正是 backendSrc.ts 文件头反复强调的失效方式）。
+  // 改为把候选文件拼起来查。
+  const routes = [
+    readBackend("app/routers/assets.py"),
+    readBackend("app/routes_v2.py"),
+  ].filter((x): x is string => x !== null).join("\n") || null;
   const vision = readBackend("app/vision_desc.py");
   const llm = readBackend("app/providers/llm.py");
   const tsx = read("src/components/AssetDialog.tsx");
