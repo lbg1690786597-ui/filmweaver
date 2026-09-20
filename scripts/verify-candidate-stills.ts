@@ -93,7 +93,12 @@ for (const f of srcFiles) {
   ok(!/api\.stageCandidates/.test(read(f)), `${f} 里没有 api.stageCandidates 的调用`);
 }
 // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
-const routes = readBackend("app/routes_v2.py");
+// ⚠️ 该同步路由在 2026-09-18 随 stage 域搬到 routers/stage_scene.py。
+// 不写死单路径 —— readBackend 读不到会返回 null 而整段静默跳过。
+const routes = [
+  readBackend("app/routers/stage_scene.py"),
+  readBackend("app/routes_v2.py"),
+].filter((x): x is string => x !== null).join("\n") || null;
 if (routes === null) skipBackend("后端旧同步路由的弃用标注");
 else ok(/已被取代，新代码不要用/.test(routes),
   "★ 后端那条同步路由仍在（旧客户端要用），但 docstring 已标明弃用与保留理由",
