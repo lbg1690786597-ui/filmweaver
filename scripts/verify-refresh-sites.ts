@@ -125,7 +125,13 @@ console.log("\n[2] ① 增删镜头：这些函数的**回包拼得出一行 Sho
   // 后端源码只在全仓里有；公开仓（CI）没有 backend/，见 backendSrc.ts 的文件头。
   // ⚠️ 这里原本是 `ok(false, ...)`——把"读不到对面"判成不通过。那在全仓里没错，
   // 但 CI 跑的是只含 desktop/ 的公开仓，等于让一条跨仓断言把发版链路钉死。
-  const rs = readBackend("app/routes_v2.py");
+  // ⚠️ 按域搬过家：镜头编辑（special / split / recut / undo-recut）现在在
+  // routers/shots.py（2026-09-18 拆分）。不写死单路径 —— 读不到会 null →
+  // 整段静默跳过，那这条守卫就等于没有。
+  const rs = [
+    readBackend("app/routers/shots.py"),
+    readBackend("app/routes_v2.py"),
+  ].filter((x): x is string => x !== null).join("\n") || null;
   if (rs === null) {
     skipBackend("端点回包字段核对（①类端点能否降级）");
   } else {
