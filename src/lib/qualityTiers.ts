@@ -45,8 +45,10 @@ export function modelLabel(modelId: string | null | undefined): string {
   if (m.includes("seedance-2.0-mini")) return "Seedance mini";
   if (m.includes("seedance-2.0")) return "Seedance 2.0";
   if (m.includes("minimax-h3")) return "海螺 H3";
-  if (m.includes("veo-3-1-fast")) return "Veo 快速";
-  if (m.includes("veo-3-1")) return "Veo 质量";
+  // veo 两档 2026-09-19 已下线（新项目选不到），但历史版本里还有 8 个，
+  // 故保留识别并标注"已下线"—— 删模型 ≠ 删历史。
+  if (m.includes("veo-3-1-fast")) return "Veo 快速（已下线）";
+  if (m.includes("veo-3-1")) return "Veo 质量（已下线）";
   return modelId || "未知模型";
 }
 
