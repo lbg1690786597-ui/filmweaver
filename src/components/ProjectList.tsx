@@ -20,9 +20,14 @@ const ASPECTS: { key: string; w: number; h: number; hint: string }[] = [
 /** 视频模型（按钮化展示；与后端 providers 对应） */
 /** 视频模型兜底清单（后端 /v2/providers/video 不可达时用）。
  *  正常路径走后端注册表——它才知道哪些 endpoint 真的配好了。 */
-const VIDEO_MODELS_FALLBACK = [
-  { key: "veo-3-1-fast", label: "Veo 快速", icon: "⚡", hint: "1-3分钟出片 · 8s固定" },
-  { key: "veo-3-1", label: "Veo 质量", icon: "🎥", hint: "质量档 · 8s固定" },
+const VIDEO_MODELS_FALLBACK: Array<{
+  key: string; label: string; icon: string; hint: string;
+  /** 缺省 true；`false` = 置灰不可选（语义见后端 registry.DISABLED_VIDEO_MODELS） */
+  enabled?: boolean;
+}> = [
+  // ⚠️ 2026-09-19：`veo-3-1-fast` / `veo-3-1` 两个模型已按要求**删除**，
+  // 后端也不再注册。别把它们加回兜底清单 —— 后端不可达时用户会选到一个
+  // 打开就报「未注册的视频模型」的按钮。
   { key: "minimax-h3-ref2v", label: "海螺 H3", icon: "🎭", hint: "9图参考/首帧/首尾帧 · 音色参考 · 约10分钟" },
   { key: "seedance-2.5", label: "Seedance 2.5", icon: "🏆", hint: "单镜可出 30s 长镜 · 同场戏少切几刀 · 音画一体" },
   { key: "seedance-2.0", label: "Seedance 2.0", icon: "💎", hint: "音画一体 · 首尾帧/参考图全能" },
@@ -33,7 +38,10 @@ const VIDEO_MODELS_FALLBACK = [
   // ⚠️ 「固定 720p」不是笔误：这三条第三方渠道的成片分辨率写在渠道清单里
   // （lowcost_channels.json 每条一个 resolution），项目档案里选的 480p/1080p/2k
   // **对本模型完全无效且不会报错**。提示写出来，免得用户以为 1080p 项目缩水是 bug。
-  { key: "seedance-lowcost-2.5", label: "低价 Seedance 2.5", icon: "💰", hint: "三渠道兜底 · 30s长镜 · 固定720p · 仅9:16/16:9" },
+  // ⚠️ 2026-09-19 用户要求**置灰**：仍在后端注册表里（后端可直接按 model_id 调），
+  // 但 UI 不可选。离线走兜底清单时也要保持置灰 —— 所以标记写在数据里，
+  // 而不是只靠后端下发（否则断网时它又变成可点的了）。
+  { key: "seedance-lowcost-2.5", label: "低价 Seedance 2.5", icon: "💰", hint: "三渠道兜底 · 30s长镜 · 固定720p · 仅9:16/16:9", enabled: false },
 ];
 
 /** 生图模型的展示补充（图标/一句话用途）。
@@ -147,6 +155,10 @@ export default function ProjectList(p: Props) {
           label: meta[pv.model_id]?.label ?? pv.model_id,
           icon: meta[pv.model_id]?.icon ?? "🎬",
           hint: meta[pv.model_id]?.hint ?? "",
+          // 后端说了算：`enabled=false` 置灰不可选。
+          // `?? true` 是纵深防御——老版后端没这个字段时按"可选"处理，
+          // 不能因为字段缺失把整批模型灰掉。
+          enabled: pv.enabled ?? true,
         })));
         setModelModes(Object.fromEntries(
           r.providers.map((pv) => [pv.model_id, pv.modes ?? {}])));
@@ -181,6 +193,17 @@ export default function ProjectList(p: Props) {
     if (artStyle && styles.some((x) => x.key === artStyle && x.enabled)) return;
     setArtStyle(styles.find((x) => x.enabled)?.key ?? null);
   }, [mode, modeCat, artStyle]);
+
+  // 当前视频模型若已被停用（后端下发 enabled=false），落到清单里第一个可用档。
+  // 与画风那条同款兜底。触发场景：后端把某档停用后，前端仍默认选着它 ——
+  // 不兜的话用户会看到"选中的是一个灰按钮"，且建出来的项目带着停用档。
+  useEffect(() => {
+    if (!videoModels.length) return;
+    const cur = videoModels.find((m) => m.key === videoModel);
+    if (cur && cur.enabled !== false) return;
+    const first = videoModels.find((m) => m.enabled !== false);
+    if (first) setVideoModel(first.key);
+  }, [videoModels, videoModel]);
 
   // 换模型后若当前模式在新模型上不可用，自动落到第一个可用模式。
   // 不做这一步，用户带着无效模式建项目，直到第一次生成才报错。
@@ -303,14 +326,21 @@ export default function ProjectList(p: Props) {
 
             <label>视频模型
               <div className="opt-grid">
-                {videoModels.map((m) => (
-                  <button key={m.key} className={`opt-btn ${videoModel === m.key ? "on" : ""}`}
-                    title={m.hint} onClick={() => setVideoModel(m.key)}>
-                    <span className="opt-icon">{m.icon}</span>
-                    <span>{m.label}</span>
-                    <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{m.hint}</span>
-                  </button>
-                ))}
+                {videoModels.map((m) => {
+                  // `enabled === false` = 后端下发的已停用档：置灰不可选。
+                  // 与画风那套（`st.enabled`）同款渲染，样式复用 .opt-btn:disabled。
+                  const ok = m.enabled !== false;
+                  return (
+                    <button key={m.key} disabled={!ok}
+                      className={`opt-btn ${videoModel === m.key ? "on" : ""}`}
+                      title={ok ? m.hint : `${m.hint}（已停用，暂不可选）`}
+                      onClick={() => setVideoModel(m.key)}>
+                      <span className="opt-icon">{m.icon}</span>
+                      <span>{m.label}</span>
+                      <span className="muted" style={{ fontSize: "calc(10px * var(--fs-scale, 1))" }}>{m.hint}</span>
+                    </button>
+                  );
+                })}
               </div>
             </label>
 
