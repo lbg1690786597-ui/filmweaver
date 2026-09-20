@@ -834,6 +834,11 @@ export interface VideoProviderInfo {
   max_reference_images: number;
   supports_reference_audio: boolean;
   supports_reference_video: boolean;
+  /** 后端下发的**可选性**开关（2026-09-19 起）。`false` = 仍在注册表里
+   *  （后端可直接按 model_id 调），但 UI **置灰不可选**。
+   *  与画风目录的 `enabled` 同款语义：写成布尔而不是让前端列黑名单，
+   *  否则前后端会漂移，且离线走兜底清单时置灰会失效。 */
+  enabled: boolean;
   /** 各生成模式可用性：{t2va|i2va|fl2va|l2va|full_reference: {available, reason?}}
    *  不可用时 UI 置灰并展示 reason（如"工作流未配置"）。
    *  max_reference_images/reference_audio 是**该模式的**上限——H3 各模式走不同
