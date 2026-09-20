@@ -50,8 +50,9 @@ function modelName(modelId: string | null): string {
   if (m.includes("seedance-2.0-mini")) return "Seedance mini";
   if (m.includes("seedance-2.0")) return "Seedance 2.0";
   if (m.includes("minimax-h3")) return "海螺 H3";
-  if (m.includes("veo-3-1-fast")) return "Veo 快速";
-  if (m.includes("veo-3-1")) return "Veo 质量";
+  // veo 两档 2026-09-19 已下线；历史版本仍要能正确显示（见 modelLabels 的说明）
+  if (m.includes("veo-3-1-fast")) return "Veo 快速（已下线）";
+  if (m.includes("veo-3-1")) return "Veo 质量（已下线）";
   return modelId || "未知模型";
 }
 
