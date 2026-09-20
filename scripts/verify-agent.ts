@@ -504,31 +504,48 @@ console.log("\n⑧ 编译期契约：前后端版本常量要对齐");
     ok("后端 agent_proxy.py 里没有硬编码密钥",
       !/sk-[A-Za-z0-9]{16,}|api[_-]?key\s*=\s*["'][A-Za-z0-9]{16,}/i.test(src));
 
-    // ⑧bis：`routes_v2.agent_protocol()` 用的三个名字必须是**真的导进来了**。
+    // ⑧bis：`agent_protocol()` 用的三个名字必须是**真的导进来了**。
     //
     // 上面那些 `src.match(...)` 只证明"常量在 agent_proxy.py 里定义了"，
-    // 证明不了"routes_v2.py 能看见它"。曾经 `agent_protocol()` 里写的是裸名
+    // 证明不了"定义它的那个模块能看见它"。曾经 `agent_protocol()` 里写的是裸名
     // `AGENT_CONTRACT_VERSION`，而 `import agent_proxy` 只在 `agent_turn()`
     // 函数体内 —— 于是**任何已登录用户**请求 `/v2/agent/protocol`，
     // 都会在返回前撞 NameError → 500。这条断言查的是同一个盲区：
     // 定义处（左）与引用处（右）同时看一眼，缺了导入就是红灯。
-    const rv2 = join(ROOT, "..", "backend", "app", "routes_v2.py");
-    if (existsSync(rv2)) {
-      const rsrc = readFileSync(rv2, "utf8");
+    //
+    // ⚠️ 2026-09-18：这 2 条路由按业务域搬到了 `routers/agent.py`
+    // （架构守卫的行数预算使然）。下面改为**按位置探测**而不是写死
+    // `routes_v2.py` —— 否则下次再搬一次，这条守卫会静默跳过
+    // （`existsSync` 为假 → 整段不跑），那正是它当初要防的东西。
+    const agentCandidates = [
+      join(ROOT, "..", "backend", "app", "routers", "agent.py"),
+      join(ROOT, "..", "backend", "app", "routes_v2.py"),
+    ];
+    const agentSrc = agentCandidates.find((p) => existsSync(p));
+    if (agentSrc) {
+      const rsrc = readFileSync(agentSrc, "utf8");
+      ok("agent_protocol() 定义在可扫描的文件里",
+        rsrc.includes("async def agent_protocol"),
+        agentSrc.split(/[\\/]/).pop());
       const protoBody = rsrc.slice(rsrc.indexOf("async def agent_protocol"));
       const bodyEnd = protoBody.indexOf("\n@router");
       const body = bodyEnd >= 0 ? protoBody.slice(0, bodyEnd) : protoBody;
       ok("agent_protocol() 引用了 AGENT_CONTRACT_VERSION（空壳实现也算回归）",
         /AGENT_CONTRACT_VERSION/.test(body));
       // 三个名字逐个核对：出现在 `from .agent_proxy import (...)` 里
-      const importBlock = rsrc.match(/from \.agent_proxy import \(([\s\S]*?)\)/)
-        ?? rsrc.match(/from \.agent_proxy import ([^\n]+)/);
+      const importBlock = rsrc.match(/from \.\.?agent_proxy import \(([\s\S]*?)\)/)
+        ?? rsrc.match(/from \.\.?agent_proxy import ([^\n]+)/);
       const imported = (importBlock?.[1] ?? "").replace(/\s|#.*$/gm, "");
       for (const name of ["AGENT_CONTRACT_VERSION", "agent_max_commands", "agent_max_input_chars"]) {
         if (!new RegExp(`\\b${name}\\b`).test(body)) continue;  // 该函数没用到它
-        ok(`routes_v2.py 在模块级导入了 ${name}（不是函数体内）`,
+        ok(`${agentSrc.split(/[\\/]/).pop()} 在模块级导入了 ${name}（不是函数体内）`,
           imported.includes(name));
+        ok(`★ ${name} 是真导入的（不是靠同名前缀蒙混）`,
+          new RegExp(`(^|[,{(\\s])${name}([,)}\\s]|$)`).test(imported));
       }
+    } else {
+      ok("找到 agent_protocol 的定义文件", false,
+        "routers/agent.py 与 routes_v2.py 都不存在——守卫会静默失效，必须先修这里");
     }
   } else {
     console.log("  ⏭  后端不在同仓（跳过跨端常量比对）");
